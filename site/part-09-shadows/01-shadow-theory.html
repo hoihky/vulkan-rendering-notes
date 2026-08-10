@@ -1,0 +1,1532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>01 shadow theory · Building a Real-Time Renderer with Vulkan</title>
+  <meta name="description" content="Learn real-time rendering programming step by step using the Spark engine as a reference implementation">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/site.css">
+  <link rel="stylesheet" href="../assets/vendor/atom-one-dark.min.css">
+</head>
+<body>
+  <div class="site">
+    <header class="topbar">
+      <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle navigation">☰</button>
+      <a href="../index.html" class="brand">Building a Real-Time Renderer with Vulkan</a>
+      <div class="search-wrap">
+        <input type="search" id="search" placeholder="Search docs…" autocomplete="off">
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar" id="sidebar">
+        <nav class="nav" aria-label="Documentation">
+          <ul class="nav-list">
+            
+                        <li class="nav-item depth-0">
+                          
+                            <a href="../index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0">
+                          
+                            <a href="../README.html" class="nav-link">README</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">appendix</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/01-vulkan-lifecycle.html" class="nav-link">01 vulkan lifecycle</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/02-scene-params-ref.html" class="nav-link">02 scene params ref</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/03-descriptor-map.html" class="nav-link">03 descriptor map</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/04-demo-catalog.html" class="nav-link">04 demo catalog</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/05-component-ref.html" class="nav-link">Component Quick Reference</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 01 vulkan setup</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/01-what-is-a-renderer.html" class="nav-link">01 what is a renderer</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/02-engine-architecture.html" class="nav-link">02 engine architecture</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/03-building-spark.html" class="nav-link">03 building spark</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/04-engine-loop.html" class="nav-link">04 engine loop</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/05-window-glfw.html" class="nav-link">05 window glfw</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/06-vulkan-instance.html" class="nav-link">06 vulkan instance</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/07-physical-logical-device.html" class="nav-link">07 physical logical device</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/08-swapchain.html" class="nav-link">08 swapchain</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/09-device-context.html" class="nav-link">09 device context</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/10-frame-sync.html" class="nav-link">10 frame sync</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 02 basic pipeline</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/01-scene-render-params.html" class="nav-link">01 scene render params</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/02-render-passes.html" class="nav-link">02 render passes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/03-graphics-pipeline.html" class="nav-link">03 graphics pipeline</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/04-spirv-loading.html" class="nav-link">04 spirv loading</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/05-vertex-index-buffers.html" class="nav-link">05 vertex index buffers</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/06-descriptors-uniforms.html" class="nav-link">06 descriptors uniforms</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/07-first-triangle.html" class="nav-link">07 first triangle</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/08-indexed-cube.html" class="nav-link">08 indexed cube</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/09-vulkan-renderer-graph.html" class="nav-link">09 vulkan renderer graph</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/10-submitting-scene.html" class="nav-link">10 submitting scene</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 03 shaders</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/01-shader-build.html" class="nav-link">01 shader build</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/02-vertex-shader.html" class="nav-link">02 vertex shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/03-fragment-shader.html" class="nav-link">03 fragment shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/04-ubo-std140.html" class="nav-link">04 ubo std140</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/05-push-constants.html" class="nav-link">05 push constants</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/06-shader-includes.html" class="nav-link">06 shader includes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/07-depth-culling.html" class="nav-link">07 depth culling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/08-blending.html" class="nav-link">08 blending</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/09-shader-debug.html" class="nav-link">09 shader debug</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/10-shader-roadmap.html" class="nav-link">10 shader roadmap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 04 textures lighting</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/01-cpu-textures.html" class="nav-link">01 cpu textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/02-gpu-upload.html" class="nav-link">02 gpu upload</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/03-binding-textures.html" class="nav-link">03 binding textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/04-uv-mapping.html" class="nav-link">04 uv mapping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/05-color-space.html" class="nav-link">05 color space</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/06-diffuse-lighting.html" class="nav-link">06 diffuse lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/07-light-types.html" class="nav-link">07 light types</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/08-gather-lights.html" class="nav-link">08 gather lights</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/09-clustered-lights.html" class="nav-link">09 clustered lights</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/10-time-of-day.html" class="nav-link">10 time of day</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 05 input camera</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/01-iinput.html" class="nav-link">01 iinput</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/02-glfw-input.html" class="nav-link">02 glfw input</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/03-input-loop.html" class="nav-link">03 input loop</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/04-camera-math.html" class="nav-link">04 camera math</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/05-fly-camera.html" class="nav-link">05 fly camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/06-camera-follow.html" class="nav-link">06 camera follow</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/07-character-camera.html" class="nav-link">07 character camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/08-main-camera.html" class="nav-link">08 main camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/09-camera-2d.html" class="nav-link">09 camera 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/10-camera-ubo.html" class="nav-link">10 camera ubo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 06 models animation</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/01-mesh-data.html" class="nav-link">01 mesh data</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/02-load-obj.html" class="nav-link">02 load obj</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/03-load-gltf.html" class="nav-link">03 load gltf</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/04-asset-cache.html" class="nav-link">04 asset cache</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/05-custom-mesh-pool.html" class="nav-link">05 custom mesh pool</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/06-skeleton.html" class="nav-link">06 skeleton</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/07-skinned-gltf.html" class="nav-link">07 skinned gltf</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/08-animator.html" class="nav-link">08 animator</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/09-gpu-skinning.html" class="nav-link">09 gpu skinning</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 07 sky materials</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/01-sky-modes.html" class="nav-link">01 sky modes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/02-sky-meshes.html" class="nav-link">02 sky meshes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/03-sky-pipeline.html" class="nav-link">03 sky pipeline</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/04-ibl-basics.html" class="nav-link">04 ibl basics</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/05-material-component.html" class="nav-link">05 material component</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/06-shading-models.html" class="nav-link">06 shading models</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/07-normal-mapping.html" class="nav-link">07 normal mapping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/08-orm-textures.html" class="nav-link">08 orm textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/09-material-submit.html" class="nav-link">09 material submit</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/10-material-showcase.html" class="nav-link">10 material showcase</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 08 particles</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/01-particle-arch.html" class="nav-link">01 particle arch</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/02-emitter-params.html" class="nav-link">02 emitter params</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/03-collect-particles.html" class="nav-link">03 collect particles</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/04-particle-pass.html" class="nav-link">04 particle pass</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/05-particle-shaders.html" class="nav-link">05 particle shaders</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/06-blend-depth.html" class="nav-link">06 blend depth</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/07-frame-graph.html" class="nav-link">07 frame graph</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/08-particle-demo.html" class="nav-link">08 particle demo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/09-perf-pooling.html" class="nav-link">09 perf pooling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/10-gpu-particles-roadmap.html" class="nav-link">10 gpu particles roadmap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 09 shadows</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1 is-active">
+                          
+                            <a href="../part-09-shadows/01-shadow-theory.html" class="nav-link">01 shadow theory</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/02-directional-csm.html" class="nav-link">02 directional csm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/03-shadow-depth-shader.html" class="nav-link">03 shadow depth shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/04-pcf-cascades.html" class="nav-link">04 pcf cascades</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/05-punctual-shadows.html" class="nav-link">05 punctual shadows</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/06-shadow-flags.html" class="nav-link">06 shadow flags</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/07-skinned-shadows.html" class="nav-link">07 skinned shadows</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/08-shadow-tuning.html" class="nav-link">08 shadow tuning</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 10 hdr post</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/01-hdr-targets.html" class="nav-link">01 hdr targets</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/02-aces-tonemap.html" class="nav-link">02 aces tonemap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/03-ssao.html" class="nav-link">03 ssao</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/04-exposure-volumes.html" class="nav-link">04 exposure volumes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/05-fog.html" class="nav-link">05 fog</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/06-capture.html" class="nav-link">06 capture</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 11 2d rendering</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/01-sprites.html" class="nav-link">01 sprites</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/02-sprite-lighting.html" class="nav-link">02 sprite lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/03-sprite-anim.html" class="nav-link">03 sprite anim</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/04-tilemaps.html" class="nav-link">04 tilemaps</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/05-render-layers.html" class="nav-link">05 render layers</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/06-screen-ui.html" class="nav-link">06 screen ui</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/07-imgui.html" class="nav-link">07 imgui</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/08-platformer-2d.html" class="nav-link">08 platformer 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 12 terrain</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/01-heightfield.html" class="nav-link">01 heightfield</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/02-terrain-component.html" class="nav-link">02 terrain component</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/03-terrain-lighting.html" class="nav-link">03 terrain lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/04-frustum-cull.html" class="nav-link">04 frustum cull</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/05-open-world.html" class="nav-link">05 open world</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 13 scene editor</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/01-scene-format.html" class="nav-link">01 scene format</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/02-snapshots.html" class="nav-link">02 snapshots</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/03-async-load.html" class="nav-link">03 async load</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/04-editor-shell.html" class="nav-link">04 editor shell</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/05-editor-panels.html" class="nav-link">05 editor panels</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/06-scene-editor-demo.html" class="nav-link">06 scene editor demo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 14 physics</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/01-physics-2d.html" class="nav-link">01 physics 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/02-physics-3d.html" class="nav-link">02 physics 3d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/03-colliders.html" class="nav-link">03 colliders</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/04-physics-render.html" class="nav-link">04 physics render</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 15 audio ai scripting</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/01-audio.html" class="nav-link">01 audio</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/02-spatial-audio.html" class="nav-link">02 spatial audio</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/03-ai-steering.html" class="nav-link">03 ai steering</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/04-scripting.html" class="nav-link">04 scripting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 16 production</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/01-swapchain-recreate.html" class="nav-link">01 swapchain recreate</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/02-memory.html" class="nav-link">02 memory</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/03-async-assets.html" class="nav-link">03 async assets</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/04-profiling.html" class="nav-link">04 profiling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/05-shipping.html" class="nav-link">05 shipping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0">
+                          
+                            <span class="nav-group">site</span>
+                            
+                        </li>
+                        
+          </ul>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <article class="doc">
+          <header class="doc-header">
+            <h1>01 shadow theory</h1>
+          </header>
+          <div class="doc-body"><h1 id="shadow-mapping-theory">Shadow Mapping Theory</h1>
+<blockquote class="blockquote">
+<p><strong>Build-Along Milestone:</strong> RenderDoc capture shows directional shadow depth draws completing before the HDR scene pass begins.</p>
+</blockquote>
+<p><strong>You will learn:</strong></p>
+<ul>
+<li>Explain shadow mapping as a two-pass depth compare from light space.</li>
+<li>Place shadow passes before the HDR scene pass in the frame graph.</li>
+<li>Identify Spark's directional and punctual shadow pass objects.</li>
+<li>Relate texel footprint to shadow map resolution and cascade count.</li>
+</ul>
+<h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
+<p>Every direct-light shading model asks the same question: <strong>Is this point visible from the light?</strong> Ray tracing answers by intersecting scene geometry — accurate but expensive for a forward renderer drawing thousands of meshes each frame.</p>
+<p><strong>Shadow mapping</strong> trades exactness for speed: render the scene from the light's viewpoint, store the nearest depth per texel, then during the main pass compare each shaded point's light-space depth against that texture. Wrong answers appear as blocky edges, acne, or detached shadows — but the core recipe is stable across decades of engines.</p>
+<p>You already have opaque mesh drawing with depth testing from earlier parts. Part IX adds offscreen depth images, depth-only pipelines, matrix upload for <code>worldToShadowClip</code>, and a visibility multiplier in the sun term. Spark implements the full path — you will trace it top-down before writing your own.</p>
+<h2 id="core-concepts">2. Core Concepts</h2>
+<h3 id="two-pass-shadow-recipe">Two-pass shadow recipe</h3>
+<p>Shadow mapping approximates <strong>visibility along a light ray</strong> without tracing rays per pixel. The algorithm splits work into two raster passes:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Pass</th>
+<th>View matrix</th>
+<th>Attachment</th>
+<th>Question answered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Shadow</td>
+<td>Light view-projection</td>
+<td>Depth texture</td>
+<td>What is the closest surface the light sees at each texel?</td>
+</tr>
+<tr>
+<td>Scene</td>
+<td>Camera view-projection</td>
+<td>HDR color + depth</td>
+<td>Is this pixel farther from the light than the stored depth?</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-text">Eye camera                    Light camera
+\                            /
+ \   occluder blocks ray    /
+  \-----------------------/
+   * P (shaded point)
+</code></pre>
+<p>For world point <strong>P</strong>, transform to light clip space, divide by <strong>w</strong>, map XY to UV, and compare <strong>z</strong> against <code>texture(shadowMap, uv).r</code>. If stored depth is <strong>closer</strong> to the light, <strong>P</strong> is in shadow. The compare is a <strong>discrete texel lookup</strong>, not continuous geometry — the source of acne, Peter panning, and soft-edge filtering in later chapters.</p>
+<h3 id="light-space-coordinates">Light-space coordinates</h3>
+<p>Every shadow sample begins with the same matrix chain used when <strong>writing</strong> the map:</p>
+<pre><code class="language-text">clipLight = worldToShadowClip * vec4(P_world, 1)
+ndc       = clipLight.xyz / clipLight.w          // perspective or ortho
+uv        = ndc.xy * 0.5 + 0.5                   // [0,1]²
+refDepth  = ndc.z                                  // after bias (Ch. 8)
+mapDepth  = texture(shadowMap, uv).r
+visible   = (refDepth &lt;= mapDepth)                 // Spark: lower Z = closer
+</code></pre>
+<p><strong>Handedness</strong> must match between shadow pass projection and scene compare. Spark applies a linear Z-flip matrix when building <code>worldToShadowClip</code> so Vulkan's <code>[0,1]</code> depth range agrees with stored texels. <strong>Y-flip</strong> depends on viewport convention — Spark checks <code>ubo.viewportSize.w</code> and may flip V when sampling.</p>
+<p>The eye camera never renders occluders behind the viewer that still cast shadows <strong>in front</strong> of the camera. Only a light-space depth pass sees those silhouettes.</p>
+<h3 id="depth-only-attachments">Depth-only attachments</h3>
+<p>Shadow passes need <strong>no color buffer</strong>. Rasterization writes clip-space <strong>Z</strong> into a depth image; the fragment shader can be empty or omitted entirely.</p>
+<table class="table">
+<thead>
+<tr>
+<th>Property</th>
+<th>Typical Spark value</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Format</td>
+<td><code>VK_FORMAT_D32_SFLOAT</code></td>
+<td>Stable compare; avoids 16-bit banding when tuning bias</td>
+</tr>
+<tr>
+<td>Usage</td>
+<td><code>DEPTH_STENCIL_ATTACHMENT \| SAMPLED</code></td>
+<td>Write in pass, read in scene shader</td>
+</tr>
+<tr>
+<td>Final layout</td>
+<td><code>DEPTH_STENCIL_READ_ONLY_OPTIMAL</code></td>
+<td>Legal layout for <code>sampler2D</code> fetch</td>
+</tr>
+<tr>
+<td>Compare sampler</td>
+<td><code>compareEnable = false</code></td>
+<td>Manual compare in GLSL for MoltenVK portability</td>
+</tr>
+</tbody>
+</table>
+<p>Pipeline state highlights: <code>depthTestEnable = true</code>, <code>depthWriteEnable = true</code>, <code>depthCompareOp = LESS</code>, <strong>no</strong> color attachments, cull mode usually back-face. After <code>vkCmdEndRenderPass</code>, the depth image must be in a layout the lit pass can sample — Spark sets this in the attachment description's <code>finalLayout</code>.</p>
+<h3 id="frame-graph-placement">Frame graph placement</h3>
+<p>Shadow work belongs <strong>after uploads</strong> and <strong>before</strong> the HDR scene subpass:</p>
+<pre><code class="language-text">vkBeginCommandBuffer
+  → deferred uploads / mesh streaming
+  → RecordShadowMapPass          ← Part IX
+  → vkCmdBeginRenderPass (HDR)   ← Part X color target
+       → opaque / transparent / 2D / particles
+  → vkCmdEndRenderPass
+  → SSAO / tonemap
+vkEndCommandBuffer
+</code></pre>
+<p>If shadows run <strong>after</strong> the lit pass, the scene shader samples stale or cleared depth — shadows vanish or lag one frame. Matrix uploads for shadow sampling happen in <code>WriteUniformBuffer</code> on the CPU <strong>before</strong> command recording so shadow pass push constants and scene UBO share the same light transforms for that frame index.</p>
+<h3 id="resolution-and-texel-footprint">Resolution and texel footprint</h3>
+<p>Shadow quality scales with <strong>world-space texel size</strong> — meters per texel at the shaded point:</p>
+<pre><code class="language-text">texelWorldSize ≈ (orthoWidth_world) / shadowMapResolution
+</code></pre>
+<p>A single 2048² map covering 500 m horizontally yields ~0.24 m/texel — soft, blocky contact shadows. <strong>Cascaded shadow maps</strong> (Chapter 2) allocate multiple frustum slices so near geometry gets higher texel density. Memory budget matters: four 1024² D32 slices ≈ 16 MB per flight target before punctual atlases.</p>
+<p>When profiling, measure <strong>fill rate</strong> (caster triangles × map resolution) separately from <strong>sample cost</strong> (scene pixels × PCF taps in Chapter 4).</p>
+<h3 id="shadow-maps-vs-other-visibility-techniques">Shadow maps vs other visibility techniques</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Technique</th>
+<th>Cost driver</th>
+<th>Strength</th>
+<th>Weakness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Shadow map</td>
+<td>Extra passes + texture samples</td>
+<td>Works in forward; artist-tunable</td>
+<td>Acne, bias, resolution limits</td>
+</tr>
+<tr>
+<td>Shadow volumes</td>
+<td>Stencil / extra geometry</td>
+<td>Sharp when exact</td>
+<td>Silhouette extraction; fill cost</td>
+</tr>
+<tr>
+<td>Ray tracing</td>
+<td>BVH traversal</td>
+<td>Physically correct penumbra</td>
+<td>Hardware / denoise dependency</td>
+</tr>
+</tbody>
+</table>
+<p>Spark uses <strong>forward PBR</strong> with shadow maps because the same mesh buffers, skinning path, and draw lists serve both lit and shadow passes. Ray-traced shadows can replace the compare later, but the <strong>visibility term</strong> in the BRDF remains: multiply direct light by <code>shadow ∈ [0,1]</code>.</p>
+<h3 id="renderdoc-shadow-debugging-workflow">RenderDoc shadow debugging workflow</h3>
+<p>Capture a frame with <strong>ThreeDDemo</strong> shadows enabled. In the event browser, expand the directional shadow pass and confirm indexed draws for casters. Select a shadow draw → verify push constant bytes for <code>lightViewProj</code> match the matrix uploaded to UBO for the same cascade index.</p>
+<p>Switch to the HDR scene pass → select an opaque draw → fragment shader inputs should show <code>worldToShadowClip</code> arrays in the UBO. Texture viewer on binding 3 should show depth atlas tiles — not cleared white.</p>
+<p>Common false leads: debugging PCF when casters never drew (empty shadow pass); tuning bias when projection is inverted (whole shadow map slides). Always confirm <strong>pass order</strong> and <strong>non-empty shadow pass</strong> before shader math.</p>
+<h3 id="memory-and-bandwidth-budget">Memory and bandwidth budget</h3>
+<p>Directional CSM atlas at 2048² D32 ≈ 16 MB per flight target. Four spot 512² tiles plus two point cube faces add punctual memory on top. Budget:</p>
+<pre><code class="language-text">bytes ≈ width * height * 4 (D32) * cascades_or_faces * framesInFlight
+</code></pre>
+<p>PCF sample cost scales with scene resolution × kernel taps × cascade blend bands. Spark's 5×5 directional PCF with cascade blend is ~25–50 extra depth fetches per pixel in worst case — profile before enabling on mobile targets.</p>
+<p>Reduce cost: lower atlas resolution on far cascades only (requires split atlas sizes), fewer punctual shadow slots, or smaller PCF kernel on distant LOD materials.</p>
+<h3 id="historical-context-and-limits">Historical context and limits</h3>
+<p>Shadow maps date to classic real-time graphics — the algorithm is <strong>biased</strong> (single depth sample per texel) and <strong>resolution-limited</strong>, but predictable on programmable GPUs. Modern engines combine CSM, PCF, and slope bias as baseline; ray-traced shadows augment quality on high-end paths.</p>
+<p>No bias removes acne <strong>and</strong> Peter panning on all surfaces simultaneously; no single map resolution serves contact detail and 500 m draw distance. Plan cascades and art-side offsets (Chapter 8) as part of the feature, not polish pass.</p>
+<h2 id="design-decisions">3. Design Decisions</h2>
+<p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
+<h3 id="dedicated-pass-objects-per-light-class">Dedicated pass objects per light class</h3>
+<p><strong>Concept:</strong> Two-pass shadow recipe</p>
+<p><strong>Decision:</strong> Dedicated pass objects per light class</p>
+<p><strong>Why:</strong> Directional CSM and punctual spot/point maps use different projections, atlas layouts, and slot tables. Separate <code>VulkanDirectionalShadowPass</code> and <code>VulkanPunctualShadowPass</code> classes own render passes, images, pipelines, and record functions — the HDR scene pass stays a consumer, not a producer, of depth targets.</p>
+<p><strong>In Spark:</strong> <code>include/spark/render/shadow/VulkanDirectionalShadowPass.hpp</code> and <code>VulkanPunctualShadowPass.hpp</code>.</p>
+<h3 id="single-depth-attachment-render-pass">Single depth attachment render pass</h3>
+<p><strong>Concept:</strong> Depth-only attachments</p>
+<p><strong>Decision:</strong> Single depth attachment render pass</p>
+<p><strong>Why:</strong> Omitting color attachments simplifies load/store and guarantees no accidental color writes. <code>finalLayout = DEPTH_STENCIL_READ_ONLY_OPTIMAL</code> on the attachment description transitions the image for shader read when the pass ends.</p>
+<p><strong>In Spark:</strong> <code>VulkanDirectionalShadowPass::CreateResources</code> lines 104–112 — depth attachment with read-only final layout.</p>
+<h3 id="recordshadowmappass-before-hdr-begin">RecordShadowMapPass before HDR begin</h3>
+<p><strong>Concept:</strong> Frame graph placement</p>
+<p><strong>Decision:</strong> RecordShadowMapPass before HDR begin</p>
+<p><strong>Why:</strong> Uploads finish first; shadow maps populate and transition; then the HDR subpass samples them. Centralizing the call at line 213 makes pass order auditable in one glance.</p>
+<p><strong>In Spark:</strong> <code>VulkanRenderer::RecordSceneCommandBuffer</code> — <code>RecordShadowMapPass</code> immediately after upload record.</p>
+<h3 id="shared-mesh-bindings-via-vulkanshadowrecordcontext">Shared mesh bindings via VulkanShadowRecordContext</h3>
+<p><strong>Concept:</strong> Light-space coordinates</p>
+<p><strong>Decision:</strong> Shared mesh bindings via VulkanShadowRecordContext</p>
+<p><strong>Why:</strong> Casters reuse static/custom VBs, index buffers, and skin SSBO from the opaque scene pass. Only pipeline, push constants (<code>lightViewProj</code>), and cull state differ — no duplicate geometry on CPU.</p>
+<p><strong>In Spark:</strong> <code>RecordShadowMapPass</code> builds <code>VulkanShadowRecordContext</code> with the same buffers as <code>VulkanSceneOpaqueRecordContext</code>.</p>
+<h3 id="fixed-atlas-sizes-with-documented-caps">Fixed atlas sizes with documented caps</h3>
+<p><strong>Concept:</strong> Resolution and texel footprint</p>
+<p><strong>Decision:</strong> Fixed atlas sizes with documented caps</p>
+<p><strong>Why:</strong> Directional CSM packs into a known atlas; punctual caps (<code>kMaxSpotShadowMaps = 4</code>, <code>kMaxPointShadowMaps = 2</code>) bound worst-case GPU memory. Documented constants let gameplay code reason about shadow slot assignment.</p>
+<p><strong>In Spark:</strong> <code>punctual_shadows.glsl</code> constants and directional <code>kMapSize</code> in <code>VulkanDirectionalShadowPass.cpp</code>.</p>
+<h3 id="manual-depth-compare-in-glsl">Manual depth compare in GLSL</h3>
+<p><strong>Concept:</strong> Shadow maps vs other visibility techniques</p>
+<p><strong>Decision:</strong> Manual depth compare in GLSL</p>
+<p><strong>Why:</strong> Spark avoids <code>sampler2DShadow</code> hardware compare for MoltenVK / portability subset compatibility. Scene and punctual includes implement PCF with explicit <code>refZ &lt;= mapZ</code> tests.</p>
+<p><strong>In Spark:</strong> <code>scene.frag</code> comment at binding 3: depth compare in shader, not shadow sampler.</p>
+<h2 id="implementation-walkthrough">4. Implementation Walkthrough</h2>
+<p>Follow these steps in order. You are extending the same mini-engine throughout the book;
+Spark is the reference implementation you can build, run, and diff against.</p>
+<h3 id="spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</h3>
+<ul>
+<li><code>src/spark/render/core/VulkanRenderer.cpp</code></li>
+<li><code>src/spark/render/shadow/VulkanDirectionalShadowPass.cpp</code></li>
+<li><code>src/spark/render/shadow/VulkanPunctualShadowPass.cpp</code></li>
+<li><code>src/spark/render/shadow/VulkanDirectionalShadowCascadeMath.cpp</code></li>
+<li><code>shaders/shadow_depth.vert</code></li>
+<li><code>shaders/scene.frag</code></li>
+<li><code>include/spark/render/lighting/SceneLightingProfile.hpp</code></li>
+</ul>
+<h3 id="step-1-trace-pass-order-in-spark">Step 1 — Trace pass order in Spark</h3>
+<p>Open <code>VulkanRenderer::RecordSceneCommandBuffer</code>. After deferred uploads and custom mesh uploads, <strong><code>RecordShadowMapPass</code></strong> runs — still outside the HDR render pass. This single call site is the frame-graph anchor for all of Part IX.</p>
+<p><em>Shadow pass slot before HDR work</em></p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 211–214)
+deferredUploadBatch.Record(commandBuffer, device(), sceneTextureUploader, screenUi);
+customMeshPool.RecordUploads(commandBuffer);
+RecordShadowMapPass(commandBuffer, frameIndex);
+
+</code></pre>
+<h3 id="step-2-inspect-directional-shadow-resource-creation">Step 2 — Inspect directional shadow resource creation</h3>
+<p><code>CreateResources</code> allocates a compare sampler (for potential future use), builds a <strong>one-attachment</strong> render pass, and creates per-flight depth images with <code>SAMPLED</code> usage. Read the attachment description carefully: <code>storeOp = STORE</code>, <code>finalLayout = DEPTH_STENCIL_READ_ONLY_OPTIMAL</code>.</p>
+<p><em>Depth-only attachment and subpass</em></p>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanDirectionalShadowPass.cpp (lines 104–120)
+VkAttachmentDescription depthAttachment{};
+depthAttachment.format = depthFormat;
+depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+VkAttachmentReference depthRef{};
+depthRef.attachment = 0;
+depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+VkSubpassDescription subpass{};
+subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+subpass.pDepthStencilAttachment = &amp;depthRef;
+</code></pre>
+<h3 id="step-3-follow-shadow-record-dispatch">Step 3 — Follow shadow record dispatch</h3>
+<p><code>RecordShadowMapPass</code> early-outs if descriptor sets are unavailable, then fills <code>VulkanShadowRecordContext</code> with mesh and skin bindings identical to the opaque scene path. <strong>Punctual</strong> shadows record first, then <strong>directional</strong> CSM — both iterate the same <code>SceneRenderParams::draws</code> list filtered by cast flags.</p>
+<p><em>Shadow record entry point and context</em></p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 624–647)
+void VulkanRenderer::RecordShadowMapPass(VkCommandBuffer commandBuffer, std::uint32_t frameIndex) {
+    if (frameIndex &gt;= sceneDescriptors.DescriptorSetCount()) {
+        return;
+    }
+    const VulkanCustomMeshPool::Bindings customMesh = customMeshPool.GetBindings();
+    VulkanShadowRecordContext ctx{};
+    ctx.scene = &amp;pendingScene;
+    ctx.sceneParamsValid = sceneParamsValid;
+    ctx.vertexBuffer = vertexBuffer;
+    ctx.indexBuffer = indexBuffer;
+    ctx.customVertexBuffer = customMesh.vertexBuffer;
+    ctx.customIndexBuffer = customMesh.indexBuffer;
+    ctx.cubeIndexCount = cubeIndexCount;
+    ctx.planeIndexCount = planeIndexCount;
+    ctx.planeFirstIndex = planeFirstIndex;
+    ctx.cubeVertexOffset = cubeVertexOffset;
+    ctx.planeVertexOffset = planeVertexOffset;
+    ctx.customDrawPacked = &amp;customDrawPacked;
+    ctx.skinSsboMapped = &amp;sceneDescriptors.SkinSsboMapped();
+    ctx.descriptorSet = sceneDescriptors.DescriptorSet(frameIndex);
+    ctx.maxSkinJoints = VulkanSceneDescriptors::kMaxSkinJoints;
+    punctualShadow.Record(commandBuffer, frameIndex, ctx, punctualShadowFrameState);
+    directionalShadow.Record(commandBuffer, frameIndex, ctx, shadowFrameState);
+}
+</code></pre>
+<h3 id="step-4-read-the-cascade-math-trace-comment">Step 4 — Read the cascade math trace comment</h3>
+<p>Before editing matrices, read Spark's documented pipeline from <code>lightDir</code> → CPU <code>worldToShadowClip</code> → shadow push constants → scene PCF. This comment is the authoritative checklist when shadows look offset or swimming.</p>
+<p><em>End-to-end shadow data path trace</em></p>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanDirectionalShadowCascadeMath.cpp (lines 13–20)
+/*
+ * Shadow pipeline trace (single directional cascade):
+ * 1) VulkanSceneUniformWriter: lightDir = normalize(scene.lightDirectionWorld) — toward sun.
+ * 2) ComputeWorldToShadowClip(...) per cascade → worldToShadowClip[i] = ZFlip * lightProj * lightView.
+ * 3) VulkanDirectionalShadowPass::Record: same matrix in ShadowPushConstants.lightViewProj.
+ * 4) scene.frag: light clip from vWorldPos; depth compare uses slope-scaled bias.
+ * 5) scene.vert: transpose(inverse(mat3(model))) * n for non-uniform scale.
+ */
+</code></pre>
+<h3 id="step-5-confirm-uniform-upload-ordering">Step 5 — Confirm uniform upload ordering</h3>
+<p>Shadow matrices for sampling upload during <code>WriteUniformBuffer</code> — <strong>before</strong> command buffer recording for that frame. Punctual <code>PrepareAndUpload</code> runs first; then <code>sceneUniformWriter.Write</code> fills cascade arrays consumed by <code>scene.frag</code>.</p>
+<p><em>CPU shadow state before GPU record</em></p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 649–668)
+void VulkanRenderer::WriteUniformBuffer(std::uint32_t frameIndex) {
+    void* const uniformMapped = sceneDescriptors.UniformMapped(frameIndex);
+    if (!sceneParamsValid || uniformMapped == nullptr) {
+        return;
+    }
+    punctualShadow.PrepareAndUpload(frameIndex, pendingScene, resolvedLighting, punctualShadowFrameState);
+    clusteredForwardLights.BuildAndUpload(
+            frameIndex,
+            pendingScene,
+            resolvedLighting,
+            presentSwapchain().extent);
+    sceneUniformWriter.Write(
+            uniformMapped,
+            pendingScene,
+            resolvedLighting,
+            presentSwapchain().extent,
+            directionalShadow,
+            frameIndex,
+            shadowFrameState);
+}
+</code></pre>
+<h3 id="step-6-verify-in-renderdoc">Step 6 — Verify in RenderDoc</h3>
+<p>Run <strong>ThreeDDemo</strong> or <strong>TerrainDemo</strong> with shadows enabled. Capture one frame and confirm:</p>
+<ol>
+<li>Directional shadow pass shows depth-only draws (no color attachment).</li>
+<li>HDR scene pass binds <code>shadowMap</code> at set 0 binding 3.</li>
+<li>Pass order: uploads → shadow → HDR opaque → post.</li>
+</ol>
+<p>If the shadow pass is empty, check <code>shadowFlags</code> / <code>castsShadow</code> (Chapter 6) before debugging projection math.</p>
+<h3 id="step-7-mirror-the-slot-in-your-engine">Step 7 — Mirror the slot in your engine</h3>
+<p>Add a <code>RecordShadowMaps(cmd, frameIndex)</code> call in the same position: after resource uploads, before your HDR (or swapchain) scene pass. Keep matrix preparation on the CPU path that fills your scene UBO so shadow pass push constants and lit-shader UBO stay in sync for each frame-in-flight index.</p>
+<h3 id="step-8-document-your-depth-convention">Step 8 — Document your depth convention</h3>
+<p>Write down: ortho vs perspective per light type, NDC Z range, whether you flip Y at sample time, and whether compare uses <code>&lt;=</code> or <code>&gt;=</code>. Spark's Z-flip matrix and viewport flag exist because mismatches here produce <strong>inverted or swimming</strong> shadows with otherwise correct geometry.</p>
+<h2 id="how-this-connects-to-the-rest-of-your-engine">5. How This Connects to the Rest of Your Engine</h2>
+<p>Part <strong>IV</strong> directional and punctual light code supplies radiance; Part IX multiplies it by <strong>visibility</strong>. Part <strong>VI</strong> skinned meshes reuse the bone SSBO in <code>shadow_depth.vert</code> (Chapter 7). Part <strong>III</strong> UBO and push constant layout holds cascade matrices and <code>shadowParams</code>. Part <strong>X</strong> HDR tonemap runs <strong>after</strong> shadows modulate linear radiance — tuning shadows in display space hides contrast problems.</p>
+<h2 id="pitfalls-and-debugging">6. Pitfalls and Debugging</h2>
+<ul>
+<li><strong>Sampling before layout transition</strong> — validation error or garbage compare values; confirm <code>finalLayout</code> on shadow attachments.</li>
+<li><strong>Shadow pass after scene pass</strong> — shadows never appear or flicker one frame late.</li>
+<li><strong>Projection handedness mismatch</strong> between shadow pass output and scene UV math — shadows swim when the camera rotates.</li>
+<li><strong>One map for an open world</strong> — texel footprint meters wide; plan CSM (Chapter 2) early on terrain projects.</li>
+</ul>
+<h2 id="exercises">7. Exercises</h2>
+<ol>
+<li>Draw the data flow: mesh VB → shadow pass → depth image → scene FS compare.</li>
+<li>Capture RenderDoc on ThreeDDemo; list every pass before the HDR opaque draws.</li>
+<li>Compare pipeline create info: list three differences between scene lit and shadow depth pipelines.</li>
+<li>Estimate world texel size at 10 m from camera given Spark's directional atlas dimensions.</li>
+<li>Write a one-paragraph explanation of why the light must render occluders the eye cannot see.</li>
+</ol>
+<h2 id="summary">Summary</h2>
+<p>Shadow mapping is a light-space depth pre-pass plus a depth compare in the lit shader. Spark records directional and punctual shadow passes before the HDR subpass, shares mesh bindings with the opaque scene pass, and uploads cascade matrices on the CPU before command buffer recording.</p>
+<hr>
+<p>Next: <a href="02-directional-csm.html">Directional CSM</a>.</p>
+</div>
+          <footer class="doc-footer">
+            <p>Generated by <strong>hoihky</strong> with <strong>MDWeb</strong> and with assistance from <strong>AI</strong></p>
+          </footer>
+        </article>
+
+        
+                <aside class="toc" aria-label="On this page">
+                  <p class="toc-title">On this page</p>
+                  <ul>
+                    
+                        <li class="toc-h1">
+                          <a href="#shadow-mapping-theory">Shadow Mapping Theory</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#2-core-concepts">2. Core Concepts</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#two-pass-shadow-recipe">Two-pass shadow recipe</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#light-space-coordinates">Light-space coordinates</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#depth-only-attachments">Depth-only attachments</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frame-graph-placement">Frame graph placement</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#resolution-and-texel-footprint">Resolution and texel footprint</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shadow-maps-vs-other-visibility-techniques">Shadow maps vs other visibility techniques</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#renderdoc-shadow-debugging-workflow">RenderDoc shadow debugging workflow</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#memory-and-bandwidth-budget">Memory and bandwidth budget</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#historical-context-and-limits">Historical context and limits</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#3-design-decisions">3. Design Decisions</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#dedicated-pass-objects-per-light-class">Dedicated pass objects per light class</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#single-depth-attachment-render-pass">Single depth attachment render pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recordshadowmappass-before-hdr-begin">RecordShadowMapPass before HDR begin</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-mesh-bindings-via-vulkanshadowrecordcontext">Shared mesh bindings via VulkanShadowRecordContext</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fixed-atlas-sizes-with-documented-caps">Fixed atlas sizes with documented caps</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#manual-depth-compare-in-glsl">Manual depth compare in GLSL</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#4-implementation-walkthrough">4. Implementation Walkthrough</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-1-trace-pass-order-in-spark">Step 1 — Trace pass order in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-2-inspect-directional-shadow-resource-creation">Step 2 — Inspect directional shadow resource creation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-3-follow-shadow-record-dispatch">Step 3 — Follow shadow record dispatch</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-4-read-the-cascade-math-trace-comment">Step 4 — Read the cascade math trace comment</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-5-confirm-uniform-upload-ordering">Step 5 — Confirm uniform upload ordering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-6-verify-in-renderdoc">Step 6 — Verify in RenderDoc</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-7-mirror-the-slot-in-your-engine">Step 7 — Mirror the slot in your engine</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-8-document-your-depth-convention">Step 8 — Document your depth convention</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#5-how-this-connects-to-the-rest-of-your-engine">5. How This Connects to the Rest of Your Engine</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#6-pitfalls-and-debugging">6. Pitfalls and Debugging</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#7-exercises">7. Exercises</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#summary">Summary</a>
+                        </li>
+                        
+                  </ul>
+                </aside>
+                
+      </main>
+    </div>
+  </div>
+  <script src="../assets/vendor/mermaid.min.js"></script>
+  <script src="../assets/vendor/highlight.min.js"></script>
+  <script src="../assets/js/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>02 physics 3d · Building a Real-Time Renderer with Vulkan</title>
+  <meta name="description" content="Learn real-time rendering programming step by step using the Spark engine as a reference implementation">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/site.css">
+  <link rel="stylesheet" href="../assets/vendor/atom-one-dark.min.css">
+</head>
+<body>
+  <div class="site">
+    <header class="topbar">
+      <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle navigation">☰</button>
+      <a href="../index.html" class="brand">Building a Real-Time Renderer with Vulkan</a>
+      <div class="search-wrap">
+        <input type="search" id="search" placeholder="Search docs…" autocomplete="off">
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar" id="sidebar">
+        <nav class="nav" aria-label="Documentation">
+          <ul class="nav-list">
+            
+                        <li class="nav-item depth-0">
+                          
+                            <a href="../index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0">
+                          
+                            <a href="../README.html" class="nav-link">README</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">appendix</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/01-vulkan-lifecycle.html" class="nav-link">01 vulkan lifecycle</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/02-scene-params-ref.html" class="nav-link">02 scene params ref</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/03-descriptor-map.html" class="nav-link">03 descriptor map</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/04-demo-catalog.html" class="nav-link">04 demo catalog</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../appendix/05-component-ref.html" class="nav-link">Component Quick Reference</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 01 vulkan setup</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/01-what-is-a-renderer.html" class="nav-link">01 what is a renderer</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/02-engine-architecture.html" class="nav-link">02 engine architecture</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/03-building-spark.html" class="nav-link">03 building spark</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/04-engine-loop.html" class="nav-link">04 engine loop</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/05-window-glfw.html" class="nav-link">05 window glfw</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/06-vulkan-instance.html" class="nav-link">06 vulkan instance</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/07-physical-logical-device.html" class="nav-link">07 physical logical device</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/08-swapchain.html" class="nav-link">08 swapchain</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/09-device-context.html" class="nav-link">09 device context</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-01-vulkan-setup/10-frame-sync.html" class="nav-link">10 frame sync</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 02 basic pipeline</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/01-scene-render-params.html" class="nav-link">01 scene render params</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/02-render-passes.html" class="nav-link">02 render passes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/03-graphics-pipeline.html" class="nav-link">03 graphics pipeline</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/04-spirv-loading.html" class="nav-link">04 spirv loading</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/05-vertex-index-buffers.html" class="nav-link">05 vertex index buffers</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/06-descriptors-uniforms.html" class="nav-link">06 descriptors uniforms</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/07-first-triangle.html" class="nav-link">07 first triangle</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/08-indexed-cube.html" class="nav-link">08 indexed cube</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/09-vulkan-renderer-graph.html" class="nav-link">09 vulkan renderer graph</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/10-submitting-scene.html" class="nav-link">10 submitting scene</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 03 shaders</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/01-shader-build.html" class="nav-link">01 shader build</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/02-vertex-shader.html" class="nav-link">02 vertex shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/03-fragment-shader.html" class="nav-link">03 fragment shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/04-ubo-std140.html" class="nav-link">04 ubo std140</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/05-push-constants.html" class="nav-link">05 push constants</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/06-shader-includes.html" class="nav-link">06 shader includes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/07-depth-culling.html" class="nav-link">07 depth culling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/08-blending.html" class="nav-link">08 blending</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/09-shader-debug.html" class="nav-link">09 shader debug</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-03-shaders/10-shader-roadmap.html" class="nav-link">10 shader roadmap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 04 textures lighting</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/01-cpu-textures.html" class="nav-link">01 cpu textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/02-gpu-upload.html" class="nav-link">02 gpu upload</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/03-binding-textures.html" class="nav-link">03 binding textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/04-uv-mapping.html" class="nav-link">04 uv mapping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/05-color-space.html" class="nav-link">05 color space</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/06-diffuse-lighting.html" class="nav-link">06 diffuse lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/07-light-types.html" class="nav-link">07 light types</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/08-gather-lights.html" class="nav-link">08 gather lights</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/09-clustered-lights.html" class="nav-link">09 clustered lights</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-04-textures-lighting/10-time-of-day.html" class="nav-link">10 time of day</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 05 input camera</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/01-iinput.html" class="nav-link">01 iinput</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/02-glfw-input.html" class="nav-link">02 glfw input</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/03-input-loop.html" class="nav-link">03 input loop</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/04-camera-math.html" class="nav-link">04 camera math</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/05-fly-camera.html" class="nav-link">05 fly camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/06-camera-follow.html" class="nav-link">06 camera follow</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/07-character-camera.html" class="nav-link">07 character camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/08-main-camera.html" class="nav-link">08 main camera</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/09-camera-2d.html" class="nav-link">09 camera 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-05-input-camera/10-camera-ubo.html" class="nav-link">10 camera ubo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 06 models animation</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/01-mesh-data.html" class="nav-link">01 mesh data</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/02-load-obj.html" class="nav-link">02 load obj</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/03-load-gltf.html" class="nav-link">03 load gltf</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/04-asset-cache.html" class="nav-link">04 asset cache</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/05-custom-mesh-pool.html" class="nav-link">05 custom mesh pool</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/06-skeleton.html" class="nav-link">06 skeleton</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/07-skinned-gltf.html" class="nav-link">07 skinned gltf</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/08-animator.html" class="nav-link">08 animator</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/09-gpu-skinning.html" class="nav-link">09 gpu skinning</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 07 sky materials</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/01-sky-modes.html" class="nav-link">01 sky modes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/02-sky-meshes.html" class="nav-link">02 sky meshes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/03-sky-pipeline.html" class="nav-link">03 sky pipeline</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/04-ibl-basics.html" class="nav-link">04 ibl basics</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/05-material-component.html" class="nav-link">05 material component</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/06-shading-models.html" class="nav-link">06 shading models</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/07-normal-mapping.html" class="nav-link">07 normal mapping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/08-orm-textures.html" class="nav-link">08 orm textures</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/09-material-submit.html" class="nav-link">09 material submit</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-07-sky-materials/10-material-showcase.html" class="nav-link">10 material showcase</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 08 particles</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/01-particle-arch.html" class="nav-link">01 particle arch</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/02-emitter-params.html" class="nav-link">02 emitter params</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/03-collect-particles.html" class="nav-link">03 collect particles</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/04-particle-pass.html" class="nav-link">04 particle pass</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/05-particle-shaders.html" class="nav-link">05 particle shaders</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/06-blend-depth.html" class="nav-link">06 blend depth</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/07-frame-graph.html" class="nav-link">07 frame graph</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/08-particle-demo.html" class="nav-link">08 particle demo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/09-perf-pooling.html" class="nav-link">09 perf pooling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-08-particles/10-gpu-particles-roadmap.html" class="nav-link">10 gpu particles roadmap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 09 shadows</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/01-shadow-theory.html" class="nav-link">01 shadow theory</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/02-directional-csm.html" class="nav-link">02 directional csm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/03-shadow-depth-shader.html" class="nav-link">03 shadow depth shader</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/04-pcf-cascades.html" class="nav-link">04 pcf cascades</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/05-punctual-shadows.html" class="nav-link">05 punctual shadows</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/06-shadow-flags.html" class="nav-link">06 shadow flags</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/07-skinned-shadows.html" class="nav-link">07 skinned shadows</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-09-shadows/08-shadow-tuning.html" class="nav-link">08 shadow tuning</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 10 hdr post</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/01-hdr-targets.html" class="nav-link">01 hdr targets</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/02-aces-tonemap.html" class="nav-link">02 aces tonemap</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/03-ssao.html" class="nav-link">03 ssao</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/04-exposure-volumes.html" class="nav-link">04 exposure volumes</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/05-fog.html" class="nav-link">05 fog</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-10-hdr-post/06-capture.html" class="nav-link">06 capture</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 11 2d rendering</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/01-sprites.html" class="nav-link">01 sprites</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/02-sprite-lighting.html" class="nav-link">02 sprite lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/03-sprite-anim.html" class="nav-link">03 sprite anim</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/04-tilemaps.html" class="nav-link">04 tilemaps</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/05-render-layers.html" class="nav-link">05 render layers</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/06-screen-ui.html" class="nav-link">06 screen ui</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/07-imgui.html" class="nav-link">07 imgui</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-11-2d-rendering/08-platformer-2d.html" class="nav-link">08 platformer 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 12 terrain</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/01-heightfield.html" class="nav-link">01 heightfield</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/02-terrain-component.html" class="nav-link">02 terrain component</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/03-terrain-lighting.html" class="nav-link">03 terrain lighting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/04-frustum-cull.html" class="nav-link">04 frustum cull</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-12-terrain/05-open-world.html" class="nav-link">05 open world</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 13 scene editor</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/01-scene-format.html" class="nav-link">01 scene format</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/02-snapshots.html" class="nav-link">02 snapshots</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/03-async-load.html" class="nav-link">03 async load</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/04-editor-shell.html" class="nav-link">04 editor shell</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/05-editor-panels.html" class="nav-link">05 editor panels</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/06-scene-editor-demo.html" class="nav-link">06 scene editor demo</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 14 physics</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/01-physics-2d.html" class="nav-link">01 physics 2d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1 is-active">
+                          
+                            <a href="../part-14-physics/02-physics-3d.html" class="nav-link">02 physics 3d</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/03-colliders.html" class="nav-link">03 colliders</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-14-physics/04-physics-render.html" class="nav-link">04 physics render</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 15 audio ai scripting</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/01-audio.html" class="nav-link">01 audio</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/02-spatial-audio.html" class="nav-link">02 spatial audio</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/03-ai-steering.html" class="nav-link">03 ai steering</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-15-audio-ai-scripting/04-scripting.html" class="nav-link">04 scripting</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0 is-group">
+                          
+                            <span class="nav-group">part 16 production</span>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/index.html" class="nav-link">index</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/01-swapchain-recreate.html" class="nav-link">01 swapchain recreate</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/02-memory.html" class="nav-link">02 memory</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/03-async-assets.html" class="nav-link">03 async assets</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/04-profiling.html" class="nav-link">04 profiling</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-16-production/05-shipping.html" class="nav-link">05 shipping</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-0">
+                          
+                            <span class="nav-group">site</span>
+                            
+                        </li>
+                        
+          </ul>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <article class="doc">
+          <header class="doc-header">
+            <h1>02 physics 3d</h1>
+          </header>
+          <div class="doc-body"><h1 id="d-physics">3D Physics</h1>
+<blockquote class="blockquote">
+<p><strong>Build-Along Milestone:</strong> Dynamic sphere collides with ground and renders at physics-updated position same frame.</p>
+</blockquote>
+<p><strong>You will learn:</strong></p>
+<ul>
+<li>Integrate PhysicsWorld3D through PhysicsSubsystem with substep configuration.</li>
+<li>Run PhysicsBallThrow3DDemo as 3D physics baseline.</li>
+<li>Order character controller and trigger simulation after base 3D step.</li>
+<li>Keep physics mutation out of render and Vulkan code paths.</li>
+</ul>
+<h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
+<p>3D games need rigid bodies, controllable characters, and trigger volumes. Spark splits these across simulators united by <strong>PhysicsSubsystem</strong> — you call <code>Simulate3D</code> or <code>SimulateAll3D</code> from Update, then submit the scene with updated transforms. Substepping trades CPU for contact stability on stacks and fast projectiles.</p>
+<p>Rendering never imports physics headers beyond gameplay systems — the bridge is always <code>TransformComponent</code>.</p>
+<p>Milestone: throw ball in PhysicsBallThrow3DDemo — bounces on ground, mesh position matches physics same frame.</p>
+<h2 id="core-concepts">2. Core Concepts</h2>
+<h3 id="physicsworld3d-scope">PhysicsWorld3D scope</h3>
+<p>3D simulation handles rigid bodies (dynamic, static, kinematic), box/sphere/capsule colliders, and joints. Spark splits <strong>character controllers</strong> and <strong>trigger volumes</strong> into separate simulators called after base rigidbody step — controllers override raw integration for player capsules; triggers emit overlap events without blocking motion.</p>
+<p>Swept CCD in the integrator path reduces tunneling for fast movers — enable when velocity × dt exceeds collider thickness.</p>
+<h3 id="substepped-3d-integration">Substepped 3D integration</h3>
+<p>Unlike 2D's single-pass dt, <code>PhysicsWorld3D::Simulate</code> divides frame dt by <code>settings.substeps</code> and runs integrate → static impulses → penetration resolve → dynamic pair velocities → joints <strong>per substep</strong>. Collider rebuild happens <strong>once</strong> per frame before the substep loop.</p>
+<p>More substeps improve stack stability and reduce tunneling at higher CPU cost. <code>resolveIterations</code> and <code>jointIterations</code> add inner solver quality separate from substep count — PhysicsBallThrow3DDemo exposes all three plus <code>baumgarteContactBias</code> (often zero for clean bouncing balls).</p>
+<h3 id="simulateall3d-ordering">SimulateAll3D ordering</h3>
+<p><code>PhysicsSubsystem::SimulateAll3D</code> runs three calls in sequence:</p>
+<pre><code class="language-text">world3D.Simulate → characterController3D → triggerVolumes3D
+</code></pre>
+<p>Base dynamics move props and loose spheres; controllers adjust player transforms after impulses; triggers detect overlaps for gameplay callbacks without render coupling.</p>
+<h3 id="transform-and-collider-sync-in-3d">Transform and collider sync in 3D</h3>
+<p>Integrator applies translation delta to both <code>TransformComponent</code> and internal <code>DynamicBody3D</code> collider via <code>ApplyTranslationDeltaToBody</code>. Rotation integrates quaternion on transform for rolling spheres. Render submit uses same transform matrices as 2D.</p>
+<h3 id="physicsballthrow3ddemo-vertical-slice">PhysicsBallThrow3DDemo vertical slice</h3>
+<p>Demo spawns static ground with box collider + physics material, dynamic ball with sphere mesh/collider, optional cube obstacles with varying restitution. Throw applies velocity impulse on click; R resets pose. Validates 3D bake pipeline, contact audio cues on bounce, and GUI tuning of solver parameters.</p>
+<h3 id="no-render-coupling">No render coupling</h3>
+<p>3D physics headers stay out of VulkanRenderer. Gameplay systems call Simulate; <code>FillStandardLitSceneFromWorld</code> reads transforms unchanged. Shadow casters (Part IX) use post-physics transforms automatically when Update order is correct (Chapter 4).</p>
+<h2 id="design-decisions">3. Design Decisions</h2>
+<p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
+<h3 id="physicssubsystem-facade-with-separate-simulators">PhysicsSubsystem facade with separate simulators</h3>
+<p><strong>Concept:</strong> PhysicsWorld3D scope</p>
+<p><strong>Decision:</strong> PhysicsSubsystem facade with separate simulators</p>
+<p><strong>Why:</strong> Simulate3D, SimulateCharacterControllers3D, SimulateTriggerVolumes3D exposed individually.</p>
+<p><strong>In Spark:</strong> <code>include/spark/physics/PhysicsSubsystem.hpp</code></p>
+<h3 id="physicsworld3dsettings.substeps">PhysicsWorld3DSettings.substeps</h3>
+<p><strong>Concept:</strong> Substepped 3D integration</p>
+<p><strong>Decision:</strong> PhysicsWorld3DSettings.substeps</p>
+<p><strong>Why:</strong> Configurable quality vs performance; demo exposes in GUI.</p>
+<p><strong>In Spark:</strong> <code>PhysicsWorld3D::Simulate</code> substep loop</p>
+<h3 id="controllers-after-rigidbody-base">Controllers after rigidbody base</h3>
+<p><strong>Concept:</strong> SimulateAll3D ordering</p>
+<p><strong>Decision:</strong> Controllers after rigidbody base</p>
+<p><strong>Why:</strong> Player movement overrides raw rigidbody result same frame.</p>
+<p><strong>In Spark:</strong> <code>PhysicsSubsystem::SimulateAll3D</code></p>
+<h3 id="applytranslationdeltatobody-helper">ApplyTranslationDeltaToBody helper</h3>
+<p><strong>Concept:</strong> Transform and collider sync in 3D</p>
+<p><strong>Decision:</strong> ApplyTranslationDeltaToBody helper</p>
+<p><strong>Why:</strong> Keeps narrow-phase geometry aligned with rendered mesh origin.</p>
+<p><strong>In Spark:</strong> <code>RigidbodyIntegrator3D.cpp</code></p>
+<h3 id="throw-impulse-material-tuning">Throw impulse + material tuning</h3>
+<p><strong>Concept:</strong> PhysicsBallThrow3DDemo vertical slice</p>
+<p><strong>Decision:</strong> Throw impulse + material tuning</p>
+<p><strong>Why:</strong> Minimal 3D physics regression scene alongside ThreeDDemo.</p>
+<p><strong>In Spark:</strong> <code>src/spark/demo/PhysicsBallThrow3DDemo.cpp</code></p>
+<h3 id="same-scenesubmit-as-threeddemo">Same SceneSubmit as ThreeDDemo</h3>
+<p><strong>Concept:</strong> No render coupling</p>
+<p><strong>Decision:</strong> Same SceneSubmit as ThreeDDemo</p>
+<p><strong>Why:</strong> Physics only mutates ECS transforms and rigidbody state.</p>
+<p><strong>In Spark:</strong> Standard lit gather after simulate</p>
+<h2 id="implementation-walkthrough">4. Implementation Walkthrough</h2>
+<p>Follow these steps in order. You are extending the same mini-engine throughout the book;
+Spark is the reference implementation you can build, run, and diff against.</p>
+<h3 id="spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</h3>
+<ul>
+<li><code>src/spark/physics/PhysicsSubsystem.cpp</code></li>
+<li><code>src/spark/physics/PhysicsWorld3D.cpp</code></li>
+<li><code>include/spark/demo/PhysicsBallThrow3DDemo.hpp</code></li>
+<li><code>src/spark/demo/PhysicsBallThrow3DDemo.cpp</code></li>
+</ul>
+<h3 id="step-1-read-simulateall3d-ordering">Step 1 — Read SimulateAll3D ordering</h3>
+<p>Three simulate calls — know when to use full bundle vs individual passes.</p>
+<p><em>SimulateAll3D sequence</em></p>
+<pre><code class="language-cpp">// src/spark/physics/PhysicsSubsystem.cpp (lines 12–33)
+void PhysicsSubsystem::Simulate2D(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    queries2D.SetCellWorldSize(world2D.GetBroadPhaseCellSize());
+    world2D.Simulate(world, timing);
+}
+
+void PhysicsSubsystem::Simulate3D(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    world3D.Simulate(world, timing);
+}
+
+void PhysicsSubsystem::SimulateAll3D(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    world3D.Simulate(world, timing);
+    characterController3D.Simulate(world, timing);
+    triggerVolumes3D.Simulate(world, timing);
+}
+</code></pre>
+<h3 id="step-2-study-3d-substep-loop">Step 2 — Study 3D substep loop</h3>
+<p>Rebuild colliders once per frame; integrate/resolve repeat per substep.</p>
+<p><em>PhysicsWorld3D::Simulate</em></p>
+<pre><code class="language-cpp">// src/spark/physics/PhysicsWorld3D.cpp (lines 17–41)
+void PhysicsWorld3D::Simulate(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    const float dt = timing.deltaTimeSeconds;
+    if (dt &lt;= 0.0F) {
+        return;
+    }
+
+    const int substeps = std::max(1, settings.substeps);
+    const float h = dt / static_cast&lt;float&gt;(substeps);
+
+    Array&lt;Collider3D&gt; colliders;
+    SpatialHashGrid3D broadPhase;
+    ColliderBakePipeline3D::GetDefault().Rebuild(world, broadPhaseCellSize, colliders, broadPhase);
+
+    Array&lt;std::uint32_t&gt; queryScratch;
+    Array&lt;DynamicBody3D&gt; bodies;
+    CollectDynamicBodies3D(world, bodies);
+
+    for (int s = 0; s &lt; substeps; ++s) {
+        RigidbodyIntegrator3D::IntegrateSubstep(bodies, h, settings, colliders, broadPhase, queryScratch);
+        ContactResolver3D::ApplyStaticNormalImpulses(bodies, colliders, broadPhase, queryScratch, h, settings);
+        ContactResolver3D::ResolvePenetrations(bodies, colliders, broadPhase, queryScratch, settings);
+        ContactResolver3D::ResolveDynamicPairVelocities(bodies, h, settings);
+        JointSolver3D::SolveSubstep(world, h, settings);
+    }
+}
+</code></pre>
+<h3 id="step-3-run-physicsballthrow3ddemo">Step 3 — Run PhysicsBallThrow3DDemo</h3>
+<p>Launch demo — ground static collider, throwable dynamic ball, cube obstacles. Tune substeps slider effect on ball stack.</p>
+<h3 id="step-4-trace-throw-and-simulate-call">Step 4 — Trace throw and Simulate call</h3>
+<p><em>Throw input and Simulate3D</em></p>
+<pre><code class="language-cpp">// src/spark/demo/PhysicsBallThrow3DDemo.cpp (lines 198–230)
+if (in.IsMouseButtonPressedThisFrame(0)) {
+    const Spark::Vector3 dir = camera.Forward().Normalized();
+    ballTr-&gt;SetTranslation(camera.position + dir * 0.55F);
+    ballRb-&gt;SetAngularVelocity(Spark::Vector3::Zero);
+    ballRb-&gt;SetVelocity(dir * guiThrow + Spark::Vector3::UnitY * upKick);
+}
+if (in.IsKeyPressedThisFrame(GLFW_KEY_R)) {
+    ballTr-&gt;SetTranslation({0.0F, 1.25F, 2.0F});
+    ballRb-&gt;SetVelocity(Spark::Vector3::Zero);
+    ballRb-&gt;SetAngularVelocity(Spark::Vector3::Zero);
+}
+
+PhysicsWorld3DSettings&amp; phys = physics.GetWorld3D().GetSettings();
+phys.gravityY = guiGravityY;
+phys.substeps = 3;
+phys.resolveIterations = 10;
+phys.baumgarteContactBias = 0.0F;
+physics.Simulate3D(world, timing);
+</code></pre>
+<h3 id="step-5-spawn-ground-static-collider">Step 5 — Spawn ground + static collider</h3>
+<p>Ground box <code>hy</code> offset aligns collider top with visual y=0 plane.</p>
+<p><em>Ground entity with box collider and material</em></p>
+<pre><code class="language-cpp">// src/spark/demo/PhysicsBallThrow3DDemo.cpp (lines 40–52)
+const float hx = Spark::kSceneGroundHalfExtent;
+const float hy = 0.18F;
+ground-&gt;AddComponent&lt;Spark::BoxCollider3DComponent&gt;(Spark::Vector3{hx, hy, hx}, Spark::Vector3{0.0F, hy, 0.0F});
+ground-&gt;AddComponent&lt;Spark::Rigidbody3DComponent&gt;(Spark::RigidbodyBodyType3D::Static, 1.0F);
+ground-&gt;AddComponent&lt;Spark::PhysicsMaterial3DComponent&gt;(0.62F, 0.48F, 0.58F);
+</code></pre>
+<h3 id="step-6-tune-physicsmaterial3d">Step 6 — Tune PhysicsMaterial3D</h3>
+<p>Restitution and friction on ball vs floor — compare bounce height with GUI restitution slider.</p>
+<h3 id="step-7-character-controller-optional">Step 7 — Character controller optional</h3>
+<p>If using <code>CharacterController3DComponent</code>, call <code>SimulateCharacterControllers3D</code> after <code>Simulate3D</code>.</p>
+<h3 id="step-8-trigger-volume-overlap">Step 8 — Trigger volume overlap</h3>
+<p><code>SimulateTriggerVolumes3D</code> for pickup zones — gameplay listens to signals, not renderer.</p>
+<h2 id="how-this-connects-to-the-rest-of-your-engine">5. How This Connects to the Rest of Your Engine</h2>
+<p>Part <strong>V</strong> camera follow targets post-physics transform. Part <strong>IX</strong> shadow casters use same transforms. Part <strong>XIII</strong> serializes PhysicsMaterial3D and collider components. Chapter 4 documents Update order with 2D platformer and 3D throw demo together.</p>
+<p>Character controller and trigger volumes require <code>SimulateAll3D</code> ordering — never call controller before base rigidbody step.</p>
+<h2 id="pitfalls-and-debugging">6. Pitfalls and Debugging</h2>
+<ul>
+<li><strong>Simulate after render snapshot</strong> — visible lag on moving meshes.</li>
+<li><strong>Static mesh marked dynamic</strong> — unnecessary solver work; use Static body type for level geo.</li>
+<li><strong>Unit scale mismatch</strong> — physics meters vs art cm; document world unit convention.</li>
+<li><strong>Collider smaller than mesh</strong> — visible interpenetration on landing.</li>
+<li><strong>Angular velocity unset on reset</strong> — ball spins after R key if angular not cleared.</li>
+</ul>
+<p><strong>Debugging workflow:</strong> log linear velocity magnitude before and after first ground contact each throw — restitution changes should alter post-bounce velocity predictably.</p>
+<h2 id="exercises">7. Exercises</h2>
+<ol>
+<li>Throw 10 balls with substeps 1 vs 4; screenshot stack height after 5 seconds.</li>
+<li>Log Simulate3D ms vs scene record ms same frame in BallThrow demo.</li>
+<li>Press R reset; confirm linear and angular velocity zero before next throw.</li>
+<li>Remove ground collider; ball falls through mesh; confirm no solver crash.</li>
+<li>Tune GUI baumgarte to non-zero; observe spongy contacts vs clean bounce at zero.</li>
+</ol>
+<h2 id="summary">Summary</h2>
+<p>3D physics runs through PhysicsSubsystem with substepped integration and ordered controller/trigger passes. Spark demonstrates via PhysicsBallThrow3DDemo with tunable solver settings.</p>
+<hr>
+<p>Next: <a href="03-colliders.html">Colliders</a>.</p>
+</div>
+          <footer class="doc-footer">
+            <p>Generated by <strong>hoihky</strong> with <strong>MDWeb</strong> and with assistance from <strong>AI</strong></p>
+          </footer>
+        </article>
+
+        
+                <aside class="toc" aria-label="On this page">
+                  <p class="toc-title">On this page</p>
+                  <ul>
+                    
+                        <li class="toc-h1">
+                          <a href="#3d-physics">3D Physics</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#2-core-concepts">2. Core Concepts</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicsworld3d-scope">PhysicsWorld3D scope</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#substepped-3d-integration">Substepped 3D integration</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#simulateall3d-ordering">SimulateAll3D ordering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#transform-and-collider-sync-in-3d">Transform and collider sync in 3D</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicsballthrow3ddemo-vertical-slice">PhysicsBallThrow3DDemo vertical slice</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#no-render-coupling">No render coupling</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#3-design-decisions">3. Design Decisions</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicssubsystem-facade-with-separate-simulators">PhysicsSubsystem facade with separate simulators</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicsworld3dsettingssubsteps">PhysicsWorld3DSettings.substeps</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#controllers-after-rigidbody-base">Controllers after rigidbody base</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#applytranslationdeltatobody-helper">ApplyTranslationDeltaToBody helper</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#throw-impulse-material-tuning">Throw impulse + material tuning</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-scenesubmit-as-threeddemo">Same SceneSubmit as ThreeDDemo</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#4-implementation-walkthrough">4. Implementation Walkthrough</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-1-read-simulateall3d-ordering">Step 1 — Read SimulateAll3D ordering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-2-study-3d-substep-loop">Step 2 — Study 3D substep loop</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-3-run-physicsballthrow3ddemo">Step 3 — Run PhysicsBallThrow3DDemo</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-4-trace-throw-and-simulate-call">Step 4 — Trace throw and Simulate call</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-5-spawn-ground-static-collider">Step 5 — Spawn ground + static collider</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-6-tune-physicsmaterial3d">Step 6 — Tune PhysicsMaterial3D</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-7-character-controller-optional">Step 7 — Character controller optional</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-8-trigger-volume-overlap">Step 8 — Trigger volume overlap</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#5-how-this-connects-to-the-rest-of-your-engine">5. How This Connects to the Rest of Your Engine</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#6-pitfalls-and-debugging">6. Pitfalls and Debugging</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#7-exercises">7. Exercises</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#summary">Summary</a>
+                        </li>
+                        
+                  </ul>
+                </aside>
+                
+      </main>
+    </div>
+  </div>
+  <script src="../assets/vendor/mermaid.min.js"></script>
+  <script src="../assets/vendor/highlight.min.js"></script>
+  <script src="../assets/js/site.js"></script>
+</body>
+</html>
