@@ -1147,10 +1147,10 @@ Mesh Mesh::CreateSkySphere(float radius, int latitudeSegments, int longitudeSegm
 
 Mesh Mesh::CreateSkyBillboardPlane(float halfWidth, float halfHeight) {
     Mesh m(Utf8String("SkyPlane"));
-    m.vertices.PushBack({{-halfWidth, -halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}});
-    m.vertices.PushBack({{halfWidth, -halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}});
-    m.vertices.PushBack({{halfWidth, halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}});
-    m.vertices.PushBack({{-halfWidth, halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}});
+    m.vertices.PushBack({ {-halfWidth, -halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}});
+    m.vertices.PushBack({ {halfWidth, -halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}});
+    m.vertices.PushBack({ {halfWidth, halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}});
+    m.vertices.PushBack({ {-halfWidth, halfHeight, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}});
     // CCW from +Z so front face points toward the camera when billboarding.
     m.indices.PushBack(0);
     m.indices.PushBack(1);

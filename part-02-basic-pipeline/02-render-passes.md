@@ -147,7 +147,7 @@ Each entry in `buffers` matches one swapchain image index.
 ```cpp
 // src/spark/render/core/VulkanRenderer.cpp (lines 247–269, abbreviated)
     VkClearValue clearColors[2]{};
-    clearColors[0].color = {{0.0F, 0.0F, 0.0F, 1.0F}};
+    clearColors[0].color = { {0.0F, 0.0F, 0.0F, 1.0F} };
     clearColors[1].depthStencil = {1.0F, 0};
 
     VkRenderPassBeginInfo renderPassBeginInfo{};

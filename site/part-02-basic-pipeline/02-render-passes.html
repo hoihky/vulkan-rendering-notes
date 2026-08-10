@@ -1160,7 +1160,7 @@ public:
 <h3 id="step-3-begin-render-pass-in-command-buffer">Step 3 — Begin render pass in command buffer</h3>
 <pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 247–269, abbreviated)
 VkClearValue clearColors[2]{};
-clearColors[0].color = {{0.0F, 0.0F, 0.0F, 1.0F}};
+clearColors[0].color = { {0.0F, 0.0F, 0.0F, 1.0F} };
 clearColors[1].depthStencil = {1.0F, 0};
 
 VkRenderPassBeginInfo renderPassBeginInfo{};

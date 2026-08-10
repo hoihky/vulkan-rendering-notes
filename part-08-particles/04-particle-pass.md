@@ -197,7 +197,7 @@ void VulkanParticlePass::Record(
 ```cpp
 // src/spark/render/sprites2d/VulkanParticlePass.cpp (lines 362–412)
     scratchVertices.Clear();
-    const float corners[4][2] = {{-1.0F, -1.0F}, {1.0F, -1.0F}, {1.0F, 1.0F}, {-1.0F, 1.0F}};
+    const float corners[4][2] = { {-1.0F, -1.0F}, {1.0F, -1.0F}, {1.0F, 1.0F}, {-1.0F, 1.0F}};
     const std::uint32_t idx0[] = {0, 1, 2, 0, 2, 3};
     for (std::size_t pi = 0; pi < nPart; ++pi) {
         const SceneParticleInstance& p = scene.particles[pi];
