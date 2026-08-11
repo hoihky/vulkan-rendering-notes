@@ -10,6 +10,10 @@ This book teaches you **how to design and implement** a real-time rendering engi
 4. **Build along** — the implementation walkthrough cites real Spark source with line numbers; diff your code against it.
 5. **Do the exercises** — reinforce each chapter with small tasks in your engine or Spark forks.
 
+**Read the book online:** [https://hoihky.github.io/vulkan-rendering-notes/site/](https://hoihky.github.io/vulkan-rendering-notes/site/)
+
+Use the HTML site for the best reading experience — navigation, search, syntax highlighting, and chapter-to-chapter links are all built in. The markdown files in this repository are the source; the site is the recommended way to follow along.
+
 ## Prerequisites
 
 - C++17 or later, comfortable with pointers and RAII
