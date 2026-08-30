@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1059,6 +1065,33 @@
 <p>Designers need a <strong>viewport + hierarchy + inspector</strong> without maintaining a second tech stack. Spark's <code>EditorApplication</code> bootstraps a default lit scene, runs the normal render path, and hosts dock panels through the same UI canvas system as Part XI overlays.</p>
 <p>You will trace bootstrap, confirm submit matches ThreeDDemo, and wire EditorContext so Chapter 5 panels can list and edit entities live.</p>
 <p>Milestone: launch editor — HDR lit viewport with ground, sun, sample cube, and working WASD + RMB fly camera before save menu wiring.</p>
+<h2 id="b.concept-deep-dive-editorapplication-update-loop">1b. Concept Deep Dive — EditorApplication Update Loop</h2>
+<h3 id="same-engine-loop-extra-ui-canvases">Same engine loop, extra UI canvases</h3>
+<p><code>EditorApplication</code> does not fork a second renderer. It implements the same <code>OnUpdate</code> / <code>OnRender</code> hooks as ThreeDDemo, layering dock panels and selection on top:</p>
+<pre><code class="language-cpp">// src/spark/editor/EditorApplication.cpp
+void EditorApplication::OnUpdate(const FrameTiming&amp; timing, Scene&amp; scene, IEngineContext&amp; engineContext) {
+    context.world = &amp;scene.GetWorld();
+    context.selection = &amp;selection;
+    context.viewport = &amp;viewport;
+    // ... wire EditorContext for panels ...
+
+    ProcessUiCanvasesInput(scene, engineContext.GetInput(), fbW, fbH, ...);
+    PumpSceneLoads(scene.GetWorld());
+
+    const bool editingEnabled = !playSession.IsActive();
+    if (editingEnabled) {
+        HandleEditModeInput(engineContext, scene.GetWorld());
+    }
+
+    viewport.Simulate(timing, scene, engineContext, selection, worldViewport, ...);
+    TickPanels(timing, scene, engineContext);
+}
+</code></pre>
+<p><strong>Key ordering:</strong> UI input first (panels capture pointer), then async scene pump, then viewport camera, then panel ticks.</p>
+<h3 id="editorcontext-replaces-globals">EditorContext replaces globals</h3>
+<p>Panels receive a shared <code>EditorContext</code> each frame — world pointer, selection, command stack, viewport, content model. No static singletons holding stale entity copies; inspector reads live <code>TransformComponent</code> through this context.</p>
+<h3 id="submit-path-matches-runtime-demos">Submit path matches runtime demos</h3>
+<p><code>OnRender</code> builds <code>SceneRenderParams</code> via the same <code>FillStandardLitSceneFromWorld</code> path as ThreeDDemo. The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="editor-vs-runtime-game-loop">Editor vs runtime game loop</h3>
 <p>The editor runs the <strong>same</strong> engine Update/Render pipeline as ThreeDDemo — not a separate WPF or Electron shell. <code>EditorApplication</code> implements scene lifecycle hooks: <code>OnAttach</code> bootstraps content, <code>OnUpdate</code> drives camera and panels, <code>OnRender</code> builds <code>SceneRenderParams</code> and submits. No second Vulkan device, no duplicate renderer — only additional UI canvases and selection logic layered on top.</p>
@@ -1286,6 +1319,22 @@ void EditorApplication::OnRender(Scene&amp; scene, IEngineContext&amp; context) 
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-editorapplication-update-loop">1b. Concept Deep Dive — EditorApplication Update Loop</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-engine-loop-extra-ui-canvases">Same engine loop, extra UI canvases</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#editorcontext-replaces-globals">EditorContext replaces globals</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#submit-path-matches-runtime-demos">Submit path matches runtime demos</a>
                         </li>
                         
                         <li class="toc-h2">

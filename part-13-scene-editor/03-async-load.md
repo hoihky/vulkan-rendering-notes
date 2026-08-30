@@ -17,6 +17,62 @@ Spark's **async loading** model separates three concerns: (1) parsing bytes into
 
 Milestone: load a scene with glTF references async; status line shows "Loading scene (async assets)…" then "Loaded N entities" without multi-frame stall.
 
+## 1b. Concept Deep Dive — SceneManager Pump Lifecycle
+
+### Three-phase load: parse, apply, finalize
+
+Large scenes split work so `PresentFrame` never blocks on disk:
+
+```text
+BeginLoadScene(path)
+  → parse file into SceneDocument (can be async)
+  → ApplyDocumentInstance on main thread (entities + sync components)
+  → defer mesh/gltf_scene restores until assets ready
+
+Each frame: SceneManager::Pump()
+  → GameWorldAssetLoader::Pump (worker → main register)
+  → RetryPendingComponents for each in-flight instance
+  → IsSceneReady(id) when pending queue empty
+```
+
+### Deferred restore callback
+
+When `TryRestore` needs a glTF not yet cached, the handler returns false and the record lands in `pendingComponents`:
+
+```cpp
+// src/spark/scene/core/SceneManager.cpp
+void SceneManager::RetryPendingComponents(LoadedSceneInstance& instance) {
+    for (each pending record) {
+        const IComponentSnapshotHandler* handler =
+                ComponentSnapshotRegistry::Default().FindByTag(pending.record.kind.CStr());
+        if (handler->TryRestore(*pending.object, pending.record, world, ctx)) {
+            continue;  // succeeded — drop from queue
+        }
+        stillPending.PushBack(pending);  // retry next Pump
+    }
+}
+```
+
+`Apply` registers `onDeferredComponent` so async handlers queue work instead of blocking.
+
+### Pump ties asset loader to scene readiness
+
+```cpp
+void SceneManager::Pump() {
+    world.GetAssetLoader().Pump(world);
+    for (each LoadedSceneInstance not ready) {
+        RetryPendingComponents(instance);
+        FinalizeInstanceReadyState(instance);
+    }
+}
+
+bool SceneManager::IsSceneReady(const SceneInstanceId id) const noexcept {
+    return instance->ready && !instance->failed;
+}
+```
+
+Editor and demos call `Pump()` every Update tick — same hook Part XVI async-assets chapter extends with progress UI.
+
 ## 2. Core Concepts
 
 ### Why async loading matters

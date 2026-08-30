@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,142 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>By now you have seen instance creation, device selection, and swapchain setup as separate steps. In a growing engine, those handles scatter across files and recreate logic duplicates. Spark introduces <strong><code>VulkanDeviceContext</code></strong> as the <strong>single owner</strong> of GPU device lifetime resources.</p>
 <p><code>VulkanRenderer</code> then focuses on passes, command buffers, and scene drawing — it <strong>uses</strong> the device context but does not recreate instances on every resize. This chapter teaches that split so your mini-engine stays maintainable through Part XVI.</p>
+<h3 id="why-split-devicecontext-from-renderer">Why split DeviceContext from Renderer?</h3>
+<p>Beginners often put <strong>everything</strong> in one giant <code>VulkanRenderer</code> class. That works for tutorials but collapses when:</p>
+<ul>
+<li>Window resizes require recreating swapchain <strong>without</strong> tearing down shadow atlases.</li>
+<li>Unit tests want a headless device without a full renderer.</li>
+<li>You add a second window or offline capture path.</li>
+</ul>
+<p>Spark's split:</p>
+<pre><code class="language-text">VulkanDeviceContext  — "I own the GPU connection"
+  ├── instance, surface, physical/logical device
+  ├── queues
+  └── swapchain + image views
+
+VulkanRenderer       — "I own how we draw each frame"
+  ├── render passes, pipelines, descriptors
+  ├── command buffer recording
+  └── scene / post / UI passes
+</code></pre>
+<p><strong>Rule of thumb:</strong> if it survives window resize unchanged, it probably belongs in renderer persistent resources or a dedicated pool — not in DeviceContext. If it <strong>must</strong> match swapchain extent, it recreates in <code>RecreateSwapchain</code>.</p>
+<h3 id="constructor-order-in-spark-full-part-i-recap">Constructor order in Spark (full Part I recap)</h3>
+<pre><code class="language-cpp">// VulkanDeviceContext constructor (conceptual)
+CreateInstance();
+CreateDebugMessenger();
+CreateSurface(window);
+SelectPhysicalDevice();
+CreateLogicalDevice();
+// swapchain deferred until renderer calls RecreateSwapchain
+
+// VulkanRenderer constructor
+CreateCommandPool();
+CreatePersistentSceneResources();
+RecreateSwapchain();  // calls deviceContext.RecreateSwapchain() inside
+frameSync.Create();
+</code></pre>
+<p>When the user resizes the window, only <code>RecreateSwapchain</code> and dependents rebuild — not the entire instance or logical device.</p>
+<h2 id="b.concept-deep-dive-devicecontext-as-the-gpu-service-boundary">1b. Concept Deep Dive — DeviceContext as the GPU Service Boundary</h2>
+<h3 id="splitting-bootstrap-from-frame-orchestration">Splitting bootstrap from frame orchestration</h3>
+<p>By Chapter 8 you have seen instance, device, and swapchain creation as sequential steps scattered across walkthrough sections. Production engines consolidate those handles into one <strong>device service</strong> so recreate logic, getter access, and destroy order live in a single place. Spark's <code>VulkanDeviceContext</code> answers three questions every pass needs: <em>which <code>VkDevice</code></em>, <em>which queues</em>, and <em>which swapchain images exist right now</em>.</p>
+<p><code>VulkanRenderer</code> owns how frames are drawn — render passes, pipelines, command pools, scene passes — but delegates lifecycle to <code>deviceContext</code>. When the window resizes, <code>RecreateSwapchain</code> waits for idle, destroys image views and the old <code>VkSwapchainKHR</code>, re-queries framebuffer extent (spinning on zero size while minimized), and rebuilds images. The logical device and instance survive; shadow atlases and shader modules stay loaded. That scope distinction is the main reason the split exists.</p>
+<p><code>TryGetDrawableSize</code> exposes swapchain extent to UI and camera code through <code>EngineContext</code>, falling back to GLFW framebuffer size when the swapchain is not ready yet — one pixel-size source for projection matrices and hit tests.</p>
+<h3 id="ownership-split">Ownership split</h3>
+<pre><code class="language-text">VulkanDeviceContext                    VulkanRenderer
+─────────────────────                  ────────────────
+VkInstance, VkSurfaceKHR               Command pool + buffers
+VkPhysicalDevice, VkDevice             Render passes + pipelines
+VkQueue (graphics, present)            Scene / shadow / post passes
+VulkanPresentationSwapchain            VulkanFrameSync
+                                       pendingScene snapshot
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Resource</th>
+<th>Survives swapchain recreate?</th>
+<th>Owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VkDevice</code></td>
+<td>Yes</td>
+<td><code>VulkanDeviceContext</code></td>
+</tr>
+<tr>
+<td>Swapchain image views</td>
+<td>No — rebuilt</td>
+<td><code>VulkanPresentationSwapchain</code></td>
+</tr>
+<tr>
+<td><code>VkRenderPass</code> (scene)</td>
+<td>Yes (until format change)</td>
+<td><code>VulkanRenderer</code></td>
+</tr>
+<tr>
+<td>Depth buffer</td>
+<td>No — matches new extent</td>
+<td><code>VulkanRenderer</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="constructor-bootstrap-without-swapchain-yet">Constructor — bootstrap without swapchain yet</h3>
+<p>Swapchain creation waits until the renderer has render-pass format compatibility; the constructor stops after logical device:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanDeviceContext.cpp (lines 10–22)
+VulkanDeviceContext::VulkanDeviceContext(Window&amp; window) : boundWindow(&amp;window) {
+    if constexpr (VulkanRendererGpu::kEnableValidationLayers) {
+        if (!VulkanRendererGpu::CheckValidationLayerSupport()) {
+            throw std::runtime_error("Vulkan validation layers requested but not available");
+        }
+    }
+
+    CreateInstance();
+    CreateDebugMessenger();
+    CreateSurface();
+    SelectPhysicalDevice();
+    CreateLogicalDevice();
+}
+</code></pre>
+<h3 id="recreate-idle-destroy-rebuild-images">Recreate — idle, destroy, rebuild images</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanDeviceContext.cpp (lines 57–72)
+void VulkanDeviceContext::RecreateSwapchain() {
+    if (boundWindow == nullptr || device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    int width = 0;
+    int height = 0;
+    boundWindow-&gt;GetFramebufferSize(width, height);
+    while (width == 0 || height == 0) {
+        boundWindow-&gt;PollEvents();
+        boundWindow-&gt;GetFramebufferSize(width, height);
+    }
+    WaitDeviceIdle();
+    DestroySwapchain();
+    CreateSwapchainImages();
+}
+</code></pre>
+<h3 id="renderer-constructs-context-first-then-frame-resources">Renderer constructs context first, then frame resources</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 43–49)
+VulkanRenderer::VulkanRenderer(Window&amp; inAppWindow) : deviceContext(inAppWindow), boundWindow(&amp;inAppWindow) {
+    shaderLoader.SetDevice(device());
+
+    CreateCommandPool();
+    CreatePersistentSceneResources();
+    RecreateSwapchain();
+    frameSync.Create(device());
+</code></pre>
+<p>Pass code calls <code>device()</code> and <code>presentSwapchain()</code> forwarded from <code>deviceContext</code> — never duplicate <code>VkDevice</code> storage in pass classes.</p>
+<h3 id="drawable-size-for-ui-and-cameras">Drawable size for UI and cameras</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanDeviceContext.cpp (lines 75–79)
+bool VulkanDeviceContext::TryGetDrawableSize(int&amp; outWidth, int&amp; outHeight) const noexcept {
+    if (swapchain.khr == VK_NULL_HANDLE || swapchain.extent.width == 0 || swapchain.extent.height == 0) {
+        return false;
+    }
+    outWidth = static_cast&lt;int&gt;(swapchain.extent.width);
+</code></pre>
+<p><code>EngineContext::GetFramebufferSize</code> tries the presenter first, then falls back to <code>Window::GetFramebufferSize</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="what-devicecontext-owns">What DeviceContext owns</h3>
 <table class="table">
@@ -1242,6 +1384,42 @@ const VulkanPresentationSwapchain&amp; presentSwapchain() const { return deviceC
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-split-devicecontext-from-renderer">Why split DeviceContext from Renderer?</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#constructor-order-in-spark-full-part-i-recap">Constructor order in Spark (full Part I recap)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-devicecontext-as-the-gpu-service-boundary">1b. Concept Deep Dive — DeviceContext as the GPU Service Boundary</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#splitting-bootstrap-from-frame-orchestration">Splitting bootstrap from frame orchestration</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ownership-split">Ownership split</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#constructor-bootstrap-without-swapchain-yet">Constructor — bootstrap without swapchain yet</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recreate-idle-destroy-rebuild-images">Recreate — idle, destroy, rebuild images</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#renderer-constructs-context-first-then-frame-resources">Renderer constructs context first, then frame resources</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#drawable-size-for-ui-and-cameras">Drawable size for UI and cameras</a>
                         </li>
                         
                         <li class="toc-h2">

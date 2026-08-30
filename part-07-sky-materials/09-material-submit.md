@@ -15,6 +15,132 @@ walk active entities, apply materials, register textures, sort draws, resolve IB
 
 Build along: switch a demo from manual drawList assembly to `FillStandardLitSceneFromWorld` and verify counts match.
 
+### What is "submit"? (the bridge every beginner must understand)
+
+Your game stores objects in an **Entity Component System** (`GameWorld`, `GameObject`, components). Vulkan has never heard of `GameObject`. Vulkan only understands:
+
+- Command buffers with `vkCmdDrawIndexed`
+- Bound pipelines, descriptor sets, vertex buffers
+- Push constants with matrices and material indices
+
+**Submit** is the translation layer. Once per frame, Spark walks the ECS and builds a flat, GPU-friendly struct: `SceneRenderParams`.
+
+```text
+GameWorld (ECS)  ──submit──►  SceneRenderParams  ──record──►  Vulkan commands
+   OOP, components              plain structs, arrays           vkCmd*
+```
+
+Rules every engine should follow:
+
+1. **Submit runs on CPU before GPU record** — never call `vkCmd*` from `OnUpdate`.
+2. **SceneRenderParams is a snapshot** — copy or build fresh each frame; do not mutate while GPU reads last frame's data.
+3. **No Vulkan types in SceneRenderParams** — only `SceneDrawItem`, texture layer ints, matrices.
+
+`FillStandardLitSceneFromWorld` is the main entry point demos call after filling the camera:
+
+```cpp
+// Typical demo OnRender pattern (concept)
+SceneRenderParams params{};
+params.camera = mainCamera.BuildSceneCamera(fbW, fbH);
+FillStandardLitSceneFromWorld(world, params, engineContext);
+context.SetSceneRenderParams(params);
+```
+
+After this call, `params.draws` contains every opaque mesh, `params.transparentDraws` contains sorted transparent meshes, and `params.sceneTextures` lists unique textures with assigned layers.
+
+### Inside FillStandardLitSceneFromWorld (conceptual steps)
+
+1. **Clear** last frame's draw arrays and texture registry.
+2. **Resolve lighting** — sun direction, ambient, exposure from components and volumes.
+3. **Frustum cull** (optional) — skip off-screen objects.
+4. **For each visible `MeshComponent`:**
+   - Read transform → world matrix.
+   - Read `MaterialComponent` or `MultiMaterialComponent`.
+   - Call `PushRigidMeshDraws` (one or many `SceneDrawItem`s).
+   - Register textures via `FindOrAddSceneTexture`.
+5. **Repeat** for skinned meshes, sky, sprites, etc.
+6. **Sort** draws (sky first, opaque by material, transparent back-to-front).
+7. **Partition** opaque vs transparent arrays.
+
+You do not call these steps manually in gameplay code — one function does the walk. Your job when adding a new drawable type is to extend the sink that handles it, not to bypass submit.
+
+## 1b. Concept Deep Dive — FindOrAddSceneTexture and Sky Submit
+
+### Texture deduplication by pointer identity
+
+```cpp
+// src/spark/scene/submit/SceneSubmitMaterial.cpp (lines 68–124)
+std::int32_t FindOrAddSceneTexture(SceneRenderParams& params, const SharedPtr<Texture2D>& tex, ...) {
+    if (!tex) return -1;
+    SharedPtr<Texture2D> resolved = tex->ResolveAtlasUv(uvScale, uvOffset);
+
+    const bool isHdr = resolved->IsHdrFloatPixels();
+    Array<SharedPtr<Texture2D>>& targetArray =
+            isHdr ? params.sceneHdrTextures : params.sceneTextures;
+    const uint32_t maxLayers = isHdr ? MaxSceneHdrTextures : MaxSceneTextures;  // 8 / 64
+
+    for (size_t i = 0; i < targetArray.GetSize(); ++i) {
+        if (targetArray[i].Get() == resolved.Get())
+            return static_cast<std::int32_t>(i);  // dedupe hit
+    }
+    if (targetArray.GetSize() >= maxLayers) {
+        std::fprintf(stderr, "Spark: scene texture limit reached\n");
+        return -1;
+    }
+    const std::int32_t layer = static_cast<std::int32_t>(targetArray.GetSize());
+    targetArray.PushBack(resolved);
+    return layer;
+}
+```
+
+Same `SharedPtr` address → same layer index across all draws that frame. HDR float pixels route to `sceneHdrTextures` (binding 11); LDR sRGB to `sceneTextures` (binding 1).
+
+### PopulateSkyDrawItem — separate from standard material path
+
+```cpp
+// src/spark/scene/submit/SceneSubmitMaterial.cpp (concept)
+void PopulateSkyDrawItem(SceneDrawItem& item, const SkyComponent& sky,
+        const MaterialComponent* mat, const Matrix4& world, SceneRenderParams& params) {
+    item.skyMode = sky.GetSkyMode();
+    item.albedo = sky.GetTint();
+    item.model = world;
+    item.mesh = SceneMeshSlot::Custom;
+    if (mat && mat->GetBaseColorTexture()) {
+        item.textureLayer = FindOrAddSceneTexture(params, mat->GetBaseColorTexture(), ...);
+        item.textureIsHdrLinear = isHdr;
+    }
+}
+```
+
+Sky tint multiplies equirect sample in fragment shader; no metallic/roughness on sky draws.
+
+### FillStandardLitSceneFromWorld orchestration
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (concept)
+sceneForCulling->ForEachSky([&](..., const SkyComponent& sk, ...) {
+    SceneDrawItem item{};
+    PopulateSkyDrawItem(item, sk, mc, mat, world, params);
+    drawList.PushBack(item);
+});
+// ... rigid meshes, skinned meshes ...
+ResolveIblEnvironmentLayer(params);  // after all draws collected
+```
+
+### Push constants map layers to shader
+
+```glsl
+// shaders/scene_push.glsl (concept)
+layout(push_constant) uniform Push {
+    int textureLayer;              // base color / sky equirect
+    int normalMapLayer;
+    int metallicRoughnessMapLayer;
+    int emissiveMapLayer;
+    int albedoHdrLinear;           // route sample to sceneHdrTextures
+    // ...
+} push;
+```
+
 ## 2. Core Concepts
 
 ### Snapshot boundary
@@ -35,6 +161,77 @@ When `SkyComponent` is present, submit bypasses standard material apply for shad
 ### ResolveIblEnvironmentLayer post-gather
 
 After draws are collected, submit scans for first sky draw with texture to set IBL environment index.
+
+### Multi-material submit: one entity, many draws
+
+`PushRigidMeshDraws` is the function that connects `MultiMaterialComponent` + `MeshSubmesh` to flat `SceneDrawItem` arrays:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 77–115)
+void PushRigidMeshDraws(
+        Array<SceneDrawItem>& drawList,
+        SceneDrawItem baseItem,
+        const Mesh& mesh,
+        const MaterialComponent* mat,
+        const MultiMaterialComponent* multiMat,
+        SceneRenderParams& params,
+        const std::function<std::int32_t(...)>& findOrAddTexture) {
+    const Array<MeshSubmesh>& submeshes = mesh.GetSubmeshes();
+    if (submeshes.IsEmpty() || multiMat == nullptr) {
+        // single draw — full index buffer or MaterialComponent only
+        // ...
+        return;
+    }
+
+    for (std::size_t si = 0; si < submeshes.GetSize(); ++si) {
+        SceneDrawItem item = baseItem;
+        item.submeshIndex = static_cast<std::uint32_t>(si);
+        const MeshSubmesh& sm = submeshes[si];
+        const std::uint32_t materialIndex = sm.ResolveMaterialIndex(multiMat->GetActiveVariantIndex());
+        if (materialIndex < multiMat->GetSlotCount()) {
+            const MultiMaterialComponent::Slot& slot = multiMat->GetSlot(materialIndex);
+            ApplyMultiMaterialSlotToSceneDrawItem(item, slot, &params);
+            ApplyAlbedoTexture(item, slot.baseColor, slot.tint, findOrAddTexture);
+        }
+        drawList.PushBack(item);
+    }
+}
+```
+
+`ApplyMultiMaterialSlotToSceneDrawItem` copies metallic, roughness, emissive, shading model, glTF extension factors, and registers normal/ORM/emissive maps into `params.sceneTextures` via `FindOrAddSceneTexture`. Each unique `SharedPtr<Texture2D>` gets a stable **layer index** in the `sampler2DArray` uploaded before draws.
+
+### GPU record: push constants carry material state
+
+The Vulkan pass does not rebind descriptors per material. `VulkanSceneOpaquePass::Record` writes one `ModelPushConstants` struct per draw:
+
+```cpp
+// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 149–183)
+        push.textureLayer = d.textureLayer;
+        push.metallic = d.metallic;
+        push.roughness = d.roughness;
+        push.normalMapLayer = d.normalMapLayer;
+        push.metallicRoughnessMapLayer = d.metallicRoughnessMapLayer;
+        push.emissiveMapLayer = d.emissiveMapLayer;
+        FillMaterialExtensionPush(push, d.gltfExtensions);
+        // ...
+        vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(push), &push);
+        vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, vertexOffset, 0);
+```
+
+`firstIndex` and `indexCount` come from `VulkanCustomMeshPool::ResolveRigidDrawSlice`, which uses `item.submeshIndex` to select the `MeshSubmesh` range inside the packed custom index buffer.
+
+**Material pipeline summary:**
+
+```text
+ECS MaterialComponent / MultiMaterialComponent (CPU textures)
+  → SceneSubmit (layer indices + PBR scalars in SceneDrawItem)
+  → VulkanSceneTextureUploader (RGBA8 / RGBA32F → GPU array layers)
+  → VulkanSceneDescriptors binding 1 + 11
+  → Push constants per draw
+  → scene.frag GGX + ORM + normal mapping
+  → HDR RGBA16F attachment (Part X)
+```
 
 ## 3. Design Decisions
 

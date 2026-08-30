@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,79 @@
 <p>Shader bugs hide in full game levels. A <strong>material showcase</strong> isolates one shaded sphere under fixed lights with
 live toggles for every map Part VII introduced — the fastest feedback loop before merging BRDF changes.</p>
 <p>Finish Part VII by running MaterialShowcase3DDemo and documenting your baseline screenshot set.</p>
+<h2 id="b.concept-deep-dive-materialshowcase3ddemo-as-regression-harness">1b. Concept Deep Dive — MaterialShowcase3DDemo as Regression Harness</h2>
+<h3 id="demo-purpose">Demo purpose</h3>
+<pre><code class="language-cpp">// include/spark/demo/MaterialShowcase3DDemo.hpp
+/**
+ * Single LitPbr sphere whose material is edited at runtime (texture toggles, metallic/roughness,
+ * emissive presets). Directional + point + spot lights. F1 fly, ESC menu.
+ */
+</code></pre>
+<p>Uses <code>Mesh::CreateSkySphere</code> (high segment count) as showcase geometry — smooth specular for normal map validation.</p>
+<h3 id="applymaterialstate-runtime-toggles">ApplyMaterialState — runtime toggles</h3>
+<pre><code class="language-cpp">// src/spark/demo/MaterialShowcase3DDemo.cpp (lines 169–187)
+void MaterialShowcase3DDemo::ApplyMaterialState() {
+    showcaseMaterial-&gt;SetShadingModel(SceneShadingModel::LitPbr);
+    showcaseMaterial-&gt;SetBaseColorTexture(useBaseMap ? baseColorTex : SharedPtr&lt;Texture2D&gt;{});
+    showcaseMaterial-&gt;SetNormalTexture(useNormalMap ? normalTex : SharedPtr&lt;Texture2D&gt;{});
+    showcaseMaterial-&gt;SetMetallicRoughnessTexture(useOrmMap ? ormTex : SharedPtr&lt;Texture2D&gt;{});
+    showcaseMaterial-&gt;SetMetallic(metallic);
+    showcaseMaterial-&gt;SetRoughness(roughness);
+    showcaseMaterial-&gt;SetTint(TintForPreset(tintPreset));
+    ApplyEmissiveToMaterial(*showcaseMaterial, emissivePreset, useEmissiveMap, emissiveIntensity, emissiveTex);
+}
+</code></pre>
+<p>Every toggle calls setters → <code>MeshDirty</code> → next frame submit re-registers texture layers.</p>
+<h3 id="key-bindings-for-validation">Key bindings for validation</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Key</th>
+<th>Effect</th>
+<th>Chapter validated</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td>Toggle base color map</td>
+<td>Part IV texture binding</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td>Toggle normal map</td>
+<td>Chapter 07 normal mapping</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td>Toggle ORM map</td>
+<td>Chapter 08 ORM</td>
+</tr>
+<tr>
+<td><strong>Q/E</strong></td>
+<td>Metallic ±</td>
+<td>PBR scalars</td>
+</tr>
+<tr>
+<td><strong>R/F</strong></td>
+<td>Roughness ±</td>
+<td>PBR + IBL specular blur</td>
+</tr>
+<tr>
+<td><strong>Emissive presets</strong></td>
+<td>HDR headroom</td>
+<td>Part X tonemap</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-to-capture-for-baseline-screenshots">What to capture for baseline screenshots</h3>
+<ol>
+<li>LitPbr sphere, base map only, single directional light.</li>
+<li>Normal map on — specular ripples visible.</li>
+<li>ORM on — chrome vs matte regions from B/G channels.</li>
+<li>Emissive intensity &gt; 1 — HDR bloom headroom before tonemap.</li>
+<li>Side-by-side with <code>ToonShadingDemo</code> for shading model comparison.</li>
+</ol>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="interactive-material-sandbox">Interactive material sandbox</h3>
 <p><code>MaterialShowcase3DDemo</code> spawns a PBR sphere + ground with point/spot lights — keyboard toggles base, normal, emissive maps and adjusts metallic/roughness/emissive scalars live.</p>
@@ -1259,6 +1338,26 @@ processes emissive HDR from this demo. Part <strong>IX</strong> can add shadow-c
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-materialshowcase3ddemo-as-regression-harness">1b. Concept Deep Dive — MaterialShowcase3DDemo as Regression Harness</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#demo-purpose">Demo purpose</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#applymaterialstate-runtime-toggles">ApplyMaterialState — runtime toggles</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#key-bindings-for-validation">Key bindings for validation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-to-capture-for-baseline-screenshots">What to capture for baseline screenshots</a>
                         </li>
                         
                         <li class="toc-h2">

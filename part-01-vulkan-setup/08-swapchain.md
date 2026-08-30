@@ -14,6 +14,135 @@ The GPU renders into **off-screen images**. The **swapchain** is a queue of imag
 
 Swapchain creation is where window pixel size, display refresh rate, and GPU capabilities meet. Get extent wrong and the image stretches; pick `FIFO` vs `MAILBOX` and you trade latency for tearing. This chapter explains Spark's choices in `VulkanDeviceContext::CreateSwapchainImages`.
 
+### Why you cannot draw directly to the monitor
+
+The GPU renders into **images in memory** (`VkImage`). Your monitor shows a **different** image each frame, owned by the operating system compositor. The **swapchain** is Vulkan's bridge:
+
+```text
+Your app renders → swapchain image N  →  OS compositor  →  monitor pixel
+```
+
+Typically you have **2 or 3** swapchain images ("double buffering" or "triple buffering"):
+
+```text
+Image 0: GPU drawing frame 105
+Image 1: monitor displaying frame 104
+Image 2: waiting in queue
+```
+
+Each frame you **acquire** one image (`vkAcquireNextImageKHR`), render into it, then **present** it (`vkQueuePresentKHR`). Part I Chapter 10 adds fences and semaphores so you never draw into an image the monitor is still reading.
+
+### Beginner glossary
+
+| Term | Plain English |
+|------|-----------------|
+| **Extent** | Width × height in pixels (matches window client area) |
+| **Format** | How each pixel is stored (e.g. 8-bit RGBA per channel) |
+| **Present mode** | V-sync on/off, latency vs tearing tradeoff |
+| **Image view** | Typed view of a `VkImage` (color attachment for rendering) |
+| **OUT_OF_DATE** | Swapchain must be recreated (window resized) |
+
+### Per-frame swapchain dance (preview)
+
+You will use this every frame for the rest of the book:
+
+```text
+1. vkAcquireNextImageKHR     → "give me an image index to draw into"
+2. Record command buffer     → clear, draw, tonemap, UI
+3. vkQueueSubmit             → GPU starts work
+4. vkQueuePresentKHR         → "show this image on screen"
+```
+
+If the user resizes the window, step 1 may return `VK_ERROR_OUT_OF_DATE_KHR` — destroy and recreate the swapchain (Part XVI covers production handling).
+
+## 1b. Concept Deep Dive — Connecting Render Targets to the Display
+
+### Swapchain as an image ring, not the framebuffer
+
+The swapchain is a pool of `VkImage` objects owned by the presentation engine, not your allocator. You never `vkDestroyImage` on swapchain images individually — they vanish when the swapchain is destroyed. Each frame you **acquire** an index into that pool, render through an `VkImageView` and framebuffer, then **present** that index back to the compositor.
+
+Spark queries surface capabilities once per physical device, then chooses format (`B8G8R8A8` sRGB when available), present mode (`MAILBOX` preferred for lower latency, `FIFO` fallback for guaranteed v-sync), and extent (framebuffer pixels clamped to `minImageExtent`/`maxImageExtent`). Image count is `minImageCount + 1`, capped by `maxImageCount` when the driver sets one — typically yielding double or triple buffering.
+
+`imageUsage` includes `COLOR_ATTACHMENT | TRANSFER_SRC` so screenshot and video capture can read the swapchain without an extra resolve target. When graphics and present queue families differ, `VK_SHARING_MODE_CONCURRENT` lets both queues access the same image — Spark sets family indices accordingly in `CreateSwapchainImages`.
+
+### Acquire → render → present (image indices)
+
+```text
+Swapchain images [0] [1] [2]
+                    │
+    vkAcquireNextImageKHR ──► imageIndex = 1
+                    │
+    record CB ──► framebuffer(imageView[1])
+                    │
+    vkQueueSubmit ──► vkQueuePresentKHR(imageIndex=1)
+                    │
+    compositor ──► monitor
+```
+
+| Choice | Spark helper | Typical result |
+|--------|--------------|----------------|
+| Format | `ChooseSwapSurfaceFormat` | `B8G8R8A8_SRGB` |
+| Present mode | `ChooseSwapPresentMode` | `MAILBOX` or `FIFO` |
+| Extent | `ChooseSwapExtent` | `glfwGetFramebufferSize` clamped |
+| Image count | `minImageCount + 1` | 2–3 images |
+
+### Query surface capabilities up front
+
+```cpp
+// src/spark/render/gpu/VulkanGpuSwapchain.cpp (lines 22–43)
+SwapchainSupportDetails VulkanGpuSwapchain::QuerySwapchainSupport(
+        VkPhysicalDevice physicalDevice,
+        VkSurfaceKHR surface) {
+    SwapchainSupportDetails details;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &details.capabilities);
+    // ... enumerate formats and presentModes ...
+    return details;
+}
+```
+
+Device suitability (Chapter 7) reuses this query — empty format or mode lists reject the GPU early.
+
+### Present mode preference — MAILBOX then FIFO
+
+```cpp
+// src/spark/render/gpu/VulkanGpuSwapchain.cpp (lines 56–63)
+VkPresentModeKHR VulkanGpuSwapchain::ChooseSwapPresentMode(const Array<VkPresentModeKHR>& presentModes) {
+    for (std::size_t i = 0; i < presentModes.GetSize(); ++i) {
+        const VkPresentModeKHR presentMode = presentModes[i];
+        if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+            return presentMode;
+        }
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+```
+
+### `vkCreateSwapchainKHR` — extent, usage, image count
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 229–250)
+void VulkanDeviceContext::CreateSwapchainImages() {
+    const VulkanRendererGpu::SwapchainSupportDetails swapchainSupport =
+            VulkanRendererGpu::QuerySwapchainSupport(physicalDevice, surface);
+    const VkSurfaceFormatKHR surfaceFormat = VulkanRendererGpu::ChooseSwapSurfaceFormat(swapchainSupport.formats);
+    const VkPresentModeKHR presentMode = VulkanRendererGpu::ChooseSwapPresentMode(swapchainSupport.presentModes);
+    const VkExtent2D extent =
+            VulkanRendererGpu::ChooseSwapExtent(swapchainSupport.capabilities, boundWindow->Handle());
+
+    std::uint32_t imageCount = swapchainSupport.capabilities.minImageCount + 1;
+    // clamp to maxImageCount ...
+
+    VkSwapchainCreateInfoKHR swapchainCreateInfo{};
+    swapchainCreateInfo.surface = surface;
+    swapchainCreateInfo.minImageCount = imageCount;
+    swapchainCreateInfo.imageFormat = surfaceFormat.format;
+    swapchainCreateInfo.imageExtent = extent;
+    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    vkCreateSwapchainKHR(device, &swapchainCreateInfo, nullptr, &swapchain.khr);
+```
+
+Part II attaches these image views to framebuffers; Chapter 10 acquires an index each frame before record.
+
 ## 2. Core Concepts
 
 ### Swapchain support query

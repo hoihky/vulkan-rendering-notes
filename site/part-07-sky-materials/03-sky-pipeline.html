@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,46 @@
 <p>Reusing the lit mesh pipeline for skies causes depth fighting and wrong cull — the camera sits <strong>inside</strong> the shell.
 You need a <strong>pipeline variant</strong> (or dynamic state) with depth test/write off and no culling, recorded <strong>before</strong> world geometry.</p>
 <p>Build along: diff <code>pipelineSky</code> vs <code>pipelineLit</code> create info and verify sort order puts sky draws first.</p>
+<h2 id="b.concept-deep-dive-two-pipelines-one-spir-v">1b. Concept Deep Dive — Two Pipelines, One SPIR-V</h2>
+<h3 id="same-shaders-different-fixed-function-state">Same shaders, different fixed-function state</h3>
+<p>Spark compiles <code>scene.vert</code> / <code>scene.frag</code> once but creates <strong>two</strong> <code>VkPipeline</code> objects differing only in rasterizer and depth stencil:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 128–160)
+VkPipelineRasterizationStateCreateInfo rasterizer{};
+rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;           // lit meshes
+
+VkPipelineRasterizationStateCreateInfo rasterizerSky{};
+rasterizerSky.cullMode = VK_CULL_MODE_NONE;            // sky — see inside of sphere
+
+VkPipelineDepthStencilStateCreateInfo depthStencil{};
+depthStencil.depthTestEnable = VK_TRUE;
+depthStencil.depthWriteEnable = VK_TRUE;               // lit writes depth
+
+VkPipelineDepthStencilStateCreateInfo depthStencilSky{};
+depthStencilSky.depthTestEnable = VK_FALSE;            // sky never occludes
+depthStencilSky.depthWriteEnable = VK_FALSE;
+</code></pre>
+<p><strong>Why no depth on sky?</strong> Sky should render behind everything without fighting depth precision at the far plane. Lit geometry writes depth; sky fills remaining pixels.</p>
+<h3 id="per-draw-pipeline-bind-in-opaque-pass">Per-draw pipeline bind in opaque pass</h3>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 109–126)
+for (each SceneDrawItem d) {
+    const bool isSky = (d.skyMode != SceneSkyMode::None);
+    if (isSky) {
+        if (!skyPipelineBound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineSky);
+            skyPipelineBound = true;
+        }
+    } else {
+        if (skyPipelineBound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLit);
+            skyPipelineBound = false;
+        }
+    }
+    // ... bind descriptors, push constants, draw ...
+}
+</code></pre>
+<p>Submit sorts sky draws <strong>first</strong> in the draw list so they establish background color before opaque props overwrite foreground pixels (sky still at far depth via vertex shader trick).</p>
+<h3 id="push-constants-carry-skymode-to-both-stages">Push constants carry skyMode to both stages</h3>
+<p><code>push.skyMode</code> is set from <code>SceneDrawItem.skyMode</code> for every draw — vertex shader uses it for far-plane projection; fragment shader for early-out radiance path. Same push block layout as lit draws; unused PBR fields are ignored.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="shared-shaders-different-pipeline">Shared shaders, different pipeline</h3>
 <p>Spark uses the <strong>same</strong> <code>scene.vert</code> / <code>scene.frag</code> modules for lit meshes and sky, but creates <code>pipelineSky</code> with different depth/raster state. Record loop binds sky pipeline when <code>d.skyMode != None</code>.</p>
@@ -1242,6 +1288,22 @@ when flattening ECS into <code>params.draws</code>. Part <strong>X</strong> tone
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-two-pipelines-one-spir-v">1b. Concept Deep Dive — Two Pipelines, One SPIR-V</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-shaders-different-fixed-function-state">Same shaders, different fixed-function state</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-draw-pipeline-bind-in-opaque-pass">Per-draw pipeline bind in opaque pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constants-carry-skymode-to-both-stages">Push constants carry skyMode to both stages</a>
                         </li>
                         
                         <li class="toc-h2">

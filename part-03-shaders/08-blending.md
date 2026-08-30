@@ -16,6 +16,84 @@ Opaque rendering is straightforward: write color and depth, nearest fragment win
 C_out = C_src * α + C_dst * (1 - α)
 ```
 
+### Transparency for beginners
+
+**Opaque** objects block what is behind them — the depth buffer remembers the closest surface. **Transparent** objects (glass, foliage cards, fade effects) let you see through partially:
+
+```text
+α = 1.0  → fully opaque (brick wall)
+α = 0.5  → half see-through (dirty glass)
+α = 0.0  → invisible (skip draw)
+```
+
+The GPU **blends** the new fragment color with the color already in the framebuffer:
+
+```text
+finalColor = sourceColor × α + destinationColor × (1 − α)
+```
+
+**Why transparent is harder than opaque:**
+
+1. **Order matters** — blend with wrong background if you draw far glass before near wall.
+2. **Depth write** — if transparent pixels write depth, they block objects behind incorrectly.
+3. **Separate pipeline** — Spark uses `pipelineLitTransparent` with blend ON, depth write OFF.
+
+Spark sorts `transparentDraws` **back-to-front** from the camera before recording. Opaque draws skip sorting (depth test handles occlusion).
+
+**HDR resume pass (Part X):** when any transparent mesh exists, Spark copies opaque HDR color first so transmission shaders can refract — advanced case, but the blend rules above still apply.
+
+## 1b. Concept Deep Dive — Alpha in scene.frag and Transparent Pipeline Pair
+
+### Fragment alpha comes from push tint, vertex color, and texture
+
+Transparent blending uses the alpha channel computed in `scene.frag` before lighting:
+
+```glsl
+// shaders/scene.frag (lines 435–454)
+vec3 base = vAlbedo * vVertexColor.rgb;
+float alpha = push.albedoTint.a * vVertexColor.a;
+if (vTextureLayer >= 0) {
+    vec4 tex = texture(sceneTextures, vec3(sparkMapUv(0), float(layer)));
+    base *= sparkSrgbToLinear(tex.rgb);
+    alpha *= tex.a;
+}
+if (push.alphaCutoff > 0.0) {
+    if (alpha < push.alphaCutoff) {
+        discard;
+    }
+}
+```
+
+`push.albedoTint` is set from C++ per draw (`ModelPushConstants::albedo[3]`). Cutout foliage uses `alphaCutoff > 0` with **opaque** pipeline (discard, not blend); true transparency uses `alphaCutoff == 0` and routes to `pipelineLitTransparent`.
+
+### HDR output preserves alpha for compositing
+
+The final write carries alpha through to the HDR target:
+
+```glsl
+// shaders/scene.frag (lines 612–614)
+vec3 color = ambient + Lo + iblSpecular + emissive;
+outColor = vec4(color, alpha);
+```
+
+The transparent pipeline enables standard straight-alpha blending:
+
+```text
+RGB_out = src.rgb × src.a + dst.rgb × (1 − src.a)
+```
+
+Because lighting runs before the write, partially transparent glass receives correct specular highlights — unlike premultiplied paths that would require dividing by alpha after shading.
+
+### Same SPIR-V, different fixed-function state
+
+`pipelineLitTransparent` shares `scene.vert.spv` and `scene.frag.spv` with the opaque pipeline. Only `VkPipelineColorBlendAttachmentState` and `depthWriteEnable` differ. Push constants and descriptors are identical — transparent draws are collected separately, sorted back-to-front from the camera, and recorded in `RecordTransparent` after opaque work completes.
+
+### Transmission and advanced alpha (preview)
+
+`sparkApplyTransmission` at the end of `main()` can modify both `color` and `alpha` for glTF transmission extension. That path expects opaque geometry already present in the HDR buffer (Part X resume pass). The blend rules above still apply — transmission is an extension of the same alpha contract, not a separate shader module.
+
+## 2. Core Concepts
+
 Vulkan does not sort fragments for you. The **blend unit** runs after the fragment shader (and depth test) with factors you configure in the pipeline. Wrong factors produce dark halos, invisible glass, or premultiplied alpha bugs.
 
 Spark uses a dedicated **lit transparent pipeline** sharing the same shaders as opaque but with blend enabled and depth write disabled. Transparent `SceneDrawItem`s are collected and recorded in `RecordTransparent` after opaque work.

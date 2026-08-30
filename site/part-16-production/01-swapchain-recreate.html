@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,73 @@
 <p>Production apps live with <strong>window resize</strong> for years — not just once at launch. Treating swapchain images as immortal guarantees validation spam and black frames when the user drags a corner.</p>
 <p><strong>Swapchain recreation</strong> is a protocol: idle the GPU, tear down dependents sized to the old extent, recreate the swapchain, rebuild pipelines and framebuffers. Spark implements the full chain in <code>VulkanRenderer::RecreateSwapchain</code>. You will mirror that checklist and wire the same acquire/present error handling.</p>
 <p>Milestone: drag-resize ThreeDDemo for 30 seconds with validation layers on — zero errors, image fills client area after release.</p>
+<h3 id="why-resize-breaks-things-beginner">Why resize breaks things (beginner)</h3>
+<p>Swapchain images are allocated at a <strong>fixed width and height</strong>. When you drag a window corner:</p>
+<pre><code class="language-text">Old swapchain: 1280×720 images
+User resizes window to 1920×1080
+Old images are wrong size → VK_ERROR_OUT_OF_DATE_KHR
+</code></pre>
+<p>You must <strong>destroy and recreate</strong> the swapchain and everything sized to the old extent:</p>
+<ul>
+<li>Depth buffers</li>
+<li>HDR offscreen targets</li>
+<li>Framebuffers</li>
+<li>Viewport-dependent pipelines (sometimes)</li>
+<li>Command buffer recording assumptions</li>
+</ul>
+<p>Spark centralizes this in <code>VulkanRenderer::RecreateSwapchain</code>. <strong>Do not</strong> recreate <code>VkInstance</code> or <code>VkDevice</code> on resize — only swapchain-dependent resources.</p>
+<h3 id="safe-recreate-checklist">Safe recreate checklist</h3>
+<pre><code class="language-text">1. vkDeviceWaitIdle (or wait fences) — GPU finished using old images
+2. Destroy framebuffers, HDR targets, depth images tied to old extent
+3. vkDestroySwapchainKHR
+4. vkCreateSwapchainKHR with new extent from glfwGetFramebufferSize
+5. Recreate image views, framebuffers, HDR flight targets
+6. Recreate pipelines if render pass compatibility requires
+7. Recreate per-image semaphores if image count changed
+8. Resume normal DrawFrame loop
+</code></pre>
+<p>Skipping step 1 causes validation errors: writing to destroyed images.</p>
+<h2 id="b.concept-deep-dive-recreateswapchain-chain">1b. Concept Deep Dive — RecreateSwapchain Chain</h2>
+<h3 id="debounced-resize-flag-full-rebuild">Debounced resize flag → full rebuild</h3>
+<p>Window callbacks set <code>framebufferResized</code>; <code>DrawFrame</code> consumes it before acquire:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp
+void VulkanRenderer::NotifySwapchainResize() {
+    framebufferResized = true;
+}
+
+void VulkanRenderer::DrawFrame() {
+    if (framebufferResized) {
+        framebufferResized = false;
+        RecreateSwapchain();
+        return;
+    }
+    // ...
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        RecreateSwapchain();
+        return;
+    }
+}
+</code></pre>
+<p>Debouncing prevents recreate storms during live resize drag — one rebuild per frame max.</p>
+<h3 id="recreateswapchain-deterministic-teardown-order">RecreateSwapchain deterministic teardown order</h3>
+<pre><code class="language-cpp">void VulkanRenderer::RecreateSwapchain() {
+    deviceContext.WaitDeviceIdle();
+    frameCapture.FlushPendingCaptures(...);
+    vkFreeCommandBuffers(...);
+    CleanupSwapchain();
+    deviceContext.RecreateSwapchain();
+    frameCapture.RecreateSwapchainResources(...);
+    CreateDepthResources();
+    CreateRenderPass();
+    RecreateHdrFlightTargets();
+    scenePipeline.CreateGraphicsPipeline(...);
+    CreateFramebuffers();
+    frameSync.RecreateSwapchainSync(device(), presentSwapchain().images.GetSize());
+}
+</code></pre>
+<p><strong>Do not</strong> destroy <code>VkDevice</code> or <code>VkInstance</code> on resize — only extent-dependent resources. Skipping <code>WaitDeviceIdle</code> causes validation errors writing to destroyed images.</p>
+<h3 id="out_of_date-is-normal-not-fatal">OUT_OF_DATE is normal, not fatal</h3>
+<p>Both acquire and present can return <code>VK_ERROR_OUT_OF_DATE_KHR</code>. Spark recreates and skips the rest of the frame — next frame acquires fresh images at the new extent.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="when-swapchains-go-stale">When swapchains go stale</h3>
 <p>The <strong>swapchain</strong> is a contract between your <code>VkSurfaceKHR</code> and the display compositor: image count, format, extent, present mode. It breaks when:</p>
@@ -1361,6 +1434,30 @@ if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-resize-breaks-things-beginner">Why resize breaks things (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#safe-recreate-checklist">Safe recreate checklist</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-recreateswapchain-chain">1b. Concept Deep Dive — RecreateSwapchain Chain</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#debounced-resize-flag-full-rebuild">Debounced resize flag → full rebuild</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recreateswapchain-deterministic-teardown-order">RecreateSwapchain deterministic teardown order</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#outofdate-is-normal-not-fatal">OUT_OF_DATE is normal, not fatal</a>
                         </li>
                         
                         <li class="toc-h2">

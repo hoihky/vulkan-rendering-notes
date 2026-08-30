@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,57 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>One orthographic shadow map covering an entire open level blurs distant shadows and wastes resolution near the camera. <strong>Cascaded shadow maps</strong> render multiple light-space depth maps tuned to frustum slices, packed into a single atlas.</p>
 <p>You will follow Spark's CPU cascade math, then confirm the GPU receives matching <code>worldToShadowClip</code> and <code>cascadeAtlas</code> arrays each frame.</p>
+<h3 id="why-one-shadow-map-is-not-enough-beginner">Why one shadow map is not enough (beginner)</h3>
+<p>Imagine a sun shadow map covering an entire open world at 2048×2048 texels. Near your character's feet, each texel might cover <strong>50 cm</strong> of ground — shadows look like chunky blocks. Mountains kilometers away get the same texel budget — wasted resolution.</p>
+<p><strong>Cascaded Shadow Maps (CSM)</strong> split the camera view into <strong>near, mid, far</strong> slices. Each slice gets its own shadow map (or region in an atlas) with an orthographic light projection fitted tightly to that slice:</p>
+<pre><code class="language-text">Camera frustum side view:
+
+near slice  ──► high-res shadow map (crisp character shadow)
+mid slice   ──► medium-res map
+far slice   ──► low-res map (distant hills)
+</code></pre>
+<p>The fragment shader picks which cascade to sample based on how far the pixel is from the camera.</p>
+<h3 id="step-by-step-cascade-flow-in-spark">Step-by-step cascade flow in Spark</h3>
+<ol>
+<li><strong>CPU:</strong> Compute camera frustum corner distances → split distances λ-blended near/far.</li>
+<li><strong>CPU:</strong> For each cascade, build orthographic light matrix enclosing that frustum slice.</li>
+<li><strong>CPU:</strong> Snap projection to texel grid (reduces shadow edge shimmering when camera moves).</li>
+<li><strong>GPU:</strong> Render depth-only pass per cascade into atlas regions.</li>
+<li><strong>CPU:</strong> Upload <code>worldToShadowClip[cascade]</code> + atlas UV rects to scene UBO.</li>
+<li><strong>GPU:</strong> Main pass fragment shader selects cascade, samples depth, applies PCF.</li>
+</ol>
+<p>Beginners should visualize cascade <strong>false-color debug</strong> (Spark demo / RenderDoc) before tuning bias — confirms index 0 is near camera.</p>
+<h2 id="b.concept-deep-dive-vulkandirectionalshadowcascademath">1b. Concept Deep Dive — VulkanDirectionalShadowCascadeMath</h2>
+<h3 id="blended-split-distances">λ-blended split distances</h3>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanDirectionalShadowCascadeMath.cpp (lines 31–41)
+float ComputeSplitDistance(float nearDist, float farDist, int splitIndex,
+                           int splitCount, float lambda) {
+    const float p = static_cast&lt;float&gt;(splitIndex) / static_cast&lt;float&gt;(splitCount);
+    const float logSplit = nearDist * std::pow(farDist / std::max(nearDist, 1e-3F), p);
+    const float uniSplit = nearDist + (farDist - nearDist) * p;
+    return lambda * logSplit + (1.0F - lambda) * uniSplit;
+}
+</code></pre>
+<p>λ = 0.5 mixes logarithmic (more resolution near camera) with uniform splits. Spark uses four cascades; split distances feed both shadow pass viewport scissor and <code>ubo.cascadeSplits</code> for fragment shader selection.</p>
+<h3 id="ortho-light-fit-with-texel-snapping">Ortho light fit with texel snapping</h3>
+<pre><code class="language-cpp">// ComputeWorldToShadowClip — frustum slice → light-space AABB (concept)
+const Matrix4 lightView = Matrix4::LookAt(lightPos, center, up);
+// accumulate frustum corners + ground grid in light view
+// pad X/Y/Z, then snap minX/minY to texel grid:
+minX = std::floor((minX - cx) / texelX) * texelX + cx;
+</code></pre>
+<p>Snapping the orthographic projection to shadow-map texel boundaries reduces <strong>shadow edge shimmering</strong> when the camera translates. Ground corners at ±<code>kSceneGroundHalfExtent</code> are included so terrain near the player stays inside the near cascade.</p>
+<h3 id="z-flip-matrix-for-vulkan-depth-convention">Z-flip matrix for Vulkan depth convention</h3>
+<pre><code class="language-cpp">// ShadowClipLinearZFlip() — maps OpenGL-style [0,1] depth to Vulkan [0,1] with reversed Z
+static const Matrix4 k = [] {
+    Matrix4 r = Matrix4::IdentityMatrix();
+    r.m[10] = -1.0F;
+    r.m[14] = 1.0F;
+    return r;
+}();
+// worldToShadowClip = ZFlip * lightProj * lightView
+</code></pre>
+<p>The same matrix is uploaded to the scene UBO and pushed to <code>shadow_depth.vert</code> via <code>ShadowPushConstants.lightViewProj</code> — matrix mismatch between passes is a common bug source.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cascade-splits">Cascade splits</h3>
 <p>One orthographic shadow map for an entire open level wastes texels near the camera. <strong>Cascaded shadow maps (CSM)</strong> render multiple light-space frusta aligned to slices of the camera frustum.</p>
@@ -1357,6 +1414,30 @@ void VulkanRenderer::WriteUniformBuffer(std::uint32_t frameIndex) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-one-shadow-map-is-not-enough-beginner">Why one shadow map is not enough (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-by-step-cascade-flow-in-spark">Step-by-step cascade flow in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vulkandirectionalshadowcascademath">1b. Concept Deep Dive — VulkanDirectionalShadowCascadeMath</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#blended-split-distances">λ-blended split distances</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ortho-light-fit-with-texel-snapping">Ortho light fit with texel snapping</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#z-flip-matrix-for-vulkan-depth-convention">Z-flip matrix for Vulkan depth convention</a>
                         </li>
                         
                         <li class="toc-h2">

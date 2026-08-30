@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,40 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Not every mesh should <strong>cast</strong> shadows (particles, invisible proxies). Not every surface should <strong>receive</strong> them (skies, emissive billboards). Without explicit flags you waste shadow pass fill rate and darken glowing surfaces incorrectly.</p>
 <p>Spark stores these flags on scene draw items and filters at submit and record time.</p>
+<h2 id="b.concept-deep-dive-ksceneshadowcast-and-ksceneshadowreceive">1b. Concept Deep Dive — kSceneShadowCast and kSceneShadowReceive</h2>
+<h3 id="bit-flags-on-scenedrawitem">Bit flags on SceneDrawItem</h3>
+<pre><code class="language-cpp">// include/spark/render/lighting/SceneLightingProfile.hpp (lines 9–12)
+inline constexpr std::int32_t kSceneShadowCast = 1;
+inline constexpr std::int32_t kSceneShadowReceive = 2;
+inline constexpr std::int32_t kSceneShadowCastAndReceive = kSceneShadowCast | kSceneShadowReceive;
+</code></pre>
+<pre><code class="language-cpp">// include/spark/engine/SceneRenderParams.hpp (line 213)
+std::int32_t shadowFlags = kSceneShadowCastAndReceive;
+</code></pre>
+<p>Default is both cast and receive. Per-draw override via submit or material path.</p>
+<h3 id="shadow-pass-filters-casters-only">Shadow pass filters casters only</h3>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanShadowCastDraw.cpp (line 48)
+if ((d.shadowFlags &amp; kSceneShadowCast) == 0) continue;
+</code></pre>
+<p>Non-casters skip the depth pass entirely — saving fill rate for particles, skies, and invisible collision proxies.</p>
+<h3 id="scene-pass-checks-receiver-flag-in-shader">Scene pass checks receiver flag in shader</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 271, 517)
+const bool receiveShadow = (push.shadowFlags &amp; 2) != 0;
+if (ubo.shadowParams.w &gt; 0.5 &amp;&amp; (push.shadowFlags &amp; 2) != 0) {
+    // sample directional shadow, multiply sun term
+}
+</code></pre>
+<p>Cast-only meshes (e.g. a small prop) still appear in the shadow map but skip shadow multiplication on their own surface — useful for thin foliage cards that should cast but not self-darken.</p>
+<h3 id="default-flags-from-lighting-profile">Default flags from lighting profile</h3>
+<pre><code class="language-cpp">// src/spark/render/lighting/SceneLightingProfile.cpp (lines 114–122)
+std::int32_t DefaultShadowFlagsFor(const ResolvedSceneLighting&amp; resolved) {
+    std::int32_t flags = 0;
+    if (resolved.defaultShadowCast)   flags |= kSceneShadowCast;
+    if (resolved.defaultShadowReceive) flags |= kSceneShadowReceive;
+    return flags;
+}
+</code></pre>
+<p>Outdoor scenes default both on; interior/night profiles may disable receive globally while individual draws opt in.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cast-vs-receive">Cast vs receive</h3>
 <p>Two independent booleans control complementary behavior:</p>
@@ -1364,6 +1404,26 @@ for (std::size_t di = 0; di &lt; ctx.scene-&gt;draws.GetSize(); ++di) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-ksceneshadowcast-and-ksceneshadowreceive">1b. Concept Deep Dive — kSceneShadowCast and kSceneShadowReceive</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#bit-flags-on-scenedrawitem">Bit flags on SceneDrawItem</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shadow-pass-filters-casters-only">Shadow pass filters casters only</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scene-pass-checks-receiver-flag-in-shader">Scene pass checks receiver flag in shader</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#default-flags-from-lighting-profile">Default flags from lighting profile</a>
                         </li>
                         
                         <li class="toc-h2">

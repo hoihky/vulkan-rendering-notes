@@ -14,6 +14,150 @@ By now you have seen instance creation, device selection, and swapchain setup as
 
 `VulkanRenderer` then focuses on passes, command buffers, and scene drawing — it **uses** the device context but does not recreate instances on every resize. This chapter teaches that split so your mini-engine stays maintainable through Part XVI.
 
+### Why split DeviceContext from Renderer?
+
+Beginners often put **everything** in one giant `VulkanRenderer` class. That works for tutorials but collapses when:
+
+- Window resizes require recreating swapchain **without** tearing down shadow atlases.
+- Unit tests want a headless device without a full renderer.
+- You add a second window or offline capture path.
+
+Spark's split:
+
+```text
+VulkanDeviceContext  — "I own the GPU connection"
+  ├── instance, surface, physical/logical device
+  ├── queues
+  └── swapchain + image views
+
+VulkanRenderer       — "I own how we draw each frame"
+  ├── render passes, pipelines, descriptors
+  ├── command buffer recording
+  └── scene / post / UI passes
+```
+
+**Rule of thumb:** if it survives window resize unchanged, it probably belongs in renderer persistent resources or a dedicated pool — not in DeviceContext. If it **must** match swapchain extent, it recreates in `RecreateSwapchain`.
+
+### Constructor order in Spark (full Part I recap)
+
+```cpp
+// VulkanDeviceContext constructor (conceptual)
+CreateInstance();
+CreateDebugMessenger();
+CreateSurface(window);
+SelectPhysicalDevice();
+CreateLogicalDevice();
+// swapchain deferred until renderer calls RecreateSwapchain
+
+// VulkanRenderer constructor
+CreateCommandPool();
+CreatePersistentSceneResources();
+RecreateSwapchain();  // calls deviceContext.RecreateSwapchain() inside
+frameSync.Create();
+```
+
+When the user resizes the window, only `RecreateSwapchain` and dependents rebuild — not the entire instance or logical device.
+
+## 1b. Concept Deep Dive — DeviceContext as the GPU Service Boundary
+
+### Splitting bootstrap from frame orchestration
+
+By Chapter 8 you have seen instance, device, and swapchain creation as sequential steps scattered across walkthrough sections. Production engines consolidate those handles into one **device service** so recreate logic, getter access, and destroy order live in a single place. Spark's `VulkanDeviceContext` answers three questions every pass needs: *which `VkDevice`*, *which queues*, and *which swapchain images exist right now*.
+
+`VulkanRenderer` owns how frames are drawn — render passes, pipelines, command pools, scene passes — but delegates lifecycle to `deviceContext`. When the window resizes, `RecreateSwapchain` waits for idle, destroys image views and the old `VkSwapchainKHR`, re-queries framebuffer extent (spinning on zero size while minimized), and rebuilds images. The logical device and instance survive; shadow atlases and shader modules stay loaded. That scope distinction is the main reason the split exists.
+
+`TryGetDrawableSize` exposes swapchain extent to UI and camera code through `EngineContext`, falling back to GLFW framebuffer size when the swapchain is not ready yet — one pixel-size source for projection matrices and hit tests.
+
+### Ownership split
+
+```text
+VulkanDeviceContext                    VulkanRenderer
+─────────────────────                  ────────────────
+VkInstance, VkSurfaceKHR               Command pool + buffers
+VkPhysicalDevice, VkDevice             Render passes + pipelines
+VkQueue (graphics, present)            Scene / shadow / post passes
+VulkanPresentationSwapchain            VulkanFrameSync
+                                       pendingScene snapshot
+```
+
+| Resource | Survives swapchain recreate? | Owner |
+|----------|------------------------------|-------|
+| `VkDevice` | Yes | `VulkanDeviceContext` |
+| Swapchain image views | No — rebuilt | `VulkanPresentationSwapchain` |
+| `VkRenderPass` (scene) | Yes (until format change) | `VulkanRenderer` |
+| Depth buffer | No — matches new extent | `VulkanRenderer` |
+
+### Constructor — bootstrap without swapchain yet
+
+Swapchain creation waits until the renderer has render-pass format compatibility; the constructor stops after logical device:
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 10–22)
+VulkanDeviceContext::VulkanDeviceContext(Window& window) : boundWindow(&window) {
+    if constexpr (VulkanRendererGpu::kEnableValidationLayers) {
+        if (!VulkanRendererGpu::CheckValidationLayerSupport()) {
+            throw std::runtime_error("Vulkan validation layers requested but not available");
+        }
+    }
+
+    CreateInstance();
+    CreateDebugMessenger();
+    CreateSurface();
+    SelectPhysicalDevice();
+    CreateLogicalDevice();
+}
+```
+
+### Recreate — idle, destroy, rebuild images
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 57–72)
+void VulkanDeviceContext::RecreateSwapchain() {
+    if (boundWindow == nullptr || device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    int width = 0;
+    int height = 0;
+    boundWindow->GetFramebufferSize(width, height);
+    while (width == 0 || height == 0) {
+        boundWindow->PollEvents();
+        boundWindow->GetFramebufferSize(width, height);
+    }
+    WaitDeviceIdle();
+    DestroySwapchain();
+    CreateSwapchainImages();
+}
+```
+
+### Renderer constructs context first, then frame resources
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 43–49)
+VulkanRenderer::VulkanRenderer(Window& inAppWindow) : deviceContext(inAppWindow), boundWindow(&inAppWindow) {
+    shaderLoader.SetDevice(device());
+
+    CreateCommandPool();
+    CreatePersistentSceneResources();
+    RecreateSwapchain();
+    frameSync.Create(device());
+```
+
+Pass code calls `device()` and `presentSwapchain()` forwarded from `deviceContext` — never duplicate `VkDevice` storage in pass classes.
+
+### Drawable size for UI and cameras
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 75–79)
+bool VulkanDeviceContext::TryGetDrawableSize(int& outWidth, int& outHeight) const noexcept {
+    if (swapchain.khr == VK_NULL_HANDLE || swapchain.extent.width == 0 || swapchain.extent.height == 0) {
+        return false;
+    }
+    outWidth = static_cast<int>(swapchain.extent.width);
+```
+
+`EngineContext::GetFramebufferSize` tries the presenter first, then falls back to `Window::GetFramebufferSize`.
+
 ## 2. Core Concepts
 
 ### What DeviceContext owns

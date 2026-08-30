@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,20 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>HUD and menus are <strong>not</strong> world geometry. They must stay fixed on screen while the camera moves, use <strong>display-referred</strong> colors after tonemap, and batch efficiently. Spark's <code>VulkanScreenUiPass</code> records orthographic quads and text into the swapchain render pass — separate from HDR world sprites.</p>
 <p>Milestone: full-screen dim overlay at 50% alpha after tonemap, plus corner-anchored health bar surviving window resize on Retina displays.</p>
+<h2 id="b.concept-deep-dive-display-referred-ui-after-tonemap">1b. Concept Deep Dive — Display-Referred UI After Tonemap</h2>
+<h3 id="screen-space-uses-framebuffer-pixels-not-viewproj">Screen space uses framebuffer pixels, not viewProj</h3>
+<p>HUD rects live in <code>ScreenRectDraw</code> / <code>ScreenTextDraw</code> on <code>SceneRenderParams</code> — emitted during gameplay prep, never from Vulkan code. <code>VulkanScreenUiPass</code> builds an orthographic projection from swapchain pixel width/height; Y increases downward:</p>
+<pre><code class="language-text">World sprite:  model × viewProj → HDR pass (camera moves → sprite moves)
+Screen UI:     pixel rect → ortho NDC → swapchain present pass (camera moves → HUD fixed)
+</code></pre>
+<p>Mixing the two by assigning screen pixel coords to a world <code>model</code> matrix breaks when the camera zooms in 3D hybrid scenes.</p>
+<h3 id="record-order-tonemap-first-then-screenui-then-imgui">Record order: tonemap first, then screenUi, then ImGui</h3>
+<p>UI colors are authored 0–1 for the monitor, not linear HDR radiance. Drawing before tonemap makes widgets respond to exposure sliders — wrong for shipping HUD:</p>
+<pre><code class="language-text">HDR scene → SSAO (optional) → RecordTonemap → screenUi.Record → RecordImGuiDrawData
+</code></pre>
+<p>Spark records both UI paths inside the <strong>present render pass</strong> targeting swapchain UNORM — not <code>hdrRenderPass</code>.</p>
+<h3 id="paintorder-and-scissor-for-stacking">paintOrder and scissor for stacking</h3>
+<p>Multiple rects sort by <code>paintOrder</code> before record. <code>VulkanScreenUiClip</code> applies scissor regions for scroll panels — same command buffer as rects/text, no separate render pass per widget. Use <code>GetFramebufferSize</code> on Retina, not window client size, for corner anchors.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="screen-space-vs-world-space">Screen space vs world space</h3>
 <p><strong>Screen UI</strong> — HUD, menus, health bars, dialogue — lives in <strong>framebuffer pixel coordinates</strong> with Y increasing downward, independent of world camera FOV or orthographic world scale. Spark stores draws in <code>ScreenRectDraw</code>, <code>ScreenSpriteDraw</code>, and <code>ScreenTextDraw</code> on <code>SceneRenderParams</code>, all emitted during gameplay/render prep — never from Vulkan code.</p>
@@ -1345,6 +1365,22 @@ void HealthHud::Initialize(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-display-referred-ui-after-tonemap">1b. Concept Deep Dive — Display-Referred UI After Tonemap</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#screen-space-uses-framebuffer-pixels-not-viewproj">Screen space uses framebuffer pixels, not viewProj</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#record-order-tonemap-first-then-screenui-then-imgui">Record order: tonemap first, then screenUi, then ImGui</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#paintorder-and-scissor-for-stacking">paintOrder and scissor for stacking</a>
                         </li>
                         
                         <li class="toc-h2">

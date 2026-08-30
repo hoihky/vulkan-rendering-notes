@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,60 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Action games need a camera tied to a <strong>character</strong> — not a free fly cam. First-person puts the eye at the head; third-person orbits behind a pivot with a look target on the upper body. glTF avatars add complexity: bind pose forward may be −Z with extra quaternion fixes.</p>
 <p><code>CharacterCameraRig</code> is Spark's <strong>standalone</strong> character camera (non-ECS) used in <code>CharacterCameraDemo</code> and <code>Maze3DDemo</code>. It complements ECS <code>SpringArm3D</code> (Chapter 6) with tighter integration to walk input and skinned mesh facing.</p>
+<h3 id="character-camera-vs-fly-camera-beginner">Character camera vs fly camera (beginner)</h3>
+<table class="table">
+<thead>
+<tr>
+<th></th>
+<th>Fly camera</th>
+<th>Character camera</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Position</td>
+<td>You fly anywhere</td>
+<td>Tied to avatar</td>
+</tr>
+<tr>
+<td>Look</td>
+<td>Mouse aims view</td>
+<td>Mouse aims <strong>character facing</strong> or orbit</td>
+</tr>
+<tr>
+<td>Movement</td>
+<td>Camera-relative WASD</td>
+<td><strong>Character</strong> walks on ground; camera follows</td>
+</tr>
+</tbody>
+</table>
+<p><strong>First person:</strong> camera eye at head height — you see through the avatar's eyes. Walk input moves along <strong>camera forward projected on XZ plane</strong> (no flying up slopes unless coded).</p>
+<p><strong>Third person:</strong> camera orbits behind a shoulder pivot — you see the character mesh. Walk input moves <strong>character</strong>, not camera; camera catches up.</p>
+<p><strong>glTF facing gotcha:</strong> many rigs face <strong>−Z</strong> in bind pose. Spark applies <code>gltfFacingOffset</code> quaternion so "forward" in code matches artist intent — without it, W walks sideways.</p>
+<p><strong>Separate yaw:</strong> store <code>characterYaw</code> (body rotation) and <code>cameraPitch</code> (look up/down) independently — standard third-person control.</p>
+<h2 id="b.concept-deep-dive-charactercamerarig-modes">1b. Concept Deep Dive — CharacterCameraRig Modes</h2>
+<h3 id="first-vs-third-person-fields">First vs third person fields</h3>
+<pre><code class="language-cpp">// include/spark/scene/camera/CharacterCameraRig.hpp
+struct CharacterCameraRig {
+    CharacterCameraMode mode = CharacterCameraMode::ThirdPerson;
+    Vector3 characterPosition{};
+    float characterVisualYaw = 0.0F;
+    float characterFacingYawOffset = 0.0F;  // glTF bind fix
+    Quaternion characterRootBindOrientation{Quaternion::Identity};
+    Vector3 characterLocalForward{0.0F, 0.0F, -1.0F};
+    float thirdPersonDistance = 4.25F;
+    float firstPersonEyeHeight = 1.62F;
+    void ProcessWalk(IInput&amp; input, float deltaSeconds) noexcept;
+    [[nodiscard]] Matrix4 ViewMatrix() const noexcept;
+};
+</code></pre>
+<p>First person: eye at feet + <code>firstPersonEyeHeight</code> + forward nudge along yaw. Third person: camera sits behind at <code>thirdPersonDistance</code>, looks at pivot height + <code>thirdPersonFocusAhead</code>.</p>
+<h3 id="walk-input-differs-by-mode">Walk input differs by mode</h3>
+<p><code>ProcessWalk</code> in first person moves relative to <strong>camera yaw</strong> (strafe + forward). Third person moves W/S along <strong>character facing</strong> only — A/D are intentionally ignored; mouse yaw rotates the character. <code>CharacterCameraDemo</code> wires this to a skinned glTF avatar.</p>
+<h3 id="gltf-facing-offsets">glTF facing offsets</h3>
+<p><code>characterFacingYawOffset</code> and <code>characterRootBindOrientation</code> align code forward with artist bind pose — without them, W walks sideways on −Z-facing rigs. Effective heading = wrapped sum of visual yaw + offset, then multiplied by bind orientation for third-person orbit.</p>
+<h3 id="same-ubo-handoff-as-flycamera">Same UBO handoff as FlyCamera</h3>
+<p><code>ViewMatrix()</code> returns <code>LookAt(eye, target, up)</code> — demos assign <code>params.viewProjection = proj * rig.ViewMatrix()</code> identically to <code>ThreeDDemo</code>'s fly path. Input abstraction unchanged: <code>ProcessWalk</code> and <code>AddLook</code> take <code>IInput&amp;</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="modes">Modes</h3>
 <pre><code class="language-cpp">enum class CharacterCameraMode {
@@ -1256,6 +1316,30 @@ params.cameraPositionWorld = rig.CameraWorldPosition();
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#character-camera-vs-fly-camera-beginner">Character camera vs fly camera (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-charactercamerarig-modes">1b. Concept Deep Dive — CharacterCameraRig Modes</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#first-vs-third-person-fields">First vs third person fields</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#walk-input-differs-by-mode">Walk input differs by mode</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#gltf-facing-offsets">glTF facing offsets</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-ubo-handoff-as-flycamera">Same UBO handoff as FlyCamera</a>
                         </li>
                         
                         <li class="toc-h2">

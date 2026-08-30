@@ -19,6 +19,87 @@ Camera rig / resolver  →  SceneRenderParams  →  VulkanSceneUniformWriter  �
 
 This chapter closes Part V by documenting every field, who writes it, and how shaders consume it — connecting input and camera work to Part III–IV shader code.
 
+### From camera on CPU to `ubo` on GPU (beginner)
+
+Shaders cannot read your `FlyCamera` struct. Every frame you **copy** matrices into GPU memory:
+
+```text
+FlyCamera / CameraComponent
+  → view, proj matrices multiplied → viewProj
+  → SceneRenderParams.viewProjection
+  → VulkanSceneUniformWriter::Write
+  → VkBuffer (UBO binding 0)
+  → scene.vert: gl_Position = ubo.viewProj * model * vec4(position, 1)
+```
+
+**Critical fields:**
+
+| Field | Shader use |
+|-------|------------|
+| `viewProj` | Transform vertices to clip space |
+| `cameraPos` | Specular, fog, rim lighting in `scene.frag` |
+| `invViewProj` | Reconstruct world position from depth (sky, debug) |
+
+**Common bugs:**
+
+| Symptom | Likely cause |
+|---------|--------------|
+| Mesh off-center | View matrix inverted (eye vs target swapped) |
+| Specular wrong direction | `cameraPos` not updated when using manual view matrix |
+| Sky doesn't match scene | `invViewProj` stale or wrong column-major upload |
+
+**Column-major:** GLM and GLSL expect column vectors — `viewProj * vec4(pos,1)`, not `vec4 * viewProj`.
+
+Part V ends here: input → camera matrices → UBO → Part III shaders draw the frame.
+
+## 1b. Concept Deep Dive — SceneUniformGpu Camera Fields
+
+### std140 layout (656 bytes)
+
+```cpp
+// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};
+    float cameraPos[4]{};
+    float lightColor[4]{};
+    float ambientColor[4]{};
+    float invViewProj[16]{};
+    float viewportSize[4]{};
+    // shadow cascades, cluster grid, IBL params follow...
+};
+static_assert(sizeof(SceneUniformGpu) == 656);
+```
+
+Binding 0 in scene descriptor set 0 — updated every frame per swapchain image via host-visible or persistently mapped memory.
+
+### Writer copies from SceneRenderParams
+
+```cpp
+// src/spark/render/scene/VulkanSceneUniformWriter.cpp (excerpt)
+std::memcpy(u.viewProj, scene.viewProjection.m, sizeof(u.viewProj));
+u.cameraPos[0] = scene.cameraPositionWorld.x;
+u.cameraPos[1] = scene.cameraPositionWorld.y;
+u.cameraPos[2] = scene.cameraPositionWorld.z;
+Matrix4 invVp;
+if (scene.viewProjection.TryInvert(invVp)) {
+    std::memcpy(u.invViewProj, invVp.m, sizeof(u.invViewProj));
+}
+```
+
+`cameraPositionWorld` must match the eye used to build `viewProj` — specular, fog, and rim in `scene.frag` read `ubo.cameraPos`, not a recomputed inverse view translation.
+
+### Shader consumption map
+
+| UBO field | Consumer |
+|-----------|----------|
+| `viewProj` | `scene.vert` clip transform |
+| `cameraPos` | `scene.frag` view vector V for specular |
+| `invViewProj` | Sky, SSR-style debug, world reconstruction |
+| `viewportSize` | Screen-space effects, cluster indexing |
+
+Any camera rig — `FlyCamera`, `CharacterCameraRig`, ECS `CameraComponent`, `Camera2D` — ends at the same two CPU fields: `SceneRenderParams::viewProjection` and `cameraPositionWorld`. Part V input work is complete once those fields are correct before `PresentFrame`.
+
 ## 2. Core Concepts
 
 ### SceneRenderParams camera fields

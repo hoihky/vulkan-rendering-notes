@@ -18,6 +18,89 @@ Author GLSL → compile offline (glslangValidator) → load bytes → vkCreateSh
 
 If this pipeline is slow or manual, you will avoid shader iteration. Spark automates compilation via CMake and loads from `SPARK_SHADER_SPV_DIR`. This chapter makes that path explicit so shader edits reliably show up in SparkDemo.
 
+## 1b. Concept Deep Dive — From GLSL to VkShaderModule
+
+### Offline compile, runtime load — why Spark ships .spv files
+
+Vulkan drivers consume SPIR-V, not GLSL source. Spark's CMake `SparkShaders` target runs `glslangValidator -V` on every shader at build time; the engine reads binary bytes at startup. This keeps runtime fast and lets CI fail on shader syntax errors before any draw:
+
+```text
+shaders/scene.vert  ──glslangValidator──►  cmake-build/shaders/scene.vert.spv
+shaders/scene.frag ──glslangValidator──►  cmake-build/shaders/scene.frag.spv
+                                              │
+                                              ▼
+                              VulkanSpvShaderLoader::ReadSpvFile
+                                              │
+                                              ▼
+                                    vkCreateShaderModule
+                                              │
+                                              ▼
+                              VkPipelineShaderStageCreateInfo (stage + "main")
+```
+
+The `SparkEngine` target depends on `SparkShaders` — a clean build always produces fresh SPIR-V before linking.
+
+### ReadSpvFile — absolute path from compile definition
+
+`SPARK_SHADER_SPV_DIR` is baked in at compile time so the loader finds `.spv` regardless of working directory:
+
+```cpp
+// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 12–41)
+Array<char> VulkanSpvShaderLoader::ReadSpvFile(const char* filename) const {
+    Utf8String pathUtf(SPARK_SHADER_SPV_DIR);
+    pathUtf.AppendUtf8("/");
+    pathUtf.AppendUtf8(filename);
+    FILE* file = std::fopen(pathUtf.CStr(), "rb");
+    if (file == nullptr) {
+        throw std::runtime_error(std::string("failed to open shader: ") + pathUtf.CStr());
+    }
+    // seek, read full file into Array<char>, fclose
+    return buffer;
+}
+```
+
+A `failed to open shader` exception almost always means `cmake --build` was not run after editing GLSL.
+
+### CreateShaderModule — SPIR-V as uint32 word stream
+
+Vulkan expects `codeSize` divisible by 4 and `pCode` pointing at the SPIR-V magic header (`0x07230203`):
+
+```cpp
+// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 44–53)
+VkShaderModule VulkanSpvShaderLoader::CreateShaderModule(const Array<char>& code) const {
+    VkShaderModuleCreateInfo shaderModuleCreateInfo{};
+    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderModuleCreateInfo.codeSize = code.GetSize();
+    shaderModuleCreateInfo.pCode = reinterpret_cast<const std::uint32_t*>(code.GetData());
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("vkCreateShaderModule failed");
+    }
+    return shaderModule;
+}
+```
+
+Invalid SPIR-V from a corrupted file fails here; valid GLSL that fails glslang never reaches runtime.
+
+### Modules wired into pipeline creation
+
+`VulkanScenePipeline::CreateGraphicsPipeline` loads both stages, creates modules, then passes them to `vkCreateGraphicsPipelines`. Destroy order is pipelines first, then modules — encoded in `DestroyGraphicsPipeline`:
+
+```cpp
+// src/spark/render/scene/VulkanScenePipeline.cpp (lines 52–67)
+    const Array<char> vertCode = shaders.ReadSpvFile("scene.vert.spv");
+    const Array<char> fragCode = shaders.ReadSpvFile("scene.frag.spv");
+    vertModule = shaders.CreateShaderModule(vertCode);
+    fragModule = shaders.CreateShaderModule(fragCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStage{};
+    vertShaderStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStage.module = vertModule;
+    vertShaderStage.pName = "main";
+```
+
+Chapter 7's `triangle.vert.spv` / `triangle.frag.spv` follow the identical loader path with empty vertex input state.
+
 ## 2. Core Concepts
 
 ### Why offline SPIR-V

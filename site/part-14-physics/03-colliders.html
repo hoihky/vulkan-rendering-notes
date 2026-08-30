@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,30 @@
 <p>Physics simulation consumes <strong>flat collider arrays</strong>, not ECS components directly. Spark rebuilds those arrays every Simulate from a <strong>bake pipeline</strong> — boxes, circles, tilemap grids, 3D primitives. Materials tune contact response; queries answer gameplay questions (grounded? hit pickup?) without stepping full dynamics.</p>
 <p>You will author colliders on player and tilemap, tune materials, and verify debug alignment with sprites.</p>
 <p>Milestone: player box collider feet align with tilemap floor; ground ray gates jump reliably.</p>
+<h2 id="b.concept-deep-dive-collider-bake-strategies">1b. Concept Deep Dive — Collider Bake Strategies</h2>
+<h3 id="ecs-components-flat-collider-arrays">ECS components → flat collider arrays</h3>
+<p>Simulation never reads <code>BoxCollider2DComponent</code> directly. Each frame, <code>ColliderBakePipeline2D::Rebuild</code> walks active entities and runs registered strategies:</p>
+<pre><code class="language-cpp">// src/spark/physics/colliders/ColliderBakePipeline2D.cpp
+void ColliderBakePipeline2D::Rebuild(
+        GameWorld&amp; world, const float cellWorldSize,
+        Array&lt;Collider2D&gt;&amp; outColliders, SpatialHashGrid2D&amp; outGrid) {
+    outColliders.Clear();
+    outGrid.SetCellSize(cellWorldSize);
+    ColliderBakeContext2D context{outColliders, outGrid};
+    world.ForEachActiveGameObject([&amp;](GameObject* object) {
+        for (each registered strategy) {
+            if (strategy.Contributes(*object)) {
+                strategy.Bake(*object, context);
+            }
+        }
+    });
+}
+</code></pre>
+<p>Each strategy handles one component kind — box, circle, tilemap grid — emitting world-space AABBs with category bits and material indices.</p>
+<h3 id="strategy-pattern-keeps-simulate-generic">Strategy pattern keeps Simulate generic</h3>
+<p>Adding <code>PolygonCollider2DComponent</code> means a new <code>IColliderBakeStrategy2D</code> + register call — not edits to contact resolver loops. Tilemap strategy expands solid tiles into many static boxes; player box strategy reads local offset + entity world matrix.</p>
+<h3 id="queries-reuse-the-same-baked-grid">Queries reuse the same baked grid</h3>
+<p><code>PhysicsQueries2D</code> shares broad-phase cell size with simulate. Ground checks and overlap tests query the <strong>same</strong> collider array rebuilt at simulate start — no duplicate bake pass for raycasts.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="collider-components-vs-baked-colliders">Collider components vs baked colliders</h3>
 <p>Authoring uses ECS components: <code>BoxCollider2DComponent</code>, <code>CircleCollider2DComponent</code>, <code>TilemapCollider2DComponent</code>, <code>BoxCollider3DComponent</code>, etc. Simulation uses flat <code>Collider2D</code> / <code>Collider3D</code> arrays rebuilt each step. <strong>Bake pipeline</strong> translates components → runtime colliders with world-space AABBs, categories, trigger flags, and material indices.</p>
@@ -1240,6 +1270,22 @@ ground-&gt;AddComponent&lt;Spark::PhysicsMaterial3DComponent&gt;(0.62F, 0.48F, 0
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-collider-bake-strategies">1b. Concept Deep Dive — Collider Bake Strategies</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-components-flat-collider-arrays">ECS components → flat collider arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#strategy-pattern-keeps-simulate-generic">Strategy pattern keeps Simulate generic</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#queries-reuse-the-same-baked-grid">Queries reuse the same baked grid</a>
                         </li>
                         
                         <li class="toc-h2">

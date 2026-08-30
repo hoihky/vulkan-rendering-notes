@@ -14,6 +14,84 @@ Real shaders outgrow single files quickly. Shadow passes need the same UBO layou
 
 Spark uses **GLSL includes** with a flat `shaders/` directory and CMake dependency tracking. This chapter covers the include mechanism, Spark's file roles, and build hygiene — the glue that keeps a multi-pass renderer maintainable.
 
+### Why split shaders into multiple files? (beginner)
+
+Imagine `scene.frag` grew to 5,000 lines — lighting, shadows, sky, glTF extensions, fog, all in one file. Changing sun color would mean scrolling past particle math. **Includes** let you organize like C++ headers:
+
+```text
+scene.frag
+  #include "scene_ubo.glsl"      ← camera + lights layout (must match C++)
+  #include "ibl.glsl"            ← environment reflections
+  #include "clustered_lights.glsl" ← punctual light loops
+  #include "gltf_pbr_extensions.glsl"
+```
+
+Each `.glsl` file is still compiled **together** into one SPIR-V module — `#include` is textual paste at compile time, not a runtime link.
+
+**Rules for beginners:**
+
+1. **Shared layouts live in includes** — `scene_ubo.glsl` must match `SceneUniformGpu` byte-for-byte.
+2. **Edit an include → rebuild dependents** — CMake tracks `DEPENDS` so `scene.frag.spv` rebuilds when `clustered_lights.glsl` changes.
+3. **No circular includes** — keep a DAG: ubo → lighting → main shader.
+
+If glslang reports "undefined identifier `ubo`", an include is missing or in wrong order.
+
+## 1b. Concept Deep Dive — scene Pass Include Graph and CMake DEPENDS
+
+### scene.vert — minimal include tree
+
+The vertex stage only needs frame and per-draw layouts — no lighting headers:
+
+```text
+scene.vert
+  ├── scene_ubo.glsl      → layout(set=0,binding=0) SceneUBO ubo
+  └── scene_push.glsl     → layout(push_constant) Push push
+```
+
+Both files use include guards (`SPARK_SCENE_UBO_GLSL`, `SPARK_SCENE_PUSH_GLSL`) so double-inclusion from nested headers cannot redefine bindings.
+
+### scene.frag — layered include stack
+
+The fragment stage pulls shared layouts first, then feature modules:
+
+```glsl
+// shaders/scene.frag (lines 19–29)
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+#include "clustered_lights.glsl"
+#include "color_space.glsl"
+#include "ibl.glsl"
+#include "gltf_map_uv.glsl"
+```
+
+Nested includes expand further — `clustered_lights.glsl` expects `ubo.clusterGrid` from the UBO header; `ibl.glsl` reads `ubo.iblParams` and samplers declared in the main file. Order matters: UBO and push must precede any file that references `ubo` or `push`.
+
+### CMake DEPENDS mirrors the transitive graph
+
+Spark lists shared headers on every custom command so any edit invalidates dependent SPIR-V:
+
+```cmake
+# CMakeLists.txt (line 436)
+DEPENDS ${SHADER}
+        ${SHADER_DIR}/clustered_lights.glsl
+        ${SHADER_DIR}/equirect.glsl
+        ${SHADER_DIR}/ibl.glsl
+        ${SHADER_DIR}/punctual_shadows.glsl
+        ${SHADER_DIR}/scene_push.glsl
+        ${SHADER_DIR}/scene_ubo.glsl
+        ${SHADER_DIR}/post_common.glsl
+```
+
+Note that `scene.frag` includes `punctual_shadows.glsl` transitively but CMake still lists it explicitly — Ninja cannot infer `#include` edges from GLSL text. When you add a new shared file (e.g. `gltf_pbr_extensions.glsl`), add it to **every** `add_custom_command` DEPENDS that includes it, or stale `.spv` files will ship.
+
+### Compile-time paste, not runtime linking
+
+All `#include` directives expand to one translation unit before `glslangValidator` emits SPIR-V. There is no separate link step for `.glsl` files — a typo in an include breaks every shader that pulls it. Manual compile helps isolate which file failed:
+
+```bash
+glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.frag -o /tmp/scene.frag.spv
+```
+
 ## 2. Core Concepts
 
 ### Enabling includes in Vulkan GLSL

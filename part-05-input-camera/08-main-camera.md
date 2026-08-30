@@ -15,6 +15,72 @@ Demos can manually assign `params.viewProjection` from `FlyCamera` or `Character
 
 `TryResolveMainCamera`, `TryResolveMainCamera2D`, and `TryBuildSceneCameraMatrices` implement that policy. `SubmitStandardLitSceneFromWorldWithCamera` combines resolution with mesh/light gather — the path `Platformer2DDemo` and ECS 3D scenes use.
 
+### Which camera renders? (beginner)
+
+Scenes can have **many** cameras — minimap cam, cinematic cam, player cam. Only **one** supplies `viewProj` each frame.
+
+```text
+Entity "PlayerCamera"  → CameraComponent, priority = 10
+Entity "CutsceneCam"   → CameraComponent, priority = 100  ← wins when enabled
+```
+
+**Resolution rules (simplified):**
+
+1. Collect all enabled `CameraComponent` / `Camera2DComponent`.
+2. Pick **highest priority** number.
+3. Build `viewProj` from that entity's transform + FOV/ortho settings.
+
+**Hybrid 2D/3D:** if both exist, Spark's resolver picks based on scene mode — platformer uses `Camera2DComponent`; 3D world uses `CameraComponent`.
+
+**Manual path (early demos):** `FlyCamera` fills `params.viewProjection` directly — no ECS. Production path: attach camera to `GameObject`, let `TryBuildSceneCameraMatrices` find it at submit.
+
+**Debug:** log resolved camera entity name — if wrong camera wins, check `priority` and `enabled` flag.
+
+## 1b. Concept Deep Dive — TryBuildSceneCameraMatrices Resolution
+
+### ECS CameraComponent fields
+
+```cpp
+// include/spark/ecs/components/camera/CameraComponent.hpp
+class CameraComponent final : public GameComponent {
+    CameraProjectionMode projectionMode = CameraProjectionMode::Perspective;
+    float fovYDegrees = 60.0F;
+    float nearPlane = 0.12F;
+    float farPlane = 400.0F;
+    std::int32_t priority = 0;
+    bool enabled = true;
+    [[nodiscard]] Matrix4 ViewMatrix(const GameObject& owner) const noexcept;
+};
+```
+
+Higher `priority` wins when multiple enabled cameras exist. World pose comes from the owner's `TransformComponent` — the component stores projection parameters only.
+
+### TryBuildSceneCameraMatrices
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp
+bool TryFillSceneCameraFromWorld(
+        const GameWorld& world, float fbW, float fbH, SceneRenderParams& outParams) {
+    SceneCameraMatrices cam{};
+    if (!TryBuildSceneCameraMatrices(world, fbW, fbH, cam)) return false;
+    outParams.viewProjection = cam.viewProjection;
+    outParams.cameraPositionWorld = cam.positionWorld;
+    outParams.particleCameraRight = cam.rightWorld;
+    outParams.particleCameraUp = cam.upWorld;
+    return true;
+}
+```
+
+Failure returns false — caller must fall back to manual matrices or skip submit. Particle billboards use `rightWorld`/`upWorld` extracted during resolution.
+
+### Hybrid 2D vs 3D arbitration
+
+`TryResolveMainCamera2D` competes with `TryResolveMainCamera` — platformer scenes with `Camera2DComponent` use orthographic `ViewProjection(fbW, fbH)`; pure 3D scenes use perspective FOV from `CameraComponent`. Same output fields on `SceneRenderParams`.
+
+### One-call production submit
+
+`SubmitStandardLitSceneFromWorldWithCamera` combines camera resolution, mesh gather, light gather, and texture dedup — the standard path once you outgrow manual `FlyCamera` assignment in demo code.
+
 ## 2. Core Concepts
 
 ### CameraComponent (3D ECS)

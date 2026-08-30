@@ -16,6 +16,94 @@ Production apps live with **window resize** for years — not just once at launc
 
 Milestone: drag-resize ThreeDDemo for 30 seconds with validation layers on — zero errors, image fills client area after release.
 
+### Why resize breaks things (beginner)
+
+Swapchain images are allocated at a **fixed width and height**. When you drag a window corner:
+
+```text
+Old swapchain: 1280×720 images
+User resizes window to 1920×1080
+Old images are wrong size → VK_ERROR_OUT_OF_DATE_KHR
+```
+
+You must **destroy and recreate** the swapchain and everything sized to the old extent:
+
+- Depth buffers
+- HDR offscreen targets
+- Framebuffers
+- Viewport-dependent pipelines (sometimes)
+- Command buffer recording assumptions
+
+Spark centralizes this in `VulkanRenderer::RecreateSwapchain`. **Do not** recreate `VkInstance` or `VkDevice` on resize — only swapchain-dependent resources.
+
+### Safe recreate checklist
+
+```text
+1. vkDeviceWaitIdle (or wait fences) — GPU finished using old images
+2. Destroy framebuffers, HDR targets, depth images tied to old extent
+3. vkDestroySwapchainKHR
+4. vkCreateSwapchainKHR with new extent from glfwGetFramebufferSize
+5. Recreate image views, framebuffers, HDR flight targets
+6. Recreate pipelines if render pass compatibility requires
+7. Recreate per-image semaphores if image count changed
+8. Resume normal DrawFrame loop
+```
+
+Skipping step 1 causes validation errors: writing to destroyed images.
+
+## 1b. Concept Deep Dive — RecreateSwapchain Chain
+
+### Debounced resize flag → full rebuild
+
+Window callbacks set `framebufferResized`; `DrawFrame` consumes it before acquire:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp
+void VulkanRenderer::NotifySwapchainResize() {
+    framebufferResized = true;
+}
+
+void VulkanRenderer::DrawFrame() {
+    if (framebufferResized) {
+        framebufferResized = false;
+        RecreateSwapchain();
+        return;
+    }
+    // ...
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        RecreateSwapchain();
+        return;
+    }
+}
+```
+
+Debouncing prevents recreate storms during live resize drag — one rebuild per frame max.
+
+### RecreateSwapchain deterministic teardown order
+
+```cpp
+void VulkanRenderer::RecreateSwapchain() {
+    deviceContext.WaitDeviceIdle();
+    frameCapture.FlushPendingCaptures(...);
+    vkFreeCommandBuffers(...);
+    CleanupSwapchain();
+    deviceContext.RecreateSwapchain();
+    frameCapture.RecreateSwapchainResources(...);
+    CreateDepthResources();
+    CreateRenderPass();
+    RecreateHdrFlightTargets();
+    scenePipeline.CreateGraphicsPipeline(...);
+    CreateFramebuffers();
+    frameSync.RecreateSwapchainSync(device(), presentSwapchain().images.GetSize());
+}
+```
+
+**Do not** destroy `VkDevice` or `VkInstance` on resize — only extent-dependent resources. Skipping `WaitDeviceIdle` causes validation errors writing to destroyed images.
+
+### OUT_OF_DATE is normal, not fatal
+
+Both acquire and present can return `VK_ERROR_OUT_OF_DATE_KHR`. Spark recreates and skips the rest of the frame — next frame acquires fresh images at the new extent.
+
 ## 2. Core Concepts
 
 ### When swapchains go stale

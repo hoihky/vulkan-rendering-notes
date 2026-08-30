@@ -16,6 +16,42 @@ Spark's `GameWorldAssetLoader` worker thread and `SceneManager::Pump` (Part XIII
 
 Milestone: async-load a large scene with an ImGui progress bar — max frame ms stays under 2× normal gameplay frame budget.
 
+## 1b. Concept Deep Dive — Two-Thread Asset Pump
+
+### Worker decodes; main thread registers + uploads
+
+```cpp
+// include/spark/scene/assets/GameWorldAssetLoader.hpp
+class GameWorldAssetLoader {
+    void RequestGltf(const char* path);
+    void OnGltfReady(const char* path, AssetLoadCallback callback);
+    /** Call Pump from the main thread each frame; caches updated only in Pump. */
+    void Pump(GameWorld& world);
+};
+```
+
+Worker thread parses glTF/PNG off the hot path; `Pump` moves decoded CPU data into `GameWorldAssetCache` and fires ready callbacks on the main thread — safe for `AddComponent` and Vulkan resource creation.
+
+### SceneManager::Pump chains scene finalize
+
+Part XIII async load and Part XVI production loading share one pump hook:
+
+```cpp
+void SceneManager::Pump() {
+    world.GetAssetLoader().Pump(world);
+    for (each LoadedSceneInstance not ready) {
+        RetryPendingComponents(instance);
+        FinalizeInstanceReadyState(instance);
+    }
+}
+```
+
+Deferred `gltf_scene` / `skinned_mesh` restores retry each frame until assets register — no multi-frame main-thread stall parsing hundreds of files synchronously.
+
+### Placeholders and generation ids
+
+Show low-res placeholder textures while high-res loads; bump generation id on finalize so stale worker completions cannot overwrite a newer request. Max frame ms should stay under 2× normal gameplay budget during load — if not, reduce per-frame Pump work or increase worker parallelism.
+
 ## 2. Core Concepts
 
 ### Two-stage asset pipeline

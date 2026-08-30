@@ -17,6 +17,62 @@ HDR scene color holds values far above 1.0 — a physically plausible sun term c
 
 You will follow `RecordTonemap` in the frame graph and reproduce the fullscreen pass in your engine.
 
+### Where tonemap sits in the full rendering pipeline
+
+Tonemap is the bridge between **scene-referred HDR** and **display-referred swapchain**. In Spark's frame graph it runs after all world content and optional SSAO:
+
+```text
+Shadow passes
+  → HDR render pass (scene + transparent resume + 2D + particles)
+  → TransitionColorToShaderRead
+  → [optional] SSAO pass (reads HDR + depth)
+  → RecordTonemap (HDR → swapchain, present render pass)
+  → Screen UI + ImGui (display space, not exposure-scaled)
+```
+
+Emissive materials authored in Part VII can exceed 1.0 in the HDR buffer **before** tonemap. PBR specular highlights on metals similarly accumulate in linear space. If you skip HDR offscreen targets (Part X Chapter 1) and draw directly to swapchain, tonemap has nothing meaningful to compress — highlights clip at 1.0.
+
+`VulkanHdrTonemapPass::RecordTonemap` binds the HDR color image as a combined image sampler, multiplies by `resolvedLighting.exposure`, runs ACES in `tonemap.frag`, and writes UNORM swapchain color. UI draws afterward so widgets are not exposure-scaled.
+
+## 1b. Concept Deep Dive — Scene-Referred to Display-Referred in One Draw
+
+### Tonemap is a fullscreen pass with push constants, not a UBO
+
+Spark's tonemap shader samples linear HDR, scales by exposure, applies Stephen Hill's ACES fitted curve, then gamma-encodes for UNORM swapchain output. No vertex buffer — three corners generate UVs from clip-space positions:
+
+```glsl
+// shaders/tonemap.frag (lines 16–29)
+vec3 acesTonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    vec3 hdr = texture(hdrColor, vUv).rgb * max(push.exposure, 1e-4);
+    vec3 ldr = acesTonemap(hdr);
+    ldr = pow(ldr, vec3(max(push.invGamma, 1e-3)));
+    outColor = vec4(ldr, 1.0);
+}
+```
+
+Exposure and `invGamma` ride in push constants — tweak in ImGui without descriptor churn.
+
+### SSAO may feed tonemap input
+
+When `ssaoActive`, the renderer updates the tonemap descriptor to sample SSAO scratch RGBA16F instead of raw scene HDR. When false, tonemap binds the HDR color view directly. UI and ImGui record **after** tonemap so HUD colors stay display-referred and ignore exposure volumes.
+
+```text
+HDR scene end → [optional] SSAO composite → RecordTonemap(exposure) → screenUi → ImGui
+```
+
+### Why ACES beats naive Reinhard
+
+Reinhard `x/(1+x)` desaturates bright yellows and blues differently — skies look chalky. ACES preserves hue through the shoulder region where sun-facing diffuse (~5–20 linear) maps to visible monitor detail. Verify in RenderDoc: tonemap pass should be exactly **one draw** per swapchain image.
+
 ## 2. Core Concepts
 
 ### Tonemap pipeline shape

@@ -15,6 +15,97 @@ samples keys, blends states, and feeds the skeleton — without embedding glTF d
 
 Build along: add AnimatorComponent to your skinned character and play the walk clip in a loop.
 
+### Animation clips for beginners
+
+An **animation clip** is keyframed motion over time — "at 0.0s knee bent 10°, at 0.5s knee bent 40°".
+
+**Playback loop:**
+
+```text
+Each frame:
+  timeSeconds += dt
+  if loop: wrap time to [0, clipDuration)
+  sample TRS keys at time → local joint transforms
+  multiply up hierarchy → world joint matrices
+  world × inverseBind → jointPalette[i]
+```
+
+**Crossfade:** switching walk → run over 0.2s blends two clip poses instead of popping:
+
+```text
+pose = lerp(poseWalk, poseRun, blendFactor)
+```
+
+**AnimatorComponent** owns time and clip index; **does not** parse glTF — it reads `SkinnedGltfAsset::clips`.
+
+**Update order:** `AnimatorPlayback` runs before render gather so `jointPalette` is ready when `SceneSubmit` builds draw items.
+
+**Loop modes:** `Loop` (walk cycle), `Once` (attack), `Hold` (freeze last frame).
+
+## 1b. Concept Deep Dive — Clip Playback and Crossfade
+
+### Update priority: FSM before Animator
+
+```cpp
+// include/spark/ecs/GameComponent.hpp (concept)
+ComponentUpdatePriority::AnimationDriver = 100;   // Character3DAnimFsm
+ComponentUpdatePriority::AnimatorPlayback = 200;    // AnimatorComponent
+```
+
+FSM selects clip index on frame N; Animator advances time and samples keys **after** FSM runs — same entity, ordered by priority.
+
+### ComputeJointPalette — crossfade blends two poses
+
+```cpp
+// src/spark/ecs/components/animation/AnimatorComponent.cpp (lines 120–146)
+void AnimatorComponent::ComputeJointPalette(Matrix4* outPalette, std::uint32_t paletteMax) const {
+    if (crossfade.active && crossfade.duration > 1.0e-4F) {
+        const float blend = crossfade.elapsed / crossfade.duration;
+        skeleton->ComputeBlendedPalette(
+                crossfade.fromClip, fromSampleT, currentClip, sampleT, blend,
+                outPalette, paletteMax);
+        return;
+    }
+    Array<Transform> pose;
+    skeleton->SampleClipPose(currentClip, sampleT, pose);
+    skeleton->BuildPaletteFromPose(pose, outPalette, paletteMax);
+}
+```
+
+`SetClipIndexWithCrossfade` sets `crossfade.fromClip`, `crossfade.elapsed`, and `crossfade.duration` — locomotion FSM calls this when switching idle→walk so feet do not pop.
+
+### SkinnedMeshPalette at submit — animator or bind pose
+
+```cpp
+// src/spark/scene/submit/detail/SkinnedMeshPalette.cpp
+bool SkinnedMeshPalette::TryFill(..., const AnimatorComponent* animator, ...) {
+    if (animator != nullptr && animator->GetSkeleton()) {
+        animator->ComputeJointPalette(outPalette, paletteMax);
+        return true;
+    }
+    if (const SharedPtr<Skeleton>& skeleton = mesh.GetSkeleton()) {
+        skeleton->BuildBindPosePalette(outPalette, paletteMax);
+        return skeleton->GetJointCount() > 0;
+    }
+    return false;
+}
+```
+
+Static props with skinned mesh but no animation still render correctly in bind pose — useful for editor placement before clips are assigned.
+
+### AnimLoopMode controls time at end of clip
+
+```cpp
+// include/spark/animation/AnimLoopMode.hpp
+enum class AnimLoopMode : std::uint8_t {
+    Loop = 0,   // wrap time with fmod
+    Once = 1,   // clamp at duration, IsClipFinished() returns true
+    Hold = 2,   // freeze on last frame
+};
+```
+
+Attack animations use `Once`; idle/walk use `Loop`. FSM checks `IsClipFinished()` before leaving attack state.
+
 ## 2. Core Concepts
 
 ### Clip playback on OnUpdate

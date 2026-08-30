@@ -15,6 +15,42 @@ Open worlds expose **draw distance**, z-fighting on distant meshes, and harsh ge
 
 Spark resolves fog parameters on CPU via `FogVolumeComponent` and `SceneRenderParams` — your build-along step wires the exponential falloff into `scene.frag` before tonemap consumes HDR color.
 
+## 1b. Concept Deep Dive — Forward Fog in Linear HDR Space
+
+### Regional fog resolves on CPU alongside post volumes
+
+`ApplyRegionalRenderVolumes` runs a fog loop before the post loop — same point-in-volume test, separate priority counter. When the camera enters a `FogVolumeComponent` bounds, params override global fog fields:
+
+```cpp
+// src/spark/scene/volume/RenderVolumes.cpp (lines 64–85)
+        if (!fogFound || fog->GetPriority() > fogPriority) {
+            fogFound = true;
+            fogPriority = fog->GetPriority();
+            params.fogEnabled = true;
+            params.fogColor = fog->GetFogColor();
+            params.fogDensity = fog->GetFogDensity();
+            params.fogStart = fog->GetFogStart();
+            params.fogEnd = fog->GetFogEnd();
+        }
+```
+
+GPU wiring in `scene.frag` is the build-along step — multiply lit linear color toward `fogColor` using view distance **before** HDR store and tonemap.
+
+### Forward fog vs post-depth fog
+
+Spark chooses **forward application** in the scene shader so emissive particles and glass can skip fog via material flags. Post-depth fog would uniform-apply across emissive and transparent sorts — simpler but wrong for glowing VFX through mist.
+
+```glsl
+// build-along target in scene.frag (concept)
+float dist = length(vWorldPos - ubo.cameraPos.xyz);
+float fogAmt = 1.0 - exp(-fogParams.x * max(dist - fogParams.y, 0.0));
+color = mix(color, fogColor, fogAmt);  // stay linear; skip sky branch
+```
+
+### Horizon color must match sky
+
+TimeOfDayDemo pairs fog tint with sky parameters — when sun warms at sunset, fog color should warm similarly or terrain silhouettes show a blue-gray cutout against orange sky. Fog runs after direct lighting and shadow visibility; SSAO contact darkening is tuned separately in foggy outdoor shots.
+
 ## 2. Core Concepts
 
 ### Exponential distance fog

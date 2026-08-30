@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,20 @@
 <p>Large outdoor terrain and prop counts submit too many draws if every mesh reaches the GPU. <strong>Frustum culling</strong> tests axis-aligned bounds against the camera frustum during <strong>SceneSubmit</strong> — keeping GPU work proportional to visible content, not total placed objects.</p>
 <p>Spark builds the frustum once from the same column-major view-projection matrix used for rendering, then tests each drawable AABB before filling <code>SceneRenderParams</code>. Sprites and tilemaps reuse that frustum through <code>SceneSpriteTileCull</code> so mesh and 2D visibility stay consistent at screen edges.</p>
 <p>Milestone: log visible draw count on TerrainDemo — count drops when camera faces sky away from terrain; tilemap visible tile count drops when panning map off-screen.</p>
+<h2 id="b.concept-deep-dive-frustum-tests-at-submit-not-on-gpu">1b. Concept Deep Dive — Frustum Tests at Submit, Not on GPU</h2>
+<h3 id="one-frustum-from-the-same-viewproj-used-for-rendering">One frustum from the same viewProj used for rendering</h3>
+<p>Spark builds <code>Frustum::FromColumnMajorViewProjection(viewProjection)</code> once per submit, then tests axis-aligned bounds before filling <code>SceneRenderParams</code>. Off-screen meshes never reach <code>vkCmdDraw</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSpatialCull.cpp (concept)
+const Frustum fr = Frustum::FromColumnMajorViewProjection(viewProjection);
+if (frustum.IntersectsAxisAlignedBox(r.aabbMin, r.aabbMax)) {
+    sink.OnDrawable(r.object, *r.mesh, r.material, r.world);
+}
+</code></pre>
+<p>Brute-force O(n) loop is the teaching baseline — BVH/grid acceleration in <code>SceneSpatialPolicyComponent</code> is optional when object count grows.</p>
+<h3 id="shared-frustum-for-3d-meshes-and-2d-tile-chunks">Shared frustum for 3D meshes and 2D tile chunks</h3>
+<p><code>SceneSpriteTileCull</code> constructs the same frustum for sprite bounds and 16×16 tilemap chunks. Mesh cull and 2D visibility stay consistent at screen edges — pan a tilemap off-screen and visible tile count drops without a separate cull pass.</p>
+<h3 id="terrain-aabb-is-conservative">Terrain AABB is conservative</h3>
+<p>Terrain draw record carries world AABB spanning the full heightfield extent — looking at sky may cull the entire patch when the conservative box falls outside frustum, saving opaque pass work. Partially visible hills still submit when any corner intersects a frustum plane.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="view-frustum-from-view-projection">View frustum from view-projection</h3>
 <p><strong>Frustum culling</strong> removes draw items whose bounds fall outside the camera view before snapshot fill. Spark builds <code>Frustum::FromColumnMajorViewProjection(viewProjection)</code> once per submit, then tests axis-aligned boxes against six clip planes.</p>
@@ -1232,6 +1252,22 @@ bool SceneSpriteTileCull::IsSpriteVisible(const Matrix4&amp; spriteModel) const 
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-frustum-tests-at-submit-not-on-gpu">1b. Concept Deep Dive — Frustum Tests at Submit, Not on GPU</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-frustum-from-the-same-viewproj-used-for-rendering">One frustum from the same viewProj used for rendering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-frustum-for-3d-meshes-and-2d-tile-chunks">Shared frustum for 3D meshes and 2D tile chunks</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#terrain-aabb-is-conservative">Terrain AABB is conservative</a>
                         </li>
                         
                         <li class="toc-h2">

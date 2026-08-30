@@ -15,6 +15,69 @@ The art is choosing topology and transform rules so coverage is complete while p
 
 Build along: create `CreateSkySphere`, parent it under a sky entity, and follow the camera like `SkyDemo::UpdateSkyTransform`.
 
+## 1b. Concept Deep Dive — Sky Mesh Geometry in Spark
+
+### CreateSkySphere — UV sphere tessellation
+
+Spark generates a latitude/longitude sphere with outward normals and equirect-friendly UVs:
+
+```cpp
+// src/spark/scene/mesh/Mesh.cpp (lines 329–371, concept)
+Mesh Mesh::CreateSkySphere(float radius, int latitudeSegments, int longitudeSegments) {
+    Mesh m(Utf8String("SkySphere"));
+    for (int iy = 0; iy <= latitudeSegments; ++iy) {
+        const float theta = (float)iy / latitudeSegments * Pi;
+        for (int ix = 0; ix <= longitudeSegments; ++ix) {
+            const float phi = (float)ix / longitudeSegments * TwoPi;
+            Vector3 pos{ sin(theta)*cos(phi), cos(theta), sin(theta)*sin(phi) };
+            pos *= radius;
+            Vector3 n = pos.Normalized();
+            Vector2 uv{ (float)ix / longitudeSegments, 1.0f - (float)iy / latitudeSegments };
+            m.vertices.PushBack({pos, n, uv});
+        }
+    }
+    // index pairs into quads → two triangles each
+    return m;
+}
+```
+
+**Why sphere not cube?** Cube skyboxes show face-edge seams when sampling equirect HDR — a tessellated sphere gives smoother raster coverage for per-pixel ray reconstruction.
+
+### CreateSkyBillboardPlane — procedural Plane mode
+
+```cpp
+// src/spark/scene/mesh/Mesh.cpp (lines 374–387)
+Mesh Mesh::CreateSkyBillboardPlane(float halfWidth, float halfHeight) {
+    Mesh m(Utf8String("SkyPlane"));
+    m.vertices.PushBack({{-hw, -hh, 0}, {0,0,1}, {0,0}});
+    m.vertices.PushBack({{ hw, -hh, 0}, {0,0,1}, {1,0}});
+    m.vertices.PushBack({{ hw,  hh, 0}, {0,0,1}, {1,1}});
+    m.vertices.PushBack({{-hw,  hh, 0}, {0,0,1}, {0,1}});
+    // CCW indices from +Z
+    return m;
+}
+```
+
+Plane mode uses **mesh UV** (`vTexCoord0.y`) for vertical gradient when no equirect texture is bound — the fragment shader does not reconstruct view rays for procedural Plane fallback.
+
+### Sky follows camera — infinite distance illusion
+
+```cpp
+// SkyDemo::UpdateSkyTransform (concept)
+skyTransform->SetTranslation(cameraPosition);  // no rotation — shader handles direction
+skyTransform->SetScale({500.0f, 500.0f, 500.0f});  // large enough to fill frustum
+```
+
+Vertex shader pushes sky to **far plane** depth so it draws behind all geometry:
+
+```glsl
+// shaders/scene.vert (lines 105–111)
+if (push.skyMode != 0) {
+    float zw = max(clip.w, 1e-5);
+    gl_Position = vec4(clip.x, clip.y, zw * (1.0 - 1e-4), zw);
+}
+```
+
 ## 2. Core Concepts
 
 ### Rasterization still needs geometry

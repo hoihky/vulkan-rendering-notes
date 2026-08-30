@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,84 @@
 <p>Gameplay knows about entities, meshes, and lights. Vulkan knows about buffers, pipelines, and descriptor sets. You need a <strong>contract</strong> — plain C++ structs — that the game fills and the renderer reads. Spark calls this contract <code>SceneRenderParams</code>.</p>
 <p>Without this boundary, every new feature leaks <code>VkBuffer</code> into demo headers. With it, you can unit-test snapshot building, swap render backends, and reason about one frame's data as a single document handed to the GPU.</p>
 <p>Open <code>include/spark/engine/SceneRenderParams.hpp</code> while you read.</p>
+<h2 id="b.concept-deep-dive-the-scenerenderparams-contract">1b. Concept Deep Dive — The SceneRenderParams Contract</h2>
+<h3 id="three-layers-one-handoff-per-frame">Three layers, one handoff per frame</h3>
+<p>Spark enforces a strict boundary between simulation, snapshot, and GPU backend. Game code never sees <code>VkBuffer</code>; the renderer never reads <code>TransformComponent</code> directly:</p>
+<pre><code class="language-text">Simulation (mutable ECS)     Snapshot (immutable copy)      GPU backend
+────────────────────────     ─────────────────────────      ───────────
+TransformComponent           SceneDrawItem.model            VkBuffer + pipeline
+MeshComponent                SceneMeshSlot / customMesh     vkCmdDrawIndexed
+Camera                       viewProjection                 SceneUBO write
+                             lightDirectionWorld            descriptor set 0
+</code></pre>
+<p>The snapshot is a <strong>value document</strong>: <code>SetSceneRenderParams</code> copies it into <code>VulkanRenderer::pendingScene</code> so the GPU can read last frame's data while the game builds the next one.</p>
+<h3 id="scenedrawitem-flat-struct-no-vulkan-handles">SceneDrawItem — flat struct, no Vulkan handles</h3>
+<p>Every mesh draw is one row in <code>draws</code> or <code>transparentDraws</code>. Spark keeps pointers to <strong>assets</strong> (<code>SharedPtr&lt;Mesh&gt;</code>) but never to GPU objects:</p>
+<pre><code class="language-cpp">// include/spark/engine/SceneRenderParams.hpp (lines 174–180)
+struct SceneDrawItem {
+    SceneMeshSlot mesh = SceneMeshSlot::UnitCube;
+    SceneSkyMode skyMode = SceneSkyMode::None;
+    Matrix4 model = Matrix4::Identity;
+    Vector3 albedo{1.0F, 1.0F, 1.0F};
+    /** Index into SceneRenderParams::sceneTextures or sceneHdrTextures; -1 = no texture (albedo only). */
+    std::int32_t textureLayer = -1;
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Field category</th>
+<th>Examples</th>
+<th>Why not Vulkan?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Transform</td>
+<td><code>model</code></td>
+<td>Push constants at record time</td>
+</tr>
+<tr>
+<td>Geometry id</td>
+<td><code>mesh</code>, <code>customMesh</code></td>
+<td>Renderer resolves to buffer ranges</td>
+</tr>
+<tr>
+<td>Material</td>
+<td><code>albedo</code>, <code>textureLayer</code>, <code>metallic</code></td>
+<td>UBO + push constants + texture array</td>
+</tr>
+<tr>
+<td>Routing</td>
+<td><code>opacity</code>, <code>skyMode</code></td>
+<td>Opaque vs transparent vs sky pass</td>
+</tr>
+</tbody>
+</table>
+<h3 id="setscenerenderparams-copy-merge-textures-resolve-lighting">SetSceneRenderParams — copy, merge textures, resolve lighting</h3>
+<p>The renderer does more than a blind assign: it merges texture arrays (so snapshot pointers stay stable), clears custom mesh pool when no custom draws remain, and pre-resolves lighting for uniform writes:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 579–591)
+void VulkanRenderer::SetSceneRenderParams(const SceneRenderParams&amp; params) {
+    if (!SceneHasCustomMeshDraws(params)) {
+        customMeshPool.ClearKnownMeshes();
+    }
+    mergedSceneTextures = params.sceneTextures;
+    mergedSceneHdrTextures = params.sceneHdrTextures;
+    pendingScene = params;
+    pendingScene.sceneTextures = mergedSceneTextures;
+    pendingScene.sceneHdrTextures = mergedSceneHdrTextures;
+    SceneSubmitDetail::ResolveIblEnvironmentLayer(pendingScene);
+    sceneParamsValid = true;
+    resolvedLighting = SceneLightingResolver::Resolve(pendingScene);
+}
+</code></pre>
+<p><code>sceneParamsValid</code> gates all mesh passes — an empty or unset snapshot skips draws safely instead of reading stale GPU state.</p>
+<h3 id="game-code-never-includes-vulkanrenderer.hpp">Game code never includes VulkanRenderer.hpp</h3>
+<p>Demos call through <code>IEngineContext::SetSceneRenderParams</code>, which forwards to <code>IFramePresenter</code>. The facade keeps Part II demos compilable without linking every Vulkan object:</p>
+<pre><code class="language-text">Demo OnRender → EngineContext::SetSceneRenderParams → VulkanRenderer::SetSceneRenderParams
+                                                      → pendingScene (copy)
+DrawFrame       → WriteUniformBuffer(pendingScene)
+               → sceneOpaquePass.Record(pendingScene.draws)
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="snapshot-vs-simulation-state">Snapshot vs simulation state</h3>
 <table class="table">
@@ -1287,6 +1371,26 @@ context.SetSceneRenderParams(params);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-the-scenerenderparams-contract">1b. Concept Deep Dive — The SceneRenderParams Contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#three-layers-one-handoff-per-frame">Three layers, one handoff per frame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenedrawitem-flat-struct-no-vulkan-handles">SceneDrawItem — flat struct, no Vulkan handles</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#setscenerenderparams-copy-merge-textures-resolve-lighting">SetSceneRenderParams — copy, merge textures, resolve lighting</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#game-code-never-includes-vulkanrendererhpp">Game code never includes VulkanRenderer.hpp</a>
                         </li>
                         
                         <li class="toc-h2">

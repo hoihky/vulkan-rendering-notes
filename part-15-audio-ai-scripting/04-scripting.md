@@ -16,6 +16,50 @@ You may not ship C# in your fork yet — understanding the boundary prevents acc
 
 Milestone: document OnUpdate call order mirroring native demos and list ten allowed vs ten forbidden interop APIs.
 
+## 1b. Concept Deep Dive — SparkInterop C ABI
+
+### Stable C header, opaque handles
+
+Managed gameplay cannot include C++ ECS headers that change layout every commit. Spark exposes a **C API** in `SparkInterop.h` — P/Invoke friendly, parsed by ClangSharp for codegen:
+
+```cpp
+// include/spark/scripting/SparkInterop.h
+typedef struct SparkEngineContext SparkEngineContext;
+typedef struct SparkGameWorld SparkGameWorld;
+typedef struct SparkGameObject SparkGameObject;
+
+typedef struct SparkFrameTiming {
+    float deltaTimeSeconds;
+    // ...
+} SparkFrameTiming;
+```
+
+Handles are opaque pointers — scripts never see `GameObject` memory layout or vtables.
+
+### Allowed: subsystem facades native demos use
+
+```text
+spark_world_create_game_object
+spark_transform_set_translation
+spark_physics_simulate_2d
+spark_process_sound_cues
+spark_game_get_world
+```
+
+These route through the same code paths as `Platformer2DDemo` — physics, audio, component mutation without GPU exposure.
+
+### Forbidden: anything touching Vulkan or ECS internals
+
+```text
+vkCreateBuffer          — never exported
+GameComponent* raw      — layout unstable
+SceneRenderParams*      — per-frame renderer state
+DescriptorSet handles   — GPU resource lifetime
+Mesh vertex buffer ptr  — bypasses asset cache
+```
+
+`SparkInteropComponents.cpp` implements safe mutation wrappers; `SparkInteropScene.cpp` covers spawn/destroy. Regenerate C# bindings after header changes: `tools/generate-csharp-bindings.sh`.
+
 ## 2. Core Concepts
 
 ### Why a C ABI boundary

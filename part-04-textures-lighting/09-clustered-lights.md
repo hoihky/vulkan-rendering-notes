@@ -15,6 +15,70 @@ Forward rendering with **N lights × M pixels** naively costs O(lights × fragme
 
 Spark implements the **full CPU cluster builder** and SSBO infrastructure — grid metadata in UBO, lights in SSBO binding 4, indices in binding 5. The current `scene.frag` path **iterates all punctual lights** per fragment (acceptable at 256+128 cap) with a comment that cluster lookup is reserved for a future tiled path. This chapter teaches the architecture Spark has and the shader loop it runs today.
 
+### Why not loop all 256 lights per pixel? (beginner)
+
+Naive forward shading:
+
+```glsl
+for (int i = 0; i < pointLightCount; ++i)
+  color += shadePoint(params.pointLights[i]);
+```
+
+With 200 lights and 2M pixels, that's 400M light evaluations per frame — too slow on mobile GPUs.
+
+**Clustered lighting** divides view space into a grid (e.g. 16×16×16 cells). Each cell stores a **small list** of light indices that overlap that volume. Each pixel only loops lights in its cell:
+
+```text
+View frustum divided into clusters (like 3D buckets)
+  Cluster (5,3,12) → lights [2, 7, 41]
+  Pixel in that cluster → loop 3 lights, not 256
+```
+
+**Spark today:** CPU builds the cluster grid and uploads SSBOs; `scene.frag` may still loop all punctual lights until tiled lookup is enabled — the data structures are ready.
+
+**Beginner mental model:**
+
+| Approach | Cost |
+|----------|------|
+| All lights per pixel | O(pixels × all lights) |
+| Clustered | O(pixels × lights in cell) |
+
+Cells with no lights → cheap. Dense city night scene → more lights per cell but still bounded.
+
+## 1b. Concept Deep Dive — Cluster Grid and SSBO Layout
+
+### 16×16×16 grid on CPU
+
+`VulkanClusteredForwardLights.cpp` assigns each point/spot light to screen-depth clusters:
+
+```cpp
+// Cluster index: ix + iy * kClusterGridX + iz * (kClusterGridX * kClusterGridY)
+std::uint32_t ClusterIndex(const int ix, const int iy, const int iz);
+
+int FindDepthSlice(const float dist, const float nearPlane, const float farPlane, const int gridZ);
+// logarithmic depth slicing between near and far clip planes
+```
+
+Lights project to NDC, expand by screen-radius, and mark every overlapping tile — a conservative halo prevents boundary pixels from missing influencers.
+
+### UBO metadata + SSBO payload
+
+```cpp
+// SceneUniformGpu cluster fields (written by VulkanSceneUniformWriter)
+float clusterGrid[4]{};   // xyz = grid dims; w = point light count
+float clusterDepth[4]{};  // z = spot count; w = clustered enabled flag
+```
+
+SSBO binding 4 holds packed `ClusterLightsGpu` records; binding 5 holds per-cluster index lists (`ClusterGridGpu`). Shaders decode light type from index ranges using counts in the UBO.
+
+### Current shader path vs infrastructure
+
+Spark **builds and uploads** the full cluster grid every frame. `scene.frag` may still iterate all punctual lights in `accumulatePunctualPbr` until tiled lookup is enabled — the SSBO data is production-ready; the inner loop is the incremental optimization. Profiling at 256+128 lights is when cluster lookup pays off.
+
+### Perspective Y flip alignment
+
+`NdcToScreenTile` flips clip Y to match `gl_FragCoord` and `sparkClusterIndex` in GLSL — mismatched Y convention assigns lights to wrong horizontal tiles (symptom: lights appear only on half the screen).
+
 ## 2. Core Concepts
 
 ### Cluster grid dimensions

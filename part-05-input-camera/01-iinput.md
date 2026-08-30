@@ -17,6 +17,67 @@ Spark inverts the dependency with **`IInput`** — a small virtual interface gam
 
 This chapter defines the contract: what queries exist, what "this frame" means, and how context exposes input to `IGame::OnUpdate`.
 
+### Input abstraction for beginners
+
+**Problem:** if every system calls GLFW directly, you cannot:
+
+- Run headless tests that fake "W pressed"
+- Port to console without rewriting every camera
+- Swap input backends (SDL, raw X11) without touching gameplay
+
+**Solution:** `IInput` is a thin **interface** — gameplay asks questions, platform code answers:
+
+| Query | Meaning |
+|-------|---------|
+| `IsKeyDown(Key::W)` | W is held **right now** |
+| `WasKeyPressed(Key::Space)` | W went down **this frame only** (edge) |
+| `GetMouseDelta()` | Pixel movement since last frame |
+| `GetCursorPosition()` | Mouse in framebuffer pixels |
+
+**Edge vs held:** jump on `WasKeyPressed(Space)` — if you use `IsKeyDown`, holding space triggers jump every frame.
+
+```text
+Player code:
+  if (input.WasKeyPressed(Key::Space)) velocity.y = jumpSpeed;
+
+Engine provides:
+  IInput& input = ctx.GetInput();  // GlfwInput on desktop
+```
+
+You never `#include <GLFW/glfw3.h>` in `FlyCamera` — only in `GlfwInput.cpp`.
+
+## 1b. Concept Deep Dive — IInput Virtual Contract
+
+### Minimal surface area for gameplay
+
+```cpp
+// include/spark/engine/IInput.hpp
+class IInput {
+public:
+    virtual ~IInput() = default;
+    [[nodiscard]] virtual bool IsKeyDown(int keyCode) const = 0;
+    [[nodiscard]] virtual bool IsKeyPressedThisFrame(int keyCode) const = 0;
+    [[nodiscard]] virtual float GetMouseDeltaX() const { return 0.0F; }
+    [[nodiscard]] virtual float GetMouseDeltaY() const { return 0.0F; }
+    virtual void SetCursorCaptured(bool capture) { (void)capture; }
+    virtual void GetCursorFramebufferPixels(float& outX, float& outY, int w, int h) const;
+};
+```
+
+Key codes are **GLFW values** when using `GlfwInput` — `FlyCamera.cpp` includes `GLFW/glfw3.h` only for `GLFW_KEY_W` constants, not for polling. A headless test stub can hard-code `IsKeyDown` return values without linking GLFW.
+
+### Edge queries require BeginFrame
+
+`IsKeyPressedThisFrame` compares current vs previous snapshot — meaningless until the platform backend runs `BeginFrame()` after `PollEvents`. Documented order in Chapter 3; violating it produces sticky keys or missed first presses.
+
+### HiDPI cursor in drawable pixels
+
+`GetCursorFramebufferPixels` accepts swapchain width/height so picking and UI align with Vulkan framebuffer pixels on Retina displays — window-point coordinates would miss by 2× on scaled monitors.
+
+### Engine context injection
+
+`IEngineContext::GetInput()` returns the same `IInput&` for the frame. Demos take `IInput& input = ctx.GetInput()` in `OnUpdate` — no global singleton. UI (`UiInputRouter`) and gameplay share the reference but UI reads input later in the frame (after game update).
+
 ## 2. Core Concepts
 
 ### Adapter pattern for input

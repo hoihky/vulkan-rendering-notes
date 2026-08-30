@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,27 @@
 <p>Optimization without measurement is folklore. <strong>Profiling</strong> splits CPU time (physics, SceneSubmit, command record) and GPU time (shadow, scene, SSAO, tonemap) so you fix the real bottleneck.</p>
 <p>Spark passes <code>FrameTiming</code> everywhere and integrates ImGui overlays in demos — you will add labels and timers aligned with the frame graph from Parts IX–X, then save baselines before renderer refactors.</p>
 <p>Milestone: F3 overlay shows FPS; one RenderDoc capture with pass labels matching the Part X frame graph.</p>
+<h2 id="b.concept-deep-dive-frametiming-instrumentation">1b. Concept Deep Dive — FrameTiming Instrumentation</h2>
+<h3 id="frametiming-travels-with-every-subsystem-tick">FrameTiming travels with every subsystem tick</h3>
+<pre><code class="language-cpp">// include/spark/engine/FrameTiming.hpp
+struct FrameTiming {
+    float deltaTimeSeconds = 0.0F;
+    float totalTimeSeconds = 0.0F;
+    std::uint64_t frameIndex = 0;
+};
+</code></pre>
+<p>Engine computes timing once per frame; <code>OnUpdate</code>, physics, editor panels, and demos receive the same struct — consistent denominators for scoped timers and FPS overlays.</p>
+<h3 id="demofoundation-fps-overlay-pattern">DemoFoundation FPS overlay pattern</h3>
+<p>Spark demos toggle an ImGui FPS overlay via F3 (<code>ToggleDemoFpsOverlayVisible</code>). Wrap expensive sections with scoped timers logged to the overlay:</p>
+<pre><code class="language-text">Frame N:
+physics.Simulate2D     0.4 ms
+FillSceneFromWorld     1.2 ms
+VulkanRenderer::DrawFrame  8.1 ms
+</code></pre>
+<p>Save JSON baselines before renderer refactors — compare shadow pass ms after Part IX changes, not gut feel.</p>
+<h3 id="renderdoc-pass-grouping">RenderDoc pass grouping</h3>
+<p>Name command buffer regions to match the Part X frame graph — shadow → opaque → particles → SSAO → tonemap → UI. Without labels, GPU captures show anonymous <code>vkCmdDrawIndexed</code> blobs; with labels, you see which pass regressed after a pipeline change.</p>
+<p>CPU timers tell you <strong>where</strong> to look; GPU captures tell you <strong>what</strong> to fix inside the renderer.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="measure-before-optimize">Measure before optimize</h3>
 <p>Guessing bottlenecks wastes weeks. Split frame cost:</p>
@@ -1238,6 +1265,22 @@ if (input-&gt;IsKeyPressedThisFrame(GLFW_KEY_F3) || input-&gt;IsKeyPressedThisFr
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-frametiming-instrumentation">1b. Concept Deep Dive — FrameTiming Instrumentation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frametiming-travels-with-every-subsystem-tick">FrameTiming travels with every subsystem tick</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#demofoundation-fps-overlay-pattern">DemoFoundation FPS overlay pattern</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#renderdoc-pass-grouping">RenderDoc pass grouping</a>
                         </li>
                         
                         <li class="toc-h2">

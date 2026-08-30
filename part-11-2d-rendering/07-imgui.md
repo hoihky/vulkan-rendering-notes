@@ -13,6 +13,31 @@
 Tuning HDR exposure, spawning debug entities, and inspecting frame flags needs **fast iteration UI**. Dear ImGui generates draw lists each frame; your engine uploads them like screen UI but with its own Vulkan backend and descriptor pool.
 
 Spark records ImGui immediately after `screenUi` in the present pass. Milestone: exposure slider live-tunes tonemap while gameplay input pauses when the mouse hovers ImGui panels.
+
+## 1b. Concept Deep Dive — Immediate-Mode Debug UI on the Present Pass
+
+### ImGui rebuilds every frame; screen UI is retained arrays
+
+Dear ImGui is **immediate mode** — each tick you call `ImGui::Button`, ImGui builds transient widget state and draw lists from scratch. Spark's production screen UI (Chapter 6) pushes retained `ScreenRectDraw` structs. ImGui excels at dev tools: exposure sliders, spawn menus, frame stats.
+
+```cpp
+// Typical integration loop (concept)
+ImGui_ImplVulkan_NewFrame();
+ImGui_ImplGlfw_NewFrame();
+ImGui::NewFrame();
+// ... debug panels ...
+ImGui::Render();
+RecordImGuiDrawData(commandBuffer);  // after tonemap + screenUi
+```
+
+### Same present pass as screen UI, after tonemap
+
+`VulkanRenderer::RecordImGuiDrawData` runs at the end of the present pass so widget colors match display space. NewFrame happens in demo `OnUpdate` **before** snapshot submit — draw data must be recorded after tonemap target is bound.
+
+### Input capture via WantCaptureMouse / WantCaptureKeyboard
+
+Poll ImGui IO flags before gameplay camera controls — when the mouse hovers a panel, disable fly-camera input so sliders do not fight WASD. Spark wraps ImGui behind `IImGuiLayer`; shipping builds can strip the layer while retaining screen UI HUD art.
+
 ## 2. Core Concepts
 
 ### Immediate-mode vs retained UI

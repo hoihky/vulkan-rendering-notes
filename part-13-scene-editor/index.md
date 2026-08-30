@@ -10,7 +10,8 @@ Persist scenes to disk, load them on background threads, and build an in-engine 
 | 4 | [Editor Application](04-editor-shell.md) |
 | 5 | [Editor Panels](05-editor-panels.md) |
 | 6 | [Scene Editor Demo](06-scene-editor-demo.md) |
+| 7 | [Content Authoring Pipeline](07-content-authoring-pipeline.md) |
 
-**Arc:** `spark_scene_v4` text format → registry Capture/Apply handlers → `SceneManager` async Pump → `EditorApplication` shell + panels → `SceneEditor3DDemo` save/load regression.
+**Arc:** `spark_scene_v4` text format → registry Capture/Apply handlers → `SceneManager` async Pump → `EditorApplication` shell + panels → `SceneEditor3DDemo` save/load regression → **glTF import → prefab → level placement → runtime GPU draw**.
 
 Continue to [Part XIV — Physics](../part-14-physics/index.md).

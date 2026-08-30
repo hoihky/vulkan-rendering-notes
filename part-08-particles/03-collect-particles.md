@@ -15,6 +15,55 @@ You need a **collection step** that flattens all enabled emitters into `particle
 
 Build along: after UpdateGameObjects, fill `params.particles` from every active ParticleEmitterComponent.
 
+## 1b. Concept Deep Dive — CollectInstances and SceneSubmit Wiring
+
+### Export loop — age interpolation on CPU
+
+```cpp
+// src/spark/ecs/components/rendering/ParticleEmitterComponent.cpp (lines 130–149)
+void ParticleEmitterComponent::CollectInstances(Array<SceneParticleInstance>& out) const {
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const SimParticle& p = slots[i];
+        if (!p.alive) continue;
+        const float t = p.maxAge > 1.0e-6F ? (p.age / p.maxAge) : 1.0F;
+        const float u = std::clamp(t, 0.0F, 1.0F);
+        const float sz = p.size0 + (p.size1 - p.size0) * u;
+        const Vector4 c = p.color0 + (p.color1 - p.color0) * u;
+        SceneParticleInstance inst{};
+        inst.position = p.position;
+        inst.size = sz;
+        inst.color = c;
+        out.PushBack(inst);
+    }
+}
+```
+
+No ECS pointers leave the emitter — only plain structs suitable for `SceneRenderParams`.
+
+### FillStandardLitSceneFromWorld — global cap and camera basis
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 524–547)
+params.particles.Clear();
+if (enableParticles) {
+    params.particleCameraRight = particleCameraRight.Normalized();
+    params.particleCameraUp = particleCameraUp.Normalized();
+    world.ForEachActiveGameObject([&params](GameObject* o) {
+        if (params.particles.GetSize() >= SceneRenderParams::MaxParticles) return;
+        const ParticleEmitterComponent* pe = o->GetComponent<ParticleEmitterComponent>();
+        if (pe == nullptr || !pe->IsEmitterEnabled()) return;
+        Array<SceneParticleInstance> chunk;
+        pe->CollectInstances(chunk);
+        for (std::size_t ci = 0; ci < chunk.GetSize(); ++ci) {
+            if (params.particles.GetSize() >= SceneRenderParams::MaxParticles) return;
+            params.particles.PushBack(chunk[ci]);
+        }
+    });
+}
+```
+
+`MaxParticles` is 8192 globally — later emitters are silently truncated once the cap is hit. Camera right/up come from the main camera view matrix (not particle-specific) so all billboards share one facing basis per frame.
+
 ## 2. Core Concepts
 
 ### CollectInstances export

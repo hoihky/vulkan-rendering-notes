@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,31 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Global exposure works for uniform outdoor scenes; <strong>interiors, caves, and cinematic beats</strong> need local brightness control. Constantly rebalancing every light entity is fragile — artists want <strong>invisible regions</strong> that push exposure toward target values when the camera enters them.</p>
 <p><strong>Post-process volumes</strong> solve this on the CPU: test camera position against authored bounds, pick the winning volume, write <code>SceneRenderParams.exposure</code>, and pass the resolved value into <code>RecordTonemap</code>. Spark uses <code>PostProcessVolumeComponent</code> and <code>ApplyRegionalRenderVolumes</code> — no extra render pass required.</p>
+<h2 id="b.concept-deep-dive-cpu-volume-resolve-gpu-tonemap-multiply">1b. Concept Deep Dive — CPU Volume Resolve, GPU Tonemap Multiply</h2>
+<h3 id="volumes-mutate-scenerenderparams-not-vulkan-objects">Volumes mutate SceneRenderParams, not Vulkan objects</h3>
+<p>Gameplay never calls Vulkan for exposure tweaks. Each frame <code>ApplyRegionalRenderVolumes</code> walks ECS, tests camera position against oriented box/sphere bounds, and writes overrides into the render snapshot before uniform upload:</p>
+<pre><code class="language-cpp">// src/spark/scene/volume/RenderVolumes.cpp (lines 88–114)
+world.ForEachActiveGameObject([&amp;](GameObject* o) {
+    const PostProcessVolumeComponent* post = o-&gt;GetComponent&lt;PostProcessVolumeComponent&gt;();
+    if (post == nullptr || !post-&gt;IsEnabled()) return;
+    if (!PointInsideVolume(cameraPositionWorld, *o, post-&gt;GetShape(), post-&gt;GetHalfExtents())) return;
+    if (!postFound || post-&gt;GetPriority() &gt; postPriority) {
+        postFound = true;
+        postPriority = post-&gt;GetPriority();
+        if (post-&gt;HasExposureOverride()) {
+            params.exposure = post-&gt;GetExposure();
+        }
+        if (post-&gt;HasSsaoOverride()) {
+            params.ssaoEnabled = post-&gt;GetSsaoEnabled();
+        }
+    }
+});
+</code></pre>
+<p>Strict <strong>priority winner</strong> — highest number beats lower on overlap, not distance-weighted blend.</p>
+<h3 id="exposure-scales-tonemap-input-not-sun-intensity">Exposure scales tonemap input, not sun intensity</h3>
+<p><code>PostProcessVolumeComponent</code> can also override <code>ambientScale</code> — that affects scene UBO ambient terms. Exposure alone multiplies HDR radiance in <code>tonemap.frag</code> via <code>resolvedLighting.exposure</code> passed to <code>RecordTonemap</code>. Artists darken cave <strong>display</strong> without rebalancing every directional light entity.</p>
+<h3 id="shared-volume-math-with-fog">Shared volume math with fog</h3>
+<p><code>PointInsideVolume</code> in <code>VolumeRegions.cpp</code> serves both post and fog volume components — same transform-to-local-space test, independent priority counters per volume type. Camera position must be final for the frame (after physics, before submit) when resolve runs.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="post-volume-data-model">Post volume data model</h3>
 <p><strong>Post-process volumes</strong> are invisible regions that override tonemap-related settings when the camera enters them:</p>
@@ -1360,6 +1391,22 @@ hdrTonemapPass.RecordTonemap(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cpu-volume-resolve-gpu-tonemap-multiply">1b. Concept Deep Dive — CPU Volume Resolve, GPU Tonemap Multiply</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#volumes-mutate-scenerenderparams-not-vulkan-objects">Volumes mutate SceneRenderParams, not Vulkan objects</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#exposure-scales-tonemap-input-not-sun-intensity">Exposure scales tonemap input, not sun intensity</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-volume-math-with-fog">Shared volume math with fog</a>
                         </li>
                         
                         <li class="toc-h2">

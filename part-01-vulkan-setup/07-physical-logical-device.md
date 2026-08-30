@@ -14,6 +14,134 @@ A machine may have **multiple GPUs** — integrated, discrete, software rasteriz
 
 This chapter is the bridge from instance-level setup to device-level resources. Without a logical device, you cannot create swapchains, buffers, or pipelines.
 
+### GPUs and queues for complete beginners
+
+Your computer may have **more than one GPU**:
+
+- **Integrated GPU** — shares memory with CPU (laptop power saving).
+- **Discrete GPU** — dedicated graphics card (gaming PC).
+- **Software rasterizer** — CPU emulation (slow, for testing).
+
+Vulkan lists each as a `VkPhysicalDevice`. You **query** them — you do not "open" them until you create a `VkDevice`.
+
+A GPU exposes **queues** — submission queues where work actually runs:
+
+```text
+Graphics queue  → vkCmdDraw, render passes, compute shaders tied to graphics
+Present queue   → vkQueuePresentKHR (show image on monitor)
+```
+
+Often both live in the **same queue family** (same index). Spark checks `vkGetPhysicalDeviceSurfaceSupportKHR` to ensure the chosen family can present to your GLFW window.
+
+**Step-by-step what Spark does:**
+
+1. `vkEnumeratePhysicalDevices` — list all GPUs.
+2. Score each GPU (discrete preferred, must support required extensions).
+3. Pick the best `VkPhysicalDevice`.
+4. Find queue family index with `VK_QUEUE_GRAPHICS_BIT`.
+5. Confirm that family can present to the surface.
+6. `vkCreateDevice` with `VK_KHR_swapchain` extension enabled.
+7. `vkGetDeviceQueue` — store graphics and present queue handles.
+
+Until step 6 succeeds, you cannot create a swapchain. Until the swapchain exists, you cannot draw to the screen.
+
+## 1b. Concept Deep Dive — Selecting and Opening a GPU
+
+### Physical query, logical ownership
+
+Vulkan splits GPU access into two handles deliberately. `VkPhysicalDevice` is **read-only**: you query properties, memory heaps, queue families, and surface capabilities, but you never destroy it. `VkDevice` is your **logical** GPU — the handle you pass to `vkCreateBuffer`, `vkCreateSwapchainKHR`, and `vkQueueSubmit`. One physical device may be opened once per process (typically); Spark opens the first device that passes `IsDeviceSuitable`.
+
+Suitability is stricter than "has Vulkan support." Spark requires complete graphics **and** present queue families for the window surface, non-empty swapchain format and present-mode lists, and `VK_KHR_swapchain` at the **device** extension level (instance extensions are not enough). On Apple, `VK_KHR_portability_subset` must also be present for MoltenVK compliance.
+
+Queue family indices drive logical device creation: when graphics and present share a family, one `VkDeviceQueueCreateInfo` suffices; when they differ (some laptops), Spark submits two create infos with `VK_SHARING_MODE_CONCURRENT` on the swapchain later so both queues can touch the same image without explicit ownership transfers every frame.
+
+### Enumeration → device open
+
+```text
+vkEnumeratePhysicalDevices
+        │
+        ▼
+for each VkPhysicalDevice:
+        IsDeviceSuitable? ──no──► try next
+        │
+       yes
+        ▼
+FindQueueFamilies (graphics + present indices)
+        ▼
+vkCreateDevice + VK_KHR_swapchain
+        ▼
+vkGetDeviceQueue(graphics) , vkGetDeviceQueue(present)
+```
+
+| Check | Why it matters |
+|-------|----------------|
+| `VK_QUEUE_GRAPHICS_BIT` | Render passes and draws |
+| Surface present support | `vkQueuePresentKHR` target |
+| Swapchain formats/modes | `vkCreateSwapchainKHR` inputs |
+| `VK_KHR_swapchain` extension | Function pointers for presentation |
+
+### Queue family search — graphics and present on same loop
+
+```cpp
+// src/spark/render/gpu/VulkanGpuPhysicalDevice.cpp (lines 21–35)
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            indices.graphicsFamily = i;
+            indices.hasGraphicsFamily = true;
+        }
+        VkBool32 presentSupport = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport);
+        if (presentSupport) {
+            indices.presentFamily = i;
+            indices.hasPresentFamily = true;
+        }
+        if (indices.Complete()) {
+            break;
+        }
+    }
+```
+
+### Suitability ties queues to swapchain support
+
+```cpp
+// src/spark/render/gpu/VulkanGpuPhysicalDevice.cpp (lines 55–72)
+bool VulkanGpuPhysicalDevice::IsDeviceSuitable(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+    const QueueFamilyIndices queueFamilies = FindQueueFamilies(physicalDevice, surface);
+    if (!queueFamilies.Complete()) {
+        return false;
+    }
+    const SwapchainSupportDetails swapchainSupport = VulkanGpuSwapchain::QuerySwapchainSupport(physicalDevice, surface);
+    if (swapchainSupport.formats.IsEmpty() || swapchainSupport.presentModes.IsEmpty()) {
+        return false;
+    }
+    if (!DeviceExtensionSupported(physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        return false;
+    }
+    return true;
+}
+```
+
+### Logical device — one or two queue create infos
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 164–187)
+void VulkanDeviceContext::CreateLogicalDevice() {
+    Array<VkDeviceQueueCreateInfo> queueCreateInfos;
+    constexpr float queuePriority = 1.0F;
+    if (queueFamilies.graphicsFamily == queueFamilies.presentFamily) {
+        VkDeviceQueueCreateInfo queueCreateInfo{};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = queueFamilies.graphicsFamily;
+        queueCreateInfo.queueCount = 1;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+        queueCreateInfos.PushBack(queueCreateInfo);
+    } else {
+        // separate qGraphics and qPresent create infos ...
+    }
+```
+
+After `vkCreateDevice`, Spark stores both queue handles — acquire/submit uses graphics; present may use a different queue when families differ.
+
 ## 2. Core Concepts
 
 ### Physical vs logical device

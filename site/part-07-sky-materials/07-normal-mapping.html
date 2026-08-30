@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,52 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Flat meshes need <strong>surface detail</strong> without extra geometry. Normal maps perturb shading normals per texel — but wrong TBN, sRGB decode, or green-channel convention makes lighting slide across UV seams or look mushy.</p>
 <p>Build along: assign a normal texture on <code>MaterialComponent</code>, toggle it in <code>MaterialShowcase3DDemo</code> (<strong>2</strong> key), and compare specular footprint on the high-segment sphere.</p>
+<h2 id="b.concept-deep-dive-tbn-construction-in-scene.frag">1b. Concept Deep Dive — TBN Construction in scene.frag</h2>
+<h3 id="submit-registers-normal-map-layer">Submit registers normal map layer</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmitMaterial.cpp (concept)
+if (mat-&gt;GetNormalTexture()) {
+    item.normalMapLayer = FindOrAddSceneTexture(params, mat-&gt;GetNormalTexture(), ...);
+    item.normalScale = mat-&gt;GetNormalScale();
+    item.normalUv = mat-&gt;GetNormalUvMap();
+}
+</code></pre>
+<p><code>push.normalMapLayer = -1</code> when no map — shader uses interpolated vertex normal only.</p>
+<h3 id="fragment-shader-normal-perturbation">Fragment shader normal perturbation</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (concept — normal map block)
+if (push.normalMapLayer &gt;= 0) {
+    vec3 tN = texture(sceneTextures, vec3(sparkMapUv(1), float(push.normalMapLayer))).xyz;
+    tN = tN * 2.0 - 1.0;
+    tN.y = -tN.y;  // OpenGL-style green channel convention
+    tN.xy *= max(push.normalScale, 0.0);
+
+    vec3 T, B, Ngeom = normalize(vNormal);
+    if (dot(vTangent.xyz, vTangent.xyz) &gt; 1e-8) {
+        T = normalize(vTangent.xyz);
+        B = normalize(cross(Ngeom, T) * vTangent.w);  // handedness from tangent.w
+    } else {
+        // derivative fallback when glTF tangents missing
+        vec3 dpdx = dFdx(vWorldPos), dpdy = dFdy(vWorldPos);
+        vec2 duvdx = dFdx(vTexCoord0), duvdy = dFdy(vTexCoord0);
+        T = normalize(dpdx * duvdy.y - dpdy * duvdx.y);
+        B = normalize(-dpdx * duvdy.x + dpdy * duvdx.x);
+    }
+    mat3 TBN = mat3(T, B, Ngeom);
+    N = normalize(TBN * tN);
+}
+</code></pre>
+<p><strong>MikkTSpace tangents</strong> from glTF land in <code>vTangent</code> (location 3) with <code>w</code> = bitangent sign. Derivative fallback costs extra ALU but saves broken imports.</p>
+<h3 id="procedural-normal-in-materialshowcase3ddemo">Procedural normal in MaterialShowcase3DDemo</h3>
+<pre><code class="language-cpp">// src/spark/demo/MaterialShowcase3DDemo.cpp (concept)
+Texture2D BuildTangentNormalRipples(uint32_t size, Utf8String name) {
+    // encode unit normals to RGB: (n * 0.5 + 0.5)
+    // ripple pattern in XY, Z always positive (pointing out)
+    tex.SetPixels(size, size, rgba);
+    return tex;
+}
+</code></pre>
+<p>Press <strong>2</strong> to toggle — specular highlights follow ripple bumps without adding geometry subdivisions.</p>
+<h3 id="normal-affects-all-shading-branches">Normal affects all shading branches</h3>
+<p>Perturbed <code>N</code> feeds <code>evalBRDF</code>, toon stepped N·L, IBL <code>sparkEvalSpecularIbl</code>, and shadow bias calculations — one TBN block before shading model branch.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="tangent-space-perturbation">Tangent-space perturbation</h3>
 <p>Normal maps store surface detail as RGB offsets in tangent space (typically Z-up in map space). The shader builds a <strong>TBN</strong> matrix and transforms sampled perturbation to world <strong>N</strong> before any lighting dot products.</p>
@@ -1216,6 +1268,26 @@ if (mat-&gt;GetNormalTexture()) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-tbn-construction-in-scenefrag">1b. Concept Deep Dive — TBN Construction in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#submit-registers-normal-map-layer">Submit registers normal map layer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fragment-shader-normal-perturbation">Fragment shader normal perturbation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#procedural-normal-in-materialshowcase3ddemo">Procedural normal in MaterialShowcase3DDemo</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#normal-affects-all-shading-branches">Normal affects all shading branches</a>
                         </li>
                         
                         <li class="toc-h2">

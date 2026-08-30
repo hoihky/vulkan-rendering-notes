@@ -17,6 +17,59 @@ The core rule: GPU objects are never portable. Save stable ids, component fields
 
 Milestone: create Ground + Sun + one cube in the editor, save, and verify `scene.txt` lists three `E` lines with transform and mesh/light `C` lines.
 
+## 1b. Concept Deep Dive — SceneDocument vs GPU State
+
+### Versioned interchange, not a GPU dump
+
+`SceneDocument` is the in-memory contract between disk and `GameWorld`. The magic string and entity records carry **only** gameplay data:
+
+```cpp
+// include/spark/scene/serialization/SceneDocument.hpp
+struct SceneDocument {
+    static constexpr const char* kMagic = "spark_scene_v4";
+    SceneDocumentHeader header;
+    Array<EntityRecord> entities;
+};
+
+struct EntityRecord {
+    std::uint64_t id = 0;
+    Utf8String name;
+    std::int64_t parentId = -1;
+    Array<ComponentRecord> components;  // kind tag + opaque payload
+};
+```
+
+Each `ComponentRecord` is one `C` line on disk — `transform`, `mesh`, `gltf_scene`, etc. No `VkBuffer`, no descriptor set handles, no per-frame render params.
+
+### Capture/Apply symmetry through SceneSerializer
+
+`SceneSerializer::Capture` walks live entities and asks the registry for payloads; `SceneDeserializer::Apply` creates `GameObject`s, restores components, then links parents in a third pass:
+
+```cpp
+// include/spark/scene/serialization/SceneSerializer.hpp
+class SceneSerializer {
+    [[nodiscard]] SceneDocument Capture(
+            const GameWorld& world,
+            const SceneCaptureContext& ctx,
+            const std::function<bool(const GameObject*)>& includeEntity) const;
+    [[nodiscard]] bool WriteToFile(const SceneDocument& document, const char* path) const;
+};
+
+class SceneDeserializer {
+    [[nodiscard]] bool Apply(
+            const SceneDocument& document,
+            GameWorld& world,
+            const SceneApplyContext& ctx,
+            HashMap<std::uint64_t, GameObject*>* outIdToObject = nullptr) const;
+};
+```
+
+**Why three-pass Apply?** Parent links need stable entity ids. Pass 1 creates objects; pass 2 restores components (some need asset loader); pass 3 wires `SetParent` from `parentId`.
+
+### assetsRoot ties relative paths to runtime roots
+
+The header stores a project-relative assets root. On load, `SceneApplyContext::assetsRoot` resolves `"models/chair.glb"` against the same directory the editor used at save time — so capture and apply share one path vocabulary regardless of where the executable runs from.
+
 ## 2. Core Concepts
 
 ### What to serialize

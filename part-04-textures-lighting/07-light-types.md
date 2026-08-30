@@ -23,6 +23,92 @@ Each type needs a **CPU representation** (ECS → `SceneRenderParams`) and a **G
 
 Spark uses **one directional** in the UBO and up to **256 point + 128 spot** lights in SSBO binding 4. This chapter defines both sides of that contract.
 
+### Three light types in plain English
+
+**Directional light (sun):**
+
+- Rays are **parallel** everywhere in the scene.
+- No position — only direction and color.
+- Cheap: one calculation per pixel, stored in frame UBO.
+- Shadows use orthographic projection from sun direction (Part IX).
+
+**Point light (bulb):**
+
+- Emits in **all directions** from a point in space.
+- Gets dimmer with distance (attenuation).
+- Stored in SSBO array — loop in fragment shader.
+
+**Spot light (flashlight):**
+
+- Like a point light but limited to a **cone** direction.
+- Inner/outer cone angles control soft edge falloff.
+- Also in SSBO array.
+
+```text
+Analogy:
+  Directional = sun at infinity — same direction at your feet and rooftops
+  Point       = candle in a room — brightness falls off with distance
+  Spot        = stage spotlight — cone of light from one position
+```
+
+**ECS → GPU path:**
+
+```text
+DirectionalLightComponent on sun entity
+  → SceneSubmit fills ubo.lightDir, lightColor, intensity
+
+PointLightComponent / SpotLightComponent on lamps
+  → SceneSubmit appends to params.pointLights / spotLights
+  → VulkanSceneUniformWriter copies to SSBO binding 4
+  → scene.frag loops punctual lights
+```
+
+## 1b. Concept Deep Dive — ECS Components to GPU Structs
+
+### CPU snapshot structs mirror shader SSBO layout
+
+```cpp
+// include/spark/engine/SceneRenderParams.hpp
+struct ScenePointLight {
+    Vector3 positionWorld{};
+    float range = 8.0F;
+    Vector3 color{1.0F, 1.0F, 1.0F};
+    float intensity = 1.0F;
+    bool castsShadow = false;
+};
+
+struct SceneSpotLight {
+    Vector3 positionWorld{};
+    float range = 12.0F;
+    Vector3 directionWorld{0.0F, 0.0F, -1.0F};
+    float innerConeRadians = 0.55F;
+    float outerConeRadians = 0.85F;
+    Vector3 color{1.0F, 1.0F, 1.0F};
+    float intensity = 3.0F;
+    bool castsShadow = false;
+};
+```
+
+Field order and padding must match `VulkanClusteredLightGpu` / GLSL std430 structs — reordering a member without updating both sides makes lights drift or disappear.
+
+### ECS components on GameObjects
+
+| Component | GPU destination | Key fields |
+|-----------|-----------------|------------|
+| `DirectionalLightComponent` | UBO `lightDir`, `lightColor` | direction, color, intensity |
+| `PointLightComponent` | `params.pointLights[]` | color, intensity, range |
+| `SpotLightComponent` | `params.spotLights[]` | cone angles, axis from transform |
+
+Spot axis comes from the owner's world matrix: `-Z` local axis transformed to world space — rotating the lamp entity aims the cone.
+
+### Capacity constants
+
+`SceneRenderParams::MaxPointLights` (256) and `MaxSpotLights` (128) cap SSBO size. Submit silently stops adding lights when full — excess lamps in crowded scenes need artist culling or priority (future work).
+
+### Attenuation on GPU
+
+Point lights use range-based falloff in the fragment shader — `range` on the struct defines the cutoff radius. Spot lights add cosine cone tests using **full** cone angles in radians; inner/outer define a soft penumbra between hotspot and edge.
+
 ## 2. Core Concepts
 
 ### Directional light (UBO path)

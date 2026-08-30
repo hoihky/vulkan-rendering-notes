@@ -14,6 +14,28 @@ Terrain is not a separate rendering subsystem — it is **big opaque geometry** 
 
 Milestone: TerrainDemo screenshot with shadows on hills, fog horizon, and tonemapped HDR sun on slopes.
 
+## 1b. Concept Deep Dive — Big Opaque Mesh, Full Post Stack
+
+### No TerrainRenderer — standard lit opaque path
+
+Terrain is not a separate rendering subsystem. Submit packs it as `SceneDrawItem` with `mesh = Custom`, material push constants, and shadow flags enabled — same `VulkanSceneOpaquePass` + lit pipeline as glTF props:
+
+```text
+shadow passes (CSM) → HDR begin → opaque lit draws (terrain here)
+  → transparent → 2D composite → particles → HDR end
+  → SSAO? → tonemap → screenUi
+```
+
+Capture TerrainDemo in RenderDoc — terrain draws target RGBA16F with depth write ON. Judge outdoor look only after full post chain, not raw HDR in isolation.
+
+### CSM, fog, SSAO, and tonemap all apply without terrain variants
+
+Part IX cascade shadows modulate sun on slopes. Part X fog (forward in `scene.frag`) dissolves distant hills toward horizon color matching Part VII sky. SSAO darkens ground contact. Sun-facing slopes exceed 1.0 linear — tonemap compresses for display.
+
+### Tiled MaterialComponent on heightfield UVs
+
+Generator sets `v.texCoord = { x / uvRepeat, z / uvRepeat }`. Assign grass ORM through `MaterialComponent` — normal maps show tangent detail on hillsides. Steep cliffs may stretch UVs; triplanar is a production extension outside Spark baseline.
+
 ## 2. Core Concepts
 
 ### No special-case terrain renderer

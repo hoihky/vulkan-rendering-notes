@@ -16,6 +16,79 @@ fifty props referencing one `.glb` parse the file fifty times and fragment the h
 Build along: load one glTF twice through `GameWorld`, confirm pointer equality, spawn many instances with
 distinct transforms.
 
+### Asset cache for beginners
+
+Without a cache, spawning 50 trees each calling `LoadGltf("tree.glb")` would:
+
+- Read the file from disk 50 times
+- Parse JSON/binary 50 times
+- Allocate 50 copies of the same vertex data in RAM
+
+**Cache = dictionary from path → loaded asset:**
+
+```text
+LoadMesh("props/rock.glb")
+  if map contains path → return existing Mesh*
+  else parse file, store in map, return pointer
+
+Instance 1, 2, 3... all share same Mesh* — only Transform differs per entity
+```
+
+**Pointer equality test:** `LoadMesh(path) == LoadMesh(path)` should be **true** — same address means cache hit.
+
+**Thread safety:** Spark's `GameWorldAssetCache` is used from main thread during load; async preload uses `Register*` APIs to warm cache before spawn.
+
+**When to invalidate:** editor re-export of `.glb` changes file on disk — dev builds may need hot-reload or cache clear; shipping builds load once at level start.
+
+## 1b. Concept Deep Dive — Cache Architecture in Spark
+
+### Five parallel hash maps, one path key
+
+`GameWorldAssetCache` owns separate maps per asset type — all keyed by `Utf8String` path:
+
+```cpp
+// include/spark/scene/assets/GameWorldAssetCache.hpp (lines 132–144)
+    HashMap<Utf8String, SharedPtr<Mesh>, ...> meshCache;
+    HashMap<Utf8String, GltfAsset, ...> gltfCache;
+    HashMap<Utf8String, GltfSceneDocument, ...> gltfSceneCache;
+    HashMap<Utf8String, SkinnedGltfAsset, ...> skinnedGltfCache;
+    HashMap<Utf8String, SharedPtr<Texture2D>, ...> textureCache;
+```
+
+`LoadGltf("chair.glb")` and `LoadMesh("chair.glb")` hit **different** maps — the rigid glTF path stores a full `GltfAsset` with materials; `LoadMesh` on a `.glb` delegates to `LoadGltf(path).mesh`.
+
+### SkinnedGltfAsset — shared skeleton + mesh + locomotion hints
+
+```cpp
+// include/spark/scene/assets/GameWorldAssetCache.hpp
+struct SkinnedGltfAsset {
+    SharedPtr<SkinnedMesh> mesh;
+    SharedPtr<Skeleton> skeleton;
+    Array<GltfMaterialDesc> materials;
+    std::uint32_t walkClipIndex = 0;
+    Quaternion bindUpAlignment{Quaternion::Identity};
+    float bindFacingYawOffset = 0.0F;
+};
+```
+
+`LoadSkinnedGltf` parses once, auto-detects walk clip by name (`"walk"` substring), and caches the whole struct. Ten NPCs share one `SkinnedGltfAsset` pointer; each entity gets its own `AnimatorComponent` with independent time.
+
+### Register* APIs for async loading
+
+`GameWorldAssetLoader` decodes on a worker thread, then calls `RegisterGltf` / `RegisterSkinnedGltf` on the main thread:
+
+```text
+RequestGltf(path)  →  worker: parse file  →  main: RegisterGltf(asset, path)
+                                                      ↓
+                                              gltfCache[path] = asset
+```
+
+Gameplay code polling `IsGltfReady(path)` can spawn entities only after registration — avoids half-loaded meshes on frame 1.
+
+### Retain/release for streaming
+
+`RetainAsset` / `ReleaseAsset` refcount cache entries by `CachedAssetKind`. When count hits zero, the entry can be evicted — editor streaming and level unload use this without leaking `SharedPtr` cycles.
+
 ## 2. Core Concepts
 
 ### Path-keyed caches

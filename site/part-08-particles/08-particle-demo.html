@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,40 @@
 <p>Individual chapters cover emitters, submit, pass, and shaders — you need a <strong>vertical slice demo</strong> proving the
 full Part VIII pipeline in one scene before integrating VFX into a game level.</p>
 <p>Build along: run ParticleDemo, inspect Load/OnRender, and verify all four presets against the checklist.</p>
+<h2 id="b.concept-deep-dive-particledemo-vertical-slice">1b. Concept Deep Dive — ParticleDemo Vertical Slice</h2>
+<h3 id="four-preset-archetypes-in-applyparticlepreset">Four preset archetypes in ApplyParticlePreset</h3>
+<pre><code class="language-cpp">// include/spark/demo/ParticleDemoDetail.hpp
+inline void ApplyParticlePreset(const int presetIndex, ParticleEmitterComponent&amp; pe) {
+    switch (presetIndex) {
+    case 0: // Fire — rate 110, upward cone, warm→red fade, low gravity
+        pe.SetMaxParticles(800);
+        pe.SetEmissionRate(110.0F);
+        pe.SetStartEndColor({1, 0.55, 0.12, 1}, {0.85, 0.05, 0, 0});
+        break;
+    case 1: // Snow — rate 240, downward drift, white fade
+        pe.SetMaxParticles(1400);
+        break;
+    case 2: // Smoke — slow rise, gray expand (sizeEnd &gt; sizeStart)
+        pe.SetMaxParticles(500);
+        break;
+    default: // Magic — purple spark trail
+        pe.SetMaxParticles(900);
+        break;
+    }
+}
+</code></pre>
+<p>Each preset tunes rate, lifetime, size curve, color fade, gravity, spread, and speed independently — the same <code>ParticleEmitterComponent</code> API your game code uses.</p>
+<h3 id="manual-params-build-mirrors-scenesubmit">Manual params build mirrors SceneSubmit</h3>
+<pre><code class="language-cpp">// src/spark/demo/ParticleDemo.cpp (OnRender, concept)
+params.particles.Clear();
+for (each emitter entity) {
+    pe.CollectInstances(chunk);
+    // merge with MaxParticles cap — same loop as SceneSubmit.cpp
+}
+</code></pre>
+<p>ParticleDemo skips <code>FillStandardLitSceneFromWorld</code> for particles and collects manually so the demo runs before full submit integration is wired. Ground plane + ref cube provide depth occlusion for blend/depth verification.</p>
+<h3 id="live-ui-tuning">Live UI tuning</h3>
+<p>ImGui sliders bind directly to <code>ParticleEmitterComponent</code> fields via <code>MakeFloatBinding</code>. <code>OnResetPresetClicked</code> calls <code>ApplyParticlePreset</code> to restore archetype defaults after manual edits.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="four-preset-emitters">Four preset emitters</h3>
 <p>ParticleDemo spawns Fire, Snow, Smoke, and Magic emitters at fixed world positions with ApplyParticlePreset tuning each style.</p>
@@ -1261,6 +1301,22 @@ block. <strong>Frame Graph</strong> order visible when particles glow over groun
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-particledemo-vertical-slice">1b. Concept Deep Dive — ParticleDemo Vertical Slice</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#four-preset-archetypes-in-applyparticlepreset">Four preset archetypes in ApplyParticlePreset</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#manual-params-build-mirrors-scenesubmit">Manual params build mirrors SceneSubmit</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#live-ui-tuning">Live UI tuning</a>
                         </li>
                         
                         <li class="toc-h2">

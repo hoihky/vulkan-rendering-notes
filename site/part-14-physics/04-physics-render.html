@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,25 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Physics and rendering share <strong>TransformComponent</strong> as the bridge. If Simulate runs after snapshot build, players see one-frame lag. If gameplay and physics both write transforms without rules, entities jitter. Spark writes transforms inside Simulate integrators — your responsibility is <strong>Update ordering</strong> and kinematic/dynamic policy across 2D, 3D, and editor modes.</p>
 <p>Milestone: log transform Y immediately after Simulate2D and at SceneSubmit entry — values must match same frame.</p>
+<h2 id="b.concept-deep-dive-transform-as-the-bridge">1b. Concept Deep Dive — Transform as the Bridge</h2>
+<h3 id="implicit-sync-inside-simulate">Implicit sync inside Simulate</h3>
+<p>Spark does not expose separate SyncToPhysics / SyncFromPhysics passes. Integrators write <code>TransformComponent</code> directly after updating body state:</p>
+<pre><code class="language-text">RigidbodyIntegrator2D::Integrate
+  → read Rigidbody2DComponent velocity
+  → integrate position
+  → TransformComponent::SetTranslation(newPos)
+
+ContactResolver2D::Resolve
+  → adjust position on penetration
+  → TransformComponent updated in-place
+</code></pre>
+<p>Rendering reads Transform once Simulate returns — <strong>if</strong> Update ordering places Simulate before SceneSubmit.</p>
+<h3 id="canonical-frame-tick">Canonical frame tick</h3>
+<pre><code class="language-text">Input → Gameplay pre-physics → Physics Simulate → Gameplay post-physics → Animation → SceneSubmit → Present
+</code></pre>
+<p>Platformer2DDemo sets velocity from input, calls <code>physics.Simulate2D</code>, then combat reads <code>playerTr-&gt;GetLocalTransform().translation</code>. Editor edit mode skips Simulate entirely — designer transforms are authoritative until play mode runs physics.</p>
+<h3 id="one-frame-lag-diagnosis">One-frame lag diagnosis</h3>
+<p>Log transform Y immediately after <code>Simulate2D</code> and at SceneSubmit entry in the <strong>same frame</strong>. If values differ, Simulate runs too late or gameplay writes transform again after physics. Move Simulate earlier in Update; do not add a second sync pass unless you introduce an external physics engine with its own body store.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="canonical-update-order">Canonical Update order</h3>
 <p>Production frame tick for physics-driven games:</p>
@@ -1100,7 +1125,7 @@
 <h3 id="kinematic-vs-dynamic-bodies">Kinematic vs dynamic bodies</h3>
 <p><strong>Dynamic</strong> bodies: physics drives transform (gravity, contacts). <strong>Kinematic</strong> bodies: gameplay sets transform each frame; physics moves collider with body for interaction but does not integrate velocity. Moving platforms in platformers are often kinematic — script sets path; player rides contact resolver.</p>
 <p>Mark body type correctly on <code>Rigidbody2DComponent</code> / <code>Rigidbody3DComponent</code> — wrong type causes platform to fall or player to ignore platform motion.</p>
-<h3 id="one-frame-lag-diagnosis">One-frame lag diagnosis</h3>
+<h3 id="one-frame-lag-diagnosis-1">One-frame lag diagnosis</h3>
 <p>If visuals trail physics by exactly one frame, audit call order: Simulate likely runs <strong>after</strong> FillSceneFromWorld / SetSceneRenderParams. Move Simulate earlier in Update or remove duplicate transform write elsewhere.</p>
 <p>Log transform Y in same frame immediately after Simulate and at start of submit — values must match.</p>
 <h3 id="render-interpolation-advanced">Render interpolation (advanced)</h3>
@@ -1236,6 +1261,22 @@ physics.Simulate3D(world, timing);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-transform-as-the-bridge">1b. Concept Deep Dive — Transform as the Bridge</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#implicit-sync-inside-simulate">Implicit sync inside Simulate</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#canonical-frame-tick">Canonical frame tick</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-frame-lag-diagnosis">One-frame lag diagnosis</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -16,6 +16,40 @@ Spark passes `FrameTiming` everywhere and integrates ImGui overlays in demos —
 
 Milestone: F3 overlay shows FPS; one RenderDoc capture with pass labels matching the Part X frame graph.
 
+## 1b. Concept Deep Dive — FrameTiming Instrumentation
+
+### FrameTiming travels with every subsystem tick
+
+```cpp
+// include/spark/engine/FrameTiming.hpp
+struct FrameTiming {
+    float deltaTimeSeconds = 0.0F;
+    float totalTimeSeconds = 0.0F;
+    std::uint64_t frameIndex = 0;
+};
+```
+
+Engine computes timing once per frame; `OnUpdate`, physics, editor panels, and demos receive the same struct — consistent denominators for scoped timers and FPS overlays.
+
+### DemoFoundation FPS overlay pattern
+
+Spark demos toggle an ImGui FPS overlay via F3 (`ToggleDemoFpsOverlayVisible`). Wrap expensive sections with scoped timers logged to the overlay:
+
+```text
+Frame N:
+  physics.Simulate2D     0.4 ms
+  FillSceneFromWorld     1.2 ms
+  VulkanRenderer::DrawFrame  8.1 ms
+```
+
+Save JSON baselines before renderer refactors — compare shadow pass ms after Part IX changes, not gut feel.
+
+### RenderDoc pass grouping
+
+Name command buffer regions to match the Part X frame graph — shadow → opaque → particles → SSAO → tonemap → UI. Without labels, GPU captures show anonymous `vkCmdDrawIndexed` blobs; with labels, you see which pass regressed after a pipeline change.
+
+CPU timers tell you **where** to look; GPU captures tell you **what** to fix inside the renderer.
+
 ## 2. Core Concepts
 
 ### Measure before optimize

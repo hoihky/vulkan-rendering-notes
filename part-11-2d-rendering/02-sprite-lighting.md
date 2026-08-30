@@ -13,6 +13,41 @@
 Pure texture blits look flat in side-scrollers and ARPG-style games. **2D lighting** modulates sprite albedo using the same directional sun and optional point lights as the 3D scene — without paying for full BRDF, normal maps, or shadow map compares on every billboard.
 
 Spark implements five modes in `sprite.frag`, driven by per-instance data gathered from `SpriteLighting2DComponent` at submit. Your milestone: run `RenderLayers2DDemo`, toggle lit mode on a character atlas, and rotate the sun until the sprite shading matches your expectation.
+
+## 1b. Concept Deep Dive — Five Lighting Modes, One Instanced Pipeline
+
+### Mode integer branches in sprite.frag, not separate pipelines
+
+Spark encodes per-sprite shading as `lightingMode` on the instance record. The fragment shader early-outs for unlit (0), then applies progressively richer math for lit, rim, pulse, and clustered point lights — all in one pipeline:
+
+```glsl
+// shaders/sprite.frag (lines 41–54)
+    if (vLightingMode == 0) {
+        outColor = base;
+        return;
+    }
+    if (vLightingMode == 1) {
+        vec2 l2 = normalize(ubo.lightDir.xy + vec2(1e-5));
+        vec2 n2 = normalize(vLocalXY + vec2(1e-5));
+        float ndl = max(0.0, dot(n2, l2));
+        float amb = clamp(vLightingA.x, 0.0, 1.0);
+        float dif = max(vLightingA.y, 0.0);
+        vec3 lit = base.rgb * (amb + dif * ndl);
+        outColor = vec4(lit, base.a);
+        return;
+    }
+```
+
+Mode 4 reuses the same clustered light SSBO as `scene.frag` — one upload path for punctual lights.
+
+### 2D lit math is intentionally cheaper than PBR
+
+Lit mode projects sun direction onto the billboard plane using `vLocalXY` from unit-quad corners — no normal maps, no shadow map compare in the baseline path. Rim (2) and pulse (3) can push HDR values above 1.0; Part X tonemap displays them correctly.
+
+### Submit copies SpriteLighting2DComponent into instance params
+
+Artists attach `SpriteLighting2DComponent` beside `SpriteComponent`. Submit copies mode plus two `Vector4` param blocks into `SceneSpriteDraw::lightingParam0/1`, then `FillSpriteInstanceGpu` packs them for the GPU. Adding mode 6 requires updating C++ enum, instance struct, and GLSL branches in one commit.
+
 ## 2. Core Concepts
 
 ### SpriteLighting2DMode taxonomy

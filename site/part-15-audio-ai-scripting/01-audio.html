@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,30 @@
 <p>Parts I–XIV built a Vulkan renderer and simulation stack — but silent games feel broken. <strong>Audio</strong> uses OS drivers and PCM buffers, not command buffers. Spark wraps decode, mixing, and output in <strong>SoundEngine</strong>, a facade parallel to <code>IFramePresenter</code>.</p>
 <p>You will wire the same lifecycle you already know from the main loop: init after attach, pump after update, shutdown before exit. Audio is <strong>not</strong> a render pass — it neither reads nor writes <code>SceneRenderParams</code>.</p>
 <p>Milestone: preload footstep WAV at level load; key press plays one-shot while BGM loops underneath without frame hitch.</p>
+<h2 id="b.concept-deep-dive-soundengine-lifecycle">1b. Concept Deep Dive — SoundEngine Lifecycle</h2>
+<h3 id="facade-parallel-to-iframepresenter">Facade parallel to IFramePresenter</h3>
+<p>Audio is a subsystem facade — games talk to <code>SoundEngine</code>, not platform drivers directly:</p>
+<pre><code class="language-cpp">// include/spark/audio/SoundEngine.hpp
+class SoundEngine {
+    [[nodiscard]] bool Startup();
+    void Shutdown() noexcept;
+    void PumpFrame(float deltaTimeSeconds) noexcept;
+    [[nodiscard]] SoundMixer&amp; GetMixer() noexcept;
+    void SetBackgroundMusic(const SharedPtr&lt;SoundClip&gt;&amp; clip, float volume = 0.32F, bool loop = true);
+};
+</code></pre>
+<p>Decode, voice pooling, and 48 kHz stereo mix happen inside; <code>PumpFrame</code> drains queued one-shots each engine tick after simulation.</p>
+<h3 id="engine.cpp-call-order-mirrors-renderer">Engine.cpp call order mirrors renderer</h3>
+<pre><code class="language-text">OnAttach  → SoundEngine::Startup()
+OnUpdate  → gameplay + physics (no audio yet)
+          → ProcessSoundCues(world, context)  // flush SoundCueComponent queues
+OnRender  → Vulkan submit
+End frame → SoundEngine::PumpFrame(deltaTime)
+OnDetach  → SoundEngine::Shutdown()
+</code></pre>
+<p>Audio neither reads nor writes <code>SceneRenderParams</code> — it runs on PCM buffers, not command buffers.</p>
+<h3 id="preload-at-level-load-play-without-hitch">Preload at level load, play without hitch</h3>
+<p>Load WAV/OGG into <code>SharedPtr&lt;SoundClip&gt;</code> during <code>Load()</code> — disk IO off the hot path. Key press queues a one-shot through <code>SoundCueComponent</code>; BGM loops under SFX via <code>SetBackgroundMusic</code> without blocking <code>PresentFrame</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="soundengine-as-a-subsystem-facade">SoundEngine as a subsystem facade</h3>
 <table class="table">
@@ -1304,6 +1334,22 @@ SharedPtr&lt;SoundClip&gt; TryLoadSoundClipFromFile(const char* utf8Path) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-soundengine-lifecycle">1b. Concept Deep Dive — SoundEngine Lifecycle</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#facade-parallel-to-iframepresenter">Facade parallel to IFramePresenter</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#enginecpp-call-order-mirrors-renderer">Engine.cpp call order mirrors renderer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#preload-at-level-load-play-without-hitch">Preload at level load, play without hitch</a>
                         </li>
                         
                         <li class="toc-h2">

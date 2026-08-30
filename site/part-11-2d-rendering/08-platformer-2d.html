@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,44 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Individual Part XI features work in isolation until you <strong>integrate</strong> them: one update order, one submit function, one HDR→tonemap→UI present chain. This chapter is the <strong>integration milestone</strong> — not new GPU code, but the production-shaped loop that ships in Spark's 2D demos.</p>
 <p>Build along: run <code>TilemapShowcase2DDemo</code>, trace its <code>Render</code> submit call, then replicate the loop in your engine with your own map and player entity.</p>
+<h2 id="b.concept-deep-dive-one-snapshot-full-hdr-frame-graph">1b. Concept Deep Dive — One Snapshot, Full HDR Frame Graph</h2>
+<h3 id="submitstandardlitscenefromworld-is-the-integration-hub">SubmitStandardLitSceneFromWorld is the integration hub</h3>
+<p>The 2D game pipeline is not a separate renderer — it assembles prior chapters into one <code>SceneRenderParams</code> fill and the existing HDR frame graph. Spark demos call one submit helper that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:</p>
+<pre><code class="language-cpp">// src/spark/demo/TilemapShowcase2DDemo.cpp (concept)
+Spark::SubmitStandardLitSceneFromWorld(
+        world, params, viewProj, lightDir, lightColor,
+        /* fog, particles, sprite sort mode, ... */);
+</code></pre>
+<p>Gameplay <strong>Update</strong> runs physics, animators, and FSM; <strong>Render/Submit</strong> only reads components. Vulkan appears exclusively inside <code>PresentFrame</code>.</p>
+<h3 id="reference-demos-as-regression-targets">Reference demos as regression targets</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Demo</th>
+<th>Integration highlights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TilemapShowcase2DDemo</code></td>
+<td>Layers, autotile, chunk cull, Y-sort submit</td>
+</tr>
+<tr>
+<td><code>Platformer2DDemo</code></td>
+<td>Combat, Kenney atlases, health HUD, anim FSM</td>
+</tr>
+<tr>
+<td><code>RenderLayers2DDemo</code></td>
+<td>Lighting modes + layer overlap</td>
+</tr>
+</tbody>
+</table>
+<p>If showcase breaks after an engine change, bisect submit (empty arrays?) vs renderer record (pass order?) before blaming GPU drivers.</p>
+<h3 id="frame-graph-invariants-for-2d-3d-hybrid">Frame graph invariants for 2D + 3D hybrid</h3>
+<pre><code class="language-text">Shadow passes → HDR scene (terrain + sprites + tilemaps + particles)
+→ SSAO? → tonemap → screenUi → ImGui → present
+</code></pre>
+<p>Violating UI-before-tonemap makes HUD exposure-scaled. Sprites in HDR pass depth-test against terrain from Part XII — integration bugs often show as z-fighting or missing draws, not shader compile failures.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="integration-snapshot-model">Integration snapshot model</h3>
 <p>The <strong>2D game pipeline</strong> is not a new renderer — it is the disciplined assembly of prior chapters into one <code>SceneRenderParams</code> fill and the existing HDR frame graph. One submit call gathers:</p>
@@ -1324,6 +1368,22 @@ SceneSubmitDetail::StableSortSprites(params.sprites, params.spriteSortMode);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-one-snapshot-full-hdr-frame-graph">1b. Concept Deep Dive — One Snapshot, Full HDR Frame Graph</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#submitstandardlitscenefromworld-is-the-integration-hub">SubmitStandardLitSceneFromWorld is the integration hub</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#reference-demos-as-regression-targets">Reference demos as regression targets</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frame-graph-invariants-for-2d-3d-hybrid">Frame graph invariants for 2D + 3D hybrid</a>
                         </li>
                         
                         <li class="toc-h2">

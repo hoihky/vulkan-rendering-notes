@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1061,6 +1067,175 @@
 <li><strong>Submit helper</strong> — how Spark demos scale</li>
 </ol>
 <p>Either way, the last line is <code>context.SetSceneRenderParams(params)</code> before <code>PresentFrame</code>.</p>
+<h3 id="your-first-end-to-end-frame-beginner-checklist">Your first end-to-end frame (beginner checklist)</h3>
+<p>By the end of Part II, one complete frame looks like this on the CPU:</p>
+<pre><code class="language-text">1. Engine::Run wakes up for frame N
+2. game-&gt;OnUpdate(dt)           — move the camera, animate objects
+3. game-&gt;OnRender(frame, ctx):
+     a. Build SceneRenderParams params
+     b. params.camera = ...      — view + projection matrices
+     c. FillStandardLitSceneFromWorld(world, params, ctx)
+        OR manually push SceneDrawItem entries
+     d. ctx.SetSceneRenderParams(params)
+4. renderer-&gt;PresentFrame()
+     a. DrawFrame → RecordSceneCommandBuffer
+     b. sceneOpaquePass draws each item in params.draws
+     c. tonemap + present
+5. Monitor shows frame N
+</code></pre>
+<p>If the screen is black, ask <strong>which step failed</strong>:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely broken step</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Game runs, black screen</td>
+<td>3c empty <code>params.draws</code>, or 4b pipeline/render pass</td>
+</tr>
+<tr>
+<td>Gray clear color only</td>
+<td>4b render pass clears but no draws recorded</td>
+</tr>
+<tr>
+<td>Geometry wrong place</td>
+<td>3b camera matrices</td>
+</tr>
+<tr>
+<td>White untextured mesh</td>
+<td>Material/submit layers (Part IV/VII)</td>
+</tr>
+<tr>
+<td>Validation error on submit</td>
+<td>Part I sync or Part II pipeline</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scenedrawitem-the-smallest-unit-of-rendering">SceneDrawItem: the smallest unit of rendering</h3>
+<p>Each thing the GPU draws is one <strong>draw item</strong>. At minimum it carries:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Field</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td>4×4 world matrix (object → world space)</td>
+</tr>
+<tr>
+<td><code>mesh</code> / <code>customMesh</code></td>
+<td>Which geometry (unit cube slot or SharedPtr mesh)</td>
+</tr>
+<tr>
+<td><code>submeshIndex</code></td>
+<td>Which index range for multi-material meshes</td>
+</tr>
+<tr>
+<td><code>albedo</code></td>
+<td>Fallback tint when no texture</td>
+</tr>
+<tr>
+<td><code>textureLayer</code></td>
+<td>Index into <code>sceneTextures</code> array (-1 = none)</td>
+</tr>
+<tr>
+<td><code>metallic</code>, <code>roughness</code></td>
+<td>PBR scalars for fragment shader</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-cpp">// Building one item by hand (learning exercise)
+SceneDrawItem item{};
+item.model = transform.ToMatrix4();
+item.mesh = SceneMeshSlot::UnitCube;
+item.albedo = {0.8f, 0.2f, 0.2f};
+item.metallic = 0.0f;
+item.roughness = 0.5f;
+params.draws.PushBack(item);
+</code></pre>
+<p>Production code never hand-assembles hundreds of these — <code>FillStandardLitSceneFromWorld</code> does it from components. Start manual to learn the contract, then switch to the helper.</p>
+<h2 id="b.concept-deep-dive-scenesubmit-ecs-translation">1b. Concept Deep Dive — SceneSubmit ECS Translation</h2>
+<h3 id="two-paths-one-struct-type">Two paths, one struct type</h3>
+<p>Spark demos converge on <code>SceneRenderParams</code> whether you fill it by hand or via ECS helpers. The renderer cannot tell which path built the snapshot:</p>
+<pre><code class="language-text">Manual path:
+  OnRender → build SceneDrawItem[] → SetSceneRenderParams
+
+ECS path:
+  OnRender → FillStandardLitSceneFromWorld(world, params)
+          → SetSceneRenderParams
+          (or SubmitStandardLitSceneFromWorld wraps both)
+</code></pre>
+<p>Both end with the same <code>VulkanRenderer::pendingScene</code> copy and the same opaque pass loop.</p>
+<h3 id="submitstandardlitscenefromworld-fill-then-submit">SubmitStandardLitSceneFromWorld — fill then submit</h3>
+<p>The convenience wrapper allocates params, calls the fill helper with camera and lighting arguments, then forwards to the engine context:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 603–633)
+void SubmitStandardLitSceneFromWorld(
+        GameWorld&amp; world,
+        IEngineContext&amp; context,
+        const Matrix4&amp; viewProjection,
+        const Vector3&amp; cameraPositionWorld,
+        /* lighting, particles, time ... */) {
+    SceneRenderParams params{};
+    FillStandardLitSceneFromWorld(world, context, viewProjection, cameraPositionWorld,
+            lightDirectionWorld, lightColor, lightIntensity, ambientColor,
+            enableParticles, particleCameraRight, particleCameraUp,
+            sceneTimeSeconds, params, spriteSortMode);
+    context.SetSceneRenderParams(params);
+}
+</code></pre>
+<p>Demos with a <code>MainCamera</code> often call <code>SubmitStandardLitSceneFromWorldWithCamera</code>, which derives view/projection from ECS before filling.</p>
+<h3 id="pushrigidmeshdraws-meshcomponent-to-scenedrawitem">PushRigidMeshDraws — MeshComponent to SceneDrawItem</h3>
+<p>For each rigid mesh entity, SceneSubmit builds a base draw item from the world matrix and expands submeshes when multi-material slots exist:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 77–98)
+void PushRigidMeshDraws(
+        Array&lt;SceneDrawItem&gt;&amp; drawList,
+        SceneDrawItem baseItem,
+        const Mesh&amp; mesh,
+        const MaterialComponent* mat,
+        const MultiMaterialComponent* multiMat,
+        SceneRenderParams&amp; params,
+        const FindSceneTextureFn&amp; findOrAddTexture) {
+    const Array&lt;MeshSubmesh&gt;&amp; submeshes = mesh.GetSubmeshes();
+    if (submeshes.IsEmpty() || multiMat == nullptr) {
+        SceneDrawItem item = baseItem;
+        item.submeshIndex = kSceneDrawFullSubmesh;
+        if (mat != nullptr) {
+            ApplyMaterialComponentToSceneDrawItem(item, mat, &amp;params);
+            ApplyAlbedoTexture(item, mat-&gt;GetBaseColorTexture(), mat-&gt;GetTint(), findOrAddTexture);
+        }
+        drawList.PushBack(item);
+        return;
+    }
+    // ... one SceneDrawItem per submesh with material slot ...
+}
+</code></pre>
+<p>Builtin slots (<code>UnitCube</code>, <code>GroundPlane</code>) set <code>baseItem.mesh</code> from <code>MeshComponent::slot</code>; custom assets set <code>mesh = Custom</code> with <code>customMesh</code> shared pointer.</p>
+<h3 id="partition-and-sort-opaque-vs-transparent-arrays">Partition and sort — opaque vs transparent arrays</h3>
+<p>After gathering, SceneSubmit stable-sorts by material/state and partitions into <code>draws</code> vs <code>transparentDraws</code> based on opacity:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 466–467)
+SceneSubmitDetail::StableSortDrawItems(drawList);
+PartitionSortedDrawItemsIntoSceneParams(drawList, params, cameraPositionWorld);
+</code></pre>
+<p>Transparent items sort back-to-front by camera distance — the opaque pass reads <code>params.draws</code> only; transparent resume uses <code>params.transparentDraws</code>.</p>
+<h3 id="complete-part-ii-frame-graph-cpu-gpu">Complete Part II frame graph (CPU + GPU)</h3>
+<pre><code class="language-text">Engine::Run
+game-&gt;OnUpdate(dt)
+game-&gt;OnRender:
+  FillStandardLitSceneFromWorld OR manual params
+  context.SetSceneRenderParams(params)
+PresentFrame → DrawFrame
+  WriteUniformBuffer(resolvedLighting from params)
+  RecordSceneCommandBuffer
+    sceneOpaquePass.Record(params.draws)
+  tonemap → vkQueuePresentKHR
+</code></pre>
+<p>Chapter 1's contract, chapters 2–7's Vulkan objects, and this chapter's ECS glue — together they produce a lit 3D frame in SparkDemo.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="manual-vs-ecs-driven-submit">Manual vs ECS-driven submit</h3>
 <table class="table">
@@ -1236,6 +1411,38 @@ drawList.PushBack(item);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#your-first-end-to-end-frame-beginner-checklist">Your first end-to-end frame (beginner checklist)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenedrawitem-the-smallest-unit-of-rendering">SceneDrawItem: the smallest unit of rendering</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenesubmit-ecs-translation">1b. Concept Deep Dive — SceneSubmit ECS Translation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#two-paths-one-struct-type">Two paths, one struct type</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#submitstandardlitscenefromworld-fill-then-submit">SubmitStandardLitSceneFromWorld — fill then submit</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#pushrigidmeshdraws-meshcomponent-to-scenedrawitem">PushRigidMeshDraws — MeshComponent to SceneDrawItem</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#partition-and-sort-opaque-vs-transparent-arrays">Partition and sort — opaque vs transparent arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#complete-part-ii-frame-graph-cpu-gpu">Complete Part II frame graph (CPU + GPU)</a>
                         </li>
                         
                         <li class="toc-h2">

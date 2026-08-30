@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,71 @@
 <p>Raw animation playback without <strong>locomotion logic</strong> feels robotic: walk plays while standing still, run triggers
 on tiny jitter. A finite-state machine maps gameplay measurements to discrete clips and crossfades.</p>
 <p>Finish Part VI: wire Character3DAnimFsm to your skinned hero so WASD selects idle, walk, and run clips.</p>
+<h3 id="locomotion-fsm-for-beginners">Locomotion FSM for beginners</h3>
+<p><strong>Animator</strong> plays clips. <strong>FSM</strong> decides <strong>which</strong> clip based on gameplay:</p>
+<pre><code class="language-text">Measure horizontal speed from velocity
+speed &lt; 0.1  → Idle clip
+speed &lt; 4.0  → Walk clip
+speed &gt;= 4.0 → Run clip (if sprint held)
+</code></pre>
+<p><strong>Finite state machine</strong> = discrete states + rules to switch:</p>
+<pre><code class="language-text">        ┌──────┐  speed up   ┌──────┐  sprint   ┌─────┐
+│ Idle │ ──────────► │ Walk │ ────────► │ Run │
+└──────┘ ◄────────── └──────┘ ◄──────── └─────┘
+      speed down         speed down
+</code></pre>
+<p><strong>Crossfade on transition:</strong> FSM calls <code>SetClipIndexWithCrossfade</code> — Animator blends poses over ~0.15s so feet don't pop.</p>
+<p><strong>Clip name heuristics:</strong> Spark searches clip names like <code>"Walk"</code>, <code>"Run"</code>, <code>"Idle"</code> on the skeleton — Khronos samples often match; custom rigs may need explicit indices.</p>
+<p><strong>Component order:</strong> <code>Character3DAnimFsmComponent</code> updates <strong>before</strong> <code>AnimatorComponent</code> on same entity — FSM sets desired clip, Animator advances time.</p>
+<p>Part VI complete: mesh → glTF → skeleton → animator → GPU skinning → locomotion FSM.</p>
+<h2 id="b.concept-deep-dive-fsm-logic-in-spark">1b. Concept Deep Dive — FSM Logic in Spark</h2>
+<h3 id="locomotionclipset-resolved-from-skeleton-clip-names">LocomotionClipSet — resolved from skeleton clip names</h3>
+<pre><code class="language-cpp">// include/spark/animation/LocomotionClipSet.hpp
+constexpr std::uint32_t kInvalidAnimClipIndex = 0xFFFFFFFFu;
+
+struct LocomotionClipSet {
+    std::uint32_t idle = 0;
+    std::uint32_t walk = 0;
+    std::uint32_t run = kInvalidAnimClipIndex;   // disabled when invalid
+    std::uint32_t attack = kInvalidAnimClipIndex;
+};
+</code></pre>
+<p><code>ResolveLocomotionClipsFromSkeleton</code> searches clip names case-insensitively for <code>"idle"</code>, <code>"walk"</code>, <code>"run"</code>, <code>"attack"</code> substrings — Khronos sample assets usually match out of the box.</p>
+<h3 id="full-onupdate-decision-tree">Full OnUpdate decision tree</h3>
+<pre><code class="language-cpp">// src/spark/ecs/components/animation/Character3DAnimFsmComponent.cpp (lines 123–179)
+const bool holdingAttack = attackOk &amp;&amp; cur == attackClip &amp;&amp; !anim-&gt;IsClipFinished();
+if (holdingAttack) {
+    want = attackClip;
+    wantLoop = AnimLoopMode::Once;
+} else if (pendingAttack &amp;&amp; attackOk) {
+    want = attackClip;
+    wantLoop = AnimLoopMode::Once;
+} else if (manualClipActive &amp;&amp; ClipValid_(*anim, manualClip)) {
+    want = manualClip;
+    wantLoop = manualLoop;
+} else if (!locomotionDrivingEnabled) {
+    return;
+} else {
+    const float speed = MeasureLocomotionSpeed_(owner, timing);  // XZ velocity or transform delta
+    const bool moving = speed &gt;= walkThresh;
+    const bool wantSprint = runOk &amp;&amp; speed &gt;= runThresh;
+    if (!moving)       want = idleClip;
+    else if (wantSprint) want = runClip;
+    else if (walkOk)   want = walkClip;
+}
+ApplyClip_(*anim, want, wantLoop);  // crossfade when clip changes
+</code></pre>
+<p><strong>Speed sources:</strong> <code>Rigidbody3DComponent::GetVelocity()</code> XZ magnitude, or world-position delta when no physics body. <code>SetLocomotionInput(moving, sprint)</code> overrides for network prediction.</p>
+<h3 id="default-thresholds-tunable-per-character">Default thresholds (tunable per character)</h3>
+<pre><code class="language-cpp">// Character3DAnimFsmComponent.hpp
+float walkThresh = 0.35F;      // m/s — below = idle
+float runThresh = 2.2F;        // m/s — above = run (if run clip valid)
+float crossfadeDuration = 0.18F;
+</code></pre>
+<h3 id="configure-from-imported-asset">Configure from imported asset</h3>
+<pre><code class="language-cpp">fsm-&gt;ConfigureLocomotionFromSkeleton(*asset.skeleton, asset.walkClipIndex);
+</code></pre>
+<p>Uses <code>walkClipIndex</code> from <code>SkinnedGltfAsset</code> as fallback when name heuristics fail.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="fsm-vs-animator-responsibilities">FSM vs Animator responsibilities</h3>
 <p><code>Character3DAnimFsmComponent</code> decides <strong>which clip</strong> (idle/walk/run/attack). <code>AnimatorComponent</code> decides <strong>how time advances</strong> and crossfades — keep selection out of render code.</p>
@@ -1320,6 +1391,30 @@ into MeasureLocomotionSpeed_. <strong>Animator</strong> and <strong>GPU Skinning
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#locomotion-fsm-for-beginners">Locomotion FSM for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-fsm-logic-in-spark">1b. Concept Deep Dive — FSM Logic in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#locomotionclipset-resolved-from-skeleton-clip-names">LocomotionClipSet — resolved from skeleton clip names</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#full-onupdate-decision-tree">Full OnUpdate decision tree</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#default-thresholds-tunable-per-character">Default thresholds (tunable per character)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#configure-from-imported-asset">Configure from imported asset</a>
                         </li>
                         
                         <li class="toc-h2">

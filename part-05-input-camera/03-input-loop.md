@@ -15,6 +15,67 @@ Input is not a background service — it is **synchronized to frames**. If you r
 
 Spark's `Engine::Run` loop fixes a canonical order used across all demos. This chapter is the **temporal contract** every camera and controller in Part V assumes.
 
+### Frame order cheat sheet (beginner)
+
+Think of one game frame as a **pipeline** — each step consumes output from the previous:
+
+```text
+while (running) {
+  PollEvents()              // 1. OS → GLFW queue (MUST be first)
+  input.BeginFrame()        // 2. snapshot keys/mouse
+  engine.HandleHotkeys()    // 3. F11 fullscreen, etc.
+  game.OnUpdate(dt, ctx)    // 4. movement, physics, camera
+  ui.BeginFrame()           // 5. ImGui wants input after game
+  game.OnRender(ctx)        // 6. build SceneRenderParams
+  renderer.PresentFrame()   // 7. GPU + swapchain
+}
+```
+
+**Why order matters:**
+
+| Wrong order | Symptom |
+|-------------|---------|
+| Update before PollEvents | One-frame input lag |
+| BeginFrame before PollEvents | Missed key releases |
+| UI before game with capture | Camera and menu fight for mouse |
+| Render before Update | Camera one frame behind player |
+
+**`IEngineContext`** passes the same `IInput&` into `OnUpdate` — camera code never polls GLFW itself.
+
+## 1b. Concept Deep Dive — Engine::Run Frame Order
+
+### Canonical loop in Engine.cpp
+
+Spark's production loop fixes input timing for every demo:
+
+```cpp
+// src/Engine.cpp (simplified)
+while (!window.ShouldClose()) {
+    window.PollEvents();
+    input->BeginFrame();
+    // engine hotkeys (F3 overlay, F9 record, F12 screenshot)
+    game->OnUpdate(timing, *engineContext);
+    Ui::UiSystem::Get().OnEnginePreRender(window, *input, timing.deltaTimeSeconds);
+    game->OnRender(renderFrame, *engineContext);
+    Ui::UiSystem::Get().OnEnginePostRender();
+    renderer->PresentFrame();
+}
+```
+
+`PollEvents` **must** precede `BeginFrame` — otherwise GLFW queues are stale and edge detection misses releases that happened since last frame.
+
+### Update before render
+
+Camera matrices computed in `OnUpdate` (or scene submit during `OnRender`) must reflect input from the **same** frame's `BeginFrame` snapshot. Rendering last frame's `viewProj` with this frame's mouse delta produces jitter — especially visible on fast fly-camera turns.
+
+### UI reads input after gameplay
+
+`OnEnginePreRender` runs ImGui after `OnUpdate` so a game with captured cursor consumes mouse delta first. When a menu opens and releases capture, UI gets clean cursor coordinates without the camera stealing delta.
+
+### FrameTiming passed to OnUpdate
+
+`FrameTiming` carries `deltaTimeSeconds`, `totalTimeSeconds`, and `frameIndex` — fly cameras multiply `moveSpeed * deltaSeconds`; time-of-day drivers in scene submit use `sceneTimeSeconds` from the same clock.
+
 ## 2. Core Concepts
 
 ### One frame timeline

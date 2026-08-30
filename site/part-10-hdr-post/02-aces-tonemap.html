@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,44 @@
 <p>HDR scene color holds values far above 1.0 — a physically plausible sun term can reach 5–20 in linear space. Monitors expect <strong>display-referred</strong> signals in 0–1. Without tonemapping, either highlights clip to white or the entire scene looks dim.</p>
 <p><strong>Tonemapping</strong> compresses dynamic range while preserving hue. <strong>ACES</strong> is the industry starting point before artists apply LUTs or grade in compositing. Spark's <code>tonemap.frag</code> is a minimal, readable reference: exposure multiply, fitted ACES, gamma encode.</p>
 <p>You will follow <code>RecordTonemap</code> in the frame graph and reproduce the fullscreen pass in your engine.</p>
+<h3 id="where-tonemap-sits-in-the-full-rendering-pipeline">Where tonemap sits in the full rendering pipeline</h3>
+<p>Tonemap is the bridge between <strong>scene-referred HDR</strong> and <strong>display-referred swapchain</strong>. In Spark's frame graph it runs after all world content and optional SSAO:</p>
+<pre><code class="language-text">Shadow passes
+→ HDR render pass (scene + transparent resume + 2D + particles)
+→ TransitionColorToShaderRead
+→ [optional] SSAO pass (reads HDR + depth)
+→ RecordTonemap (HDR → swapchain, present render pass)
+→ Screen UI + ImGui (display space, not exposure-scaled)
+</code></pre>
+<p>Emissive materials authored in Part VII can exceed 1.0 in the HDR buffer <strong>before</strong> tonemap. PBR specular highlights on metals similarly accumulate in linear space. If you skip HDR offscreen targets (Part X Chapter 1) and draw directly to swapchain, tonemap has nothing meaningful to compress — highlights clip at 1.0.</p>
+<p><code>VulkanHdrTonemapPass::RecordTonemap</code> binds the HDR color image as a combined image sampler, multiplies by <code>resolvedLighting.exposure</code>, runs ACES in <code>tonemap.frag</code>, and writes UNORM swapchain color. UI draws afterward so widgets are not exposure-scaled.</p>
+<h2 id="b.concept-deep-dive-scene-referred-to-display-referred-in-one-draw">1b. Concept Deep Dive — Scene-Referred to Display-Referred in One Draw</h2>
+<h3 id="tonemap-is-a-fullscreen-pass-with-push-constants-not-a-ubo">Tonemap is a fullscreen pass with push constants, not a UBO</h3>
+<p>Spark's tonemap shader samples linear HDR, scales by exposure, applies Stephen Hill's ACES fitted curve, then gamma-encodes for UNORM swapchain output. No vertex buffer — three corners generate UVs from clip-space positions:</p>
+<pre><code class="language-glsl">// shaders/tonemap.frag (lines 16–29)
+vec3 acesTonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    vec3 hdr = texture(hdrColor, vUv).rgb * max(push.exposure, 1e-4);
+    vec3 ldr = acesTonemap(hdr);
+    ldr = pow(ldr, vec3(max(push.invGamma, 1e-3)));
+    outColor = vec4(ldr, 1.0);
+}
+</code></pre>
+<p>Exposure and <code>invGamma</code> ride in push constants — tweak in ImGui without descriptor churn.</p>
+<h3 id="ssao-may-feed-tonemap-input">SSAO may feed tonemap input</h3>
+<p>When <code>ssaoActive</code>, the renderer updates the tonemap descriptor to sample SSAO scratch RGBA16F instead of raw scene HDR. When false, tonemap binds the HDR color view directly. UI and ImGui record <strong>after</strong> tonemap so HUD colors stay display-referred and ignore exposure volumes.</p>
+<pre><code class="language-text">HDR scene end → [optional] SSAO composite → RecordTonemap(exposure) → screenUi → ImGui
+</code></pre>
+<h3 id="why-aces-beats-naive-reinhard">Why ACES beats naive Reinhard</h3>
+<p>Reinhard <code>x/(1+x)</code> desaturates bright yellows and blues differently — skies look chalky. ACES preserves hue through the shoulder region where sun-facing diffuse (~5–20 linear) maps to visible monitor detail. Verify in RenderDoc: tonemap pass should be exactly <strong>one draw</strong> per swapchain image.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="tonemap-pipeline-shape">Tonemap pipeline shape</h3>
 <p>Tonemap is a <strong>fullscreen pass</strong> with no depth attachment:</p>
@@ -1163,7 +1207,7 @@ gl_Position = vec4(inPos, 0.0, 1.0);
 <p><strong>Decision:</strong> acesTonemap in tonemap.frag</p>
 <p><strong>Why:</strong> Single function applied per RGB channel after exposure multiply. Industry-standard starting point before custom LUTs.</p>
 <p><strong>In Spark:</strong> <code>shaders/tonemap.frag</code> lines 16–23.</p>
-<h3 id="ssao-may-feed-tonemap-input">SSAO may feed tonemap input</h3>
+<h3 id="ssao-may-feed-tonemap-input-1">SSAO may feed tonemap input</h3>
 <p><strong>Concept:</strong> Post-scene ordering</p>
 <p><strong>Decision:</strong> SSAO may feed tonemap input</p>
 <p><strong>Why:</strong> When SSAO active, <code>UpdateTonemapDescriptor</code> points at SSAO output view; otherwise raw HDR color view.</p>
@@ -1325,6 +1369,26 @@ hdrTonemapPass.RecordTonemap(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#where-tonemap-sits-in-the-full-rendering-pipeline">Where tonemap sits in the full rendering pipeline</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scene-referred-to-display-referred-in-one-draw">1b. Concept Deep Dive — Scene-Referred to Display-Referred in One Draw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#tonemap-is-a-fullscreen-pass-with-push-constants-not-a-ubo">Tonemap is a fullscreen pass with push constants, not a UBO</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ssao-may-feed-tonemap-input">SSAO may feed tonemap input</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-aces-beats-naive-reinhard">Why ACES beats naive Reinhard</a>
                         </li>
                         
                         <li class="toc-h2">

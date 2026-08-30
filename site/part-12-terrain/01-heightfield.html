@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,39 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Open outdoor scenes need large ground surfaces. A <strong>heightfield</strong> extrudes an XZ grid using height samples — procedural fBM for demos, brushes or imported maps later. Spark implements generation in <strong><code>TerrainMeshGenerator</code></strong> as pure CPU code; GPU sees only the resulting custom mesh like any other prop.</p>
 <p>Milestone: run <code>TerrainDemo</code> and verify lit hills with correct normals and visible winding under back-face cull.</p>
+<h3 id="terrain-as-a-heightfield-beginner">Terrain as a heightfield (beginner)</h3>
+<p><strong>Terrain</strong> is ground that stretches far into the distance. Instead of modeling every hill as a separate mesh file, engines often use a <strong>heightfield</strong>:</p>
+<ul>
+<li>A 2D grid of height values <code>height[x][z]</code> (or a function like noise).</li>
+<li>Each grid point becomes a vertex; grid cells become two triangles.</li>
+</ul>
+<pre><code class="language-text">Top view (XZ grid):          Side view (heights):
+
+●───●───●                  ●
+│ \ │ / │                 / \
+●───●───●                ●───●───●  hills
+│ / │ \ │
+●───●───●
+</code></pre>
+<p>Spark's <code>TerrainMeshGenerator</code> runs on <strong>CPU</strong> at load or when brushes edit height — same <code>Mesh</code> + <code>Custom</code> slot path as glTF props. The fragment shader does not know "this is terrain"; it only sees normals and albedo like any mesh.</p>
+<p><strong>Normals from height:</strong> for each vertex, sample neighboring heights to estimate slope — steeper slope → normal tilts → grass looks darker on hillsides under directional sun.</p>
+<h2 id="b.concept-deep-dive-cpu-heightfield-to-custom-mesh-slot">1b. Concept Deep Dive — CPU Heightfield to Custom Mesh Slot</h2>
+<h3 id="fbm-fills-height-samples-buildintofromheights-emits-topology">fBM fills height samples; BuildIntoFromHeights emits topology</h3>
+<p>Spark generates outdoor ground as a regular XZ grid. <code>FillProceduralHeights</code> evaluates layered smooth noise; <code>BuildIntoFromHeights</code> places vertices, indexes triangles, then derives normals from neighbor height differences:</p>
+<pre><code class="language-cpp">// src/spark/scene/mesh/TerrainMeshGenerator.cpp (lines 86–89, 137–156)
+            const float h = (Fbm(nxw, nzw, settings) * 2.0F - 1.0F) * settings.heightScale;
+            outHeights.PushBack(h);
+// ...
+            Vector3 t{R.x - L.x, R.y - L.y, R.z - L.z};
+            Vector3 b{U.x - D.x, U.y - D.y, U.z - D.z};
+            Vector3 n = Vector3::Cross(b, t);
+            verts[i].normal = n.Normalized();
+</code></pre>
+<p>The GPU fragment shader does not know "this is terrain" — it sees positions, normals, and UVs like any lit mesh.</p>
+<h3 id="custom-mesh-slot-same-opaque-pass-as-gltf-props">Custom mesh slot, same opaque pass as glTF props</h3>
+<p>Generated geometry routes through <code>SceneMeshSlot::Custom</code> and <code>VulkanCustomMeshPool</code> — identical submit and record path to imported props. Planar UVs scale with world XZ via <code>worldUnitsPerTextureRepeat</code> for tiled grass/soil materials (Part VII).</p>
+<h3 id="winding-matches-engine-convention">Winding matches engine convention</h3>
+<p>Triangle winding in <code>BuildIntoFromHeights</code> matches unit cube / Vulkan back-face culling — TerrainDemo hills should remain visible under default cull mode. Wrong winding shows invisible terrain with depth-only shadow silhouettes.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="heightfield-grid-topology">Heightfield grid topology</h3>
 <p>Outdoor ground is commonly a <strong>heightfield</strong>: a regular XZ grid where each vertex height comes from a scalar sample. Spark derives counts from <code>TerrainGeneratorSettings</code>:</p>
@@ -1283,6 +1322,26 @@ for (std::int32_t iz = 0; iz &lt; nz; ++iz) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#terrain-as-a-heightfield-beginner">Terrain as a heightfield (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cpu-heightfield-to-custom-mesh-slot">1b. Concept Deep Dive — CPU Heightfield to Custom Mesh Slot</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fbm-fills-height-samples-buildintofromheights-emits-topology">fBM fills height samples; BuildIntoFromHeights emits topology</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#custom-mesh-slot-same-opaque-pass-as-gltf-props">Custom mesh slot, same opaque pass as glTF props</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#winding-matches-engine-convention">Winding matches engine convention</a>
                         </li>
                         
                         <li class="toc-h2">

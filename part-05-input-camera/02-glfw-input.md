@@ -20,6 +20,72 @@
 
 Getting ordering wrong produces sticky keys, double jumps, or camera spikes. This chapter implements the desktop path Spark ships in every demo.
 
+### How GlfwInput snapshots each frame (beginner)
+
+GLFW stores **current** OS state. Games need **edges** (pressed this frame) — compare today vs yesterday:
+
+```text
+BeginFrame():
+  prev = curr                    // yesterday's keys
+  curr[i] = glfwGetKey(window, i) // today's keys
+
+WasKeyPressed(key):
+  return curr[key] && !prev[key]  // down now, up before
+```
+
+**Mouse delta with captured cursor:** when the cursor is hidden and re-centered each frame, raw position stays near window center — delta = `currPos - lastPos` after `PollEvents`, not absolute screen coordinates.
+
+**Scroll wheel:** GLFW fires scroll callbacks between frames; `GlfwInput` accumulates `scrollDeltaY` in `BeginFrame` then resets — read once per frame in camera zoom code.
+
+**HiDPI:** `GetCursorPosition` returns **framebuffer pixels** (not window points) so picking and UI align with Vulkan swapchain size on Retina displays.
+
+**Common bug:** calling `WasKeyPressed` before `BeginFrame` — edges use stale `prev` and miss the first press.
+
+## 1b. Concept Deep Dive — GlfwInput Snapshot Arrays
+
+### Parallel curr/prev arrays
+
+```cpp
+// include/spark/engine/GlfwInput.hpp
+class GlfwInput final : public IInput {
+    void BeginFrame();
+private:
+    bool curr[GLFW_KEY_LAST + 1U]{};
+    bool prev[GLFW_KEY_LAST + 1U]{};
+    bool mouseCurr[GLFW_MOUSE_BUTTON_LAST + 1U]{};
+    bool mousePrev[GLFW_MOUSE_BUTTON_LAST + 1U]{};
+    float mouseDeltaX = 0.0F;
+    float mouseDeltaY = 0.0F;
+    double scrollAccumY = 0.0;
+};
+```
+
+`BeginFrame` shifts keyboard and mouse button state, then polls GLFW:
+
+```cpp
+// src/spark/engine/GlfwInput.cpp
+for (int k = 0; k <= GLFW_KEY_LAST; ++k) {
+    prev[k] = curr[k];
+    curr[k] = (glfwGetKey(window, k) == GLFW_PRESS || glfwGetKey(...) == GLFW_REPEAT);
+}
+scrollDeltaThisFrame = static_cast<float>(scrollAccumY);
+scrollAccumY = 0.0;
+```
+
+`IsKeyPressedThisFrame` returns `curr[key] && !prev[key]`.
+
+### Captured cursor re-centering
+
+When `cursorCaptured` is true, delta comes from position change, then the cursor warps to window center — enabling infinite mouse look without hitting screen edges. `ThreeDDemo` toggles capture on F1; without it, yaw stops at the bezel.
+
+### Scroll callback accumulation
+
+`WireToWindow` registers `SetScrollCallback` — scroll events arrive asynchronously between frames. `BeginFrame` drains `scrollAccumY` into `scrollDeltaThisFrame` for one-shot zoom reads in orbit and fly cameras.
+
+### Platform cursor callback split
+
+On Apple builds, `SPARK_GLFW_USE_CURSOR_CALLBACK` is 0 — cursor position is polled in `BeginFrame` instead of a callback, avoiding MoltenVK/GLFW interaction quirks documented in the source.
+
 ## 2. Core Concepts
 
 ### Construction and wiring

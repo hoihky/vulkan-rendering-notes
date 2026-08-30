@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,39 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>2D games still need a <strong>camera</strong> — position, optional rotation, zoom (<code>halfExtentY</code>), and follow behavior. Spark does not use a separate renderer; the same Vulkan path draws sprites with an orthographic <code>viewProj</code> from a <code>Camera2D</code> or <code>Camera2DComponent</code>.</p>
 <p>This chapter covers standalone <code>Camera2D</code> math, ECS wrapper, and <code>Camera2DRigComponent</code> modes — the 2D parallel to Chapters 5–8 in 3D.</p>
+<h3 id="d-camera-in-plain-language-beginner">2D camera in plain language (beginner)</h3>
+<p>2D games draw on the <strong>XY plane</strong> (side-scroller) or <strong>XZ</strong> (top-down). The camera still needs:</p>
+<ul>
+<li><strong>Position</strong> — which part of the world is centered on screen</li>
+<li><strong>Zoom</strong> — <code>halfExtentY</code> controls how many world units fit vertically (bigger = zoomed out)</li>
+<li><strong>Rotation</strong> — usually 0; slight Z rotation for isometric tilt</li>
+</ul>
+<p><strong>Orthographic projection</strong> means parallel lines stay parallel — no perspective foreshortening. A coin at the back of the scene is the same size as one in front (correct for Mario-style platformers).</p>
+<pre><code class="language-text">World units: player at (100, 50)
+Camera at (100, 50) → player centered
+Camera at (90, 50)  → player appears right of center (camera lag behind)
+</code></pre>
+<p><strong>Follow rig with bounds:</strong> <code>Camera2DRigComponent</code> clamps camera so you never show void outside the level — <code>minX/maxX</code> keep the view inside designed tilemap edges.</p>
+<p><strong>Y-flip note:</strong> Vulkan clip space Y may point down; Spark's <code>OrthographicVulkan</code> matches sprite batching — if sprites appear upside down, check projection sign vs texture V coordinate (Part XI).</p>
+<h2 id="b.concept-deep-dive-camera2d-orthographic-path">1b. Concept Deep Dive — Camera2D Orthographic Path</h2>
+<h3 id="standalone-struct-for-2d-math">Standalone struct for 2D math</h3>
+<pre><code class="language-cpp">// include/spark/scene/camera/Camera2D.hpp
+struct Camera2D {
+    Vector3 position{};
+    float rotationRad = 0.0F;
+    float halfExtentY = 5.0F;
+    float clipNearZ = -500.0F;
+    float clipFarZ = 500.0F;
+    [[nodiscard]] Matrix4 ViewProjection(float fbW, float fbH) const noexcept;
+};
+</code></pre>
+<p><code>halfExtentY</code> is half the visible world height — halving it zooms in. Width follows aspect: <code>halfExtentX = halfExtentY * (fbW / fbH)</code>.</p>
+<h3 id="viewprojection-composition">ViewProjection composition</h3>
+<p><code>ViewMatrix()</code> applies inverse pan + Z rotation; <code>ViewProjection</code> multiplies <code>OrthographicVulkan(halfExtentY, aspect, clipNear, clipFar) * view</code>. Result goes directly to <code>SceneRenderParams::viewProjection</code> — same field 3D cameras use.</p>
+<h3 id="ecs-camera2dcomponent-rig">ECS Camera2DComponent + rig</h3>
+<p><code>Camera2DComponent</code> mirrors projection fields on a <code>GameObject</code>. <code>Camera2DRigComponent</code> adds follow modes and level bounds — <code>Platformer2DDemo</code> clamps camera X/Y so the view never shows void outside the tilemap. Rig ticks in ECS update; submit reads resolved component matrices.</p>
+<h3 id="sprite-sort-interaction">Sprite sort interaction</h3>
+<p>Top-down 2D scenes set <code>SceneSpriteSortMode::SortOrderThenWorldY</code> on submit so characters with equal sort order occlude by world Y (+Y-up). The orthographic camera's <code>position</code> and <code>halfExtentY</code> define which slice of world Y is visible for that occlusion test.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="camera2d-state">Camera2D state</h3>
 <pre><code class="language-cpp">struct Camera2D {
@@ -1228,6 +1267,30 @@ cameraRig-&gt;SetBoundsMax({...});
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#2d-camera-in-plain-language-beginner">2D camera in plain language (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-camera2d-orthographic-path">1b. Concept Deep Dive — Camera2D Orthographic Path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#standalone-struct-for-2d-math">Standalone struct for 2D math</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#viewprojection-composition">ViewProjection composition</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-camera2dcomponent-rig">ECS Camera2DComponent + rig</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#sprite-sort-interaction">Sprite sort interaction</a>
                         </li>
                         
                         <li class="toc-h2">

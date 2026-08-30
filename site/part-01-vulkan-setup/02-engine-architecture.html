@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1062,6 +1068,145 @@
 <li><code>include/spark/render/core/VulkanRenderer.hpp</code> — what the GPU backend owns</li>
 </ul>
 <p>The difference in their <code>#include</code> lists is the architecture.</p>
+<h3 id="four-layers-for-beginners">Four layers for beginners</h3>
+<p>Spark organizes code into layers you should memorize early:</p>
+<pre><code class="language-text">┌─────────────────────────────────────────────┐
+│  Platform (GLFW, files, time)               │
+├─────────────────────────────────────────────┤
+│  Game / ECS (GameWorld, components, demos)  │
+├─────────────────────────────────────────────┤
+│  Render frontend (SceneSubmit, snapshots)   │
+├─────────────────────────────────────────────┤
+│  Render backend (VulkanRenderer, passes)    │
+└─────────────────────────────────────────────┘
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Layer</th>
+<th>May include Vulkan headers?</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platform</td>
+<td>No</td>
+<td><code>Window</code>, <code>GlfwInput</code></td>
+</tr>
+<tr>
+<td>Game</td>
+<td>No</td>
+<td><code>CharacterCameraDemo</code>, <code>MeshComponent</code></td>
+</tr>
+<tr>
+<td>Render frontend</td>
+<td>No</td>
+<td><code>SceneSubmit</code>, <code>SceneRenderParams</code></td>
+</tr>
+<tr>
+<td>Render backend</td>
+<td><strong>Yes</strong></td>
+<td><code>VulkanRenderer</code>, <code>VulkanScenePipeline</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Dependency rule:</strong> upper layers call down; the backend never includes game demo headers. <code>IEngineContext</code> is the narrow API surface games use to push <code>SceneRenderParams</code> without linking every Vulkan pass.</p>
+<h3 id="one-frame-through-the-layers">One frame through the layers</h3>
+<pre><code class="language-text">GLFW poll
+→ Engine::Run
+    → game-&gt;OnUpdate        (Game layer)
+    → game-&gt;OnRender        (Game builds scene via Submit — frontend)
+    → context.SetSceneRenderParams
+    → renderer-&gt;PresentFrame (VulkanRenderer — backend)
+        → DrawFrame → RecordSceneCommandBuffer
+</code></pre>
+<p>When you get lost in a 3,000-line file, ask: <strong>which layer am I in?</strong> If gameplay is calling <code>vkCmdDraw</code>, architecture has leaked.</p>
+<h2 id="b.concept-deep-dive-how-spark-enforces-layer-boundaries">1b. Concept Deep Dive — How Spark Enforces Layer Boundaries</h2>
+<h3 id="interfaces-as-compile-time-firewalls">Interfaces as compile-time firewalls</h3>
+<p>Spark's four layers are not just folder names — they are <strong>include-graph constraints</strong>. Open <code>IGame.hpp</code> and <code>VulkanRenderer.hpp</code> side by side: the game header lists ECS and math types; the renderer header pulls in a dozen pass classes and <code>&lt;vulkan/vulkan.h&gt;</code>. If a demo <code>#include</code>s the renderer directly, every gameplay <code>.cpp</code> recompiles when you touch a shadow pass, and circular dependencies appear within days.</p>
+<p>Dependency inversion solves this with two narrow ports: <code>IEngineContext</code> (what games call) and <code>IFramePresenter</code> (what the loop calls for GPU work). <code>EngineContext</code> is a <strong>facade</strong> that knows both <code>Window</code> and <code>IFramePresenter</code> but exposes neither Vulkan type nor internal pass objects. <code>VulkanRenderer</code> implements the presenter and owns composition — device context, frame sync, opaque pass, tonemap — rather than inheriting from game code.</p>
+<p>Construction order in <code>Engine::Impl</code> mirrors the dependency graph from the bottom up: window first (surface extensions), then renderer (which bootstraps Vulkan internally), then input and context wired to both. No Vulkan calls appear in <code>Engine.cpp</code>; the renderer constructor is the single entry that triggers instance/device setup.</p>
+<h3 id="one-frame-four-layers-includes-implied">One frame, four layers (includes implied)</h3>
+<pre><code class="language-text">  Platform          Game              Frontend                 Backend
+────────          ────              ────────                 ───────
+Window            IGame::OnUpdate   SceneSubmit              VulkanRenderer
+GlfwInput         components        SceneRenderParams        VulkanDeviceContext
+     │                 │                   │                        │
+     └─ PollEvents ────┴─ timing ─────────┴─ SetSceneRenderParams ─┴─ DrawFrame
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Layer</th>
+<th><code>#include &lt;vulkan/vulkan.h&gt;</code>?</th>
+<th>Calls into</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platform</td>
+<td>No (GLFW surface ext only at link)</td>
+<td>OS / GLFW</td>
+</tr>
+<tr>
+<td>Game</td>
+<td>Never</td>
+<td><code>IEngineContext</code></td>
+</tr>
+<tr>
+<td>Frontend</td>
+<td>Never</td>
+<td><code>SceneRenderParams</code>, submit helpers</td>
+</tr>
+<tr>
+<td>Backend</td>
+<td>Yes</td>
+<td><code>VkDevice</code>, passes, sync</td>
+</tr>
+</tbody>
+</table>
+<h3 id="engine-wires-subsystems-in-dependency-order">Engine wires subsystems in dependency order</h3>
+<pre><code class="language-cpp">// src/Engine.cpp (lines 98–112)
+explicit Impl(UniquePtr&lt;IGame&gt; ownedGame)
+    : window{}
+    , renderer(MakeUnique&lt;VulkanRenderer&gt;(window))
+    , input(MakeUnique&lt;GlfwInput&gt;(window.Handle()))
+    , engineContext(MakeUnique&lt;EngineContext&gt;(window, *renderer, *input, audio))
+    , game(MoveTemp(ownedGame)) {
+    input-&gt;WireToWindow(window);
+    renderer-&gt;GetImGuiLayer().InstallPlatformCallbacks(window);
+    engineContext-&gt;BindImGuiLayer(renderer-&gt;GetImGuiLayer());
+    // ...
+    window.SetFramebufferResizeCallback([this](int /*width*/, int /*height*/) {
+        renderer-&gt;NotifySwapchainResize();
+    });
+}
+</code></pre>
+<h3 id="game-contract-simulation-vs-snapshot">Game contract — simulation vs snapshot</h3>
+<pre><code class="language-cpp">// include/spark/engine/IGame.hpp
+class IGame {
+public:
+    virtual ~IGame() = default;
+
+    virtual void OnAttach(IEngineContext&amp; context) = 0;
+    virtual void OnDetach() = 0;
+    virtual void OnUpdate(const FrameTiming&amp; timing, IEngineContext&amp; context) = 0;
+    virtual void OnRender(IRenderFrame&amp; frame, IEngineContext&amp; context) = 0;
+};
+</code></pre>
+<h3 id="renderer-composes-passes-device-context-is-a-member">Renderer composes passes; device context is a member</h3>
+<p><code>VulkanRenderer</code> is not a monolith — it aggregates focused subsystems while delegating bootstrap to <code>VulkanDeviceContext</code>:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 43–49)
+VulkanRenderer::VulkanRenderer(Window&amp; inAppWindow) : deviceContext(inAppWindow), boundWindow(&amp;inAppWindow) {
+    shaderLoader.SetDevice(device());
+
+    CreateCommandPool();
+    CreatePersistentSceneResources();
+    RecreateSwapchain();
+    frameSync.Create(device());
+</code></pre>
+<p>When you add a feature later (particles, UI), add a pass object — do not grow a single renderer translation unit without bound.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="dependency-inversion">Dependency inversion</h3>
 <p>High-level game code depends on <strong>abstractions</strong>, not Vulkan classes:</p>
@@ -1353,6 +1498,38 @@ void VulkanRenderer::DrawFrame() {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#four-layers-for-beginners">Four layers for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-frame-through-the-layers">One frame through the layers</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-how-spark-enforces-layer-boundaries">1b. Concept Deep Dive — How Spark Enforces Layer Boundaries</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#interfaces-as-compile-time-firewalls">Interfaces as compile-time firewalls</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-frame-four-layers-includes-implied">One frame, four layers (includes implied)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#engine-wires-subsystems-in-dependency-order">Engine wires subsystems in dependency order</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#game-contract-simulation-vs-snapshot">Game contract — simulation vs snapshot</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#renderer-composes-passes-device-context-is-a-member">Renderer composes passes; device context is a member</a>
                         </li>
                         
                         <li class="toc-h2">

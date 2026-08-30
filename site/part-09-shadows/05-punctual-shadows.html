@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,38 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Directional CSM covers the sun; <strong>spot</strong> and <strong>point</strong> lights need <strong>perspective</strong> depth maps from the light origin. Your forward renderer already loops punctual lights for shading (Part IV); Part IX adds optional shadowed variants gated by light flags and shadow map slots.</p>
 <p>Spark implements punctual shadows as a separate pass object with its own SSBO and sampler bindings.</p>
+<h2 id="b.concept-deep-dive-vulkanpunctualshadowpass">1b. Concept Deep Dive — VulkanPunctualShadowPass</h2>
+<h3 id="spot-shadow-perspective-frustum-aligned-to-cone">Spot shadow — perspective frustum aligned to cone</h3>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanPunctualShadowPass.cpp (lines 33–43)
+Matrix4 BuildSpotShadowMatrix(const SceneSpotLight&amp; spot) {
+    const Vector3 target = spot.positionWorld + spot.directionWorld;
+    const Matrix4 view = Matrix4::LookAt(spot.positionWorld, target, up);
+    const float fovY = std::max(spot.outerConeRadians * 1.12F, 0.35F);
+    const Matrix4 proj = Matrix4::PerspectiveVulkan(fovY, 1.0F, 0.08F, spot.range);
+    return proj * view;
+}
+</code></pre>
+<p>FOV is slightly wider than the outer cone (×1.12) so shadow map edges do not clip valid light volume. Spot maps pack into a 2×2 atlas (<code>FillSpotAtlasUv</code>).</p>
+<h3 id="point-light-six-face-cubemap-renders">Point light — six face cubemap renders</h3>
+<pre><code class="language-cpp">// BuildPointFaceMatrices (lines 45–73)
+static const Vector3 kFaceDirs[6] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+const Matrix4 proj = Matrix4::PerspectiveVulkan(HalfPi, 1.0F, nearZ, farZ);
+// per face: view = LookAt(lightPos, lightPos + faceDir, faceUp)
+</code></pre>
+<p>Each point light renders six 90° perspective faces into a <code>sampler2DArray</code>. Light scoring (<code>LightScore</code>) picks the top-N brightest punctual lights near the camera for shadow budget.</p>
+<h3 id="punctualshadowssbo-separate-from-directional-atlas">PunctualShadowSSBO — separate from directional atlas</h3>
+<pre><code class="language-glsl">// shaders/punctual_shadows.glsl (lines 9–28)
+layout(std430, set = 0, binding = 6) readonly buffer PunctualShadowSSBO {
+    uint numSpotShadows;
+    mat4 spotWorldToClip[kMaxSpotShadowMaps];
+    vec4 spotAtlas[kMaxSpotShadowMaps];
+    mat4 pointFaceWorldToClip[kMaxPointShadowMaps][6];
+    // ...
+} punctualShadow;
+layout(set = 0, binding = 7) uniform sampler2D spotShadowMap;
+layout(set = 0, binding = 8) uniform sampler2DArray pointShadowMap;
+</code></pre>
+<p>Directional CSM uses binding 3; punctual shadows use bindings 6–8. <code>PrepareAndUpload</code> fills the SSBO each frame before the scene UBO write.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="spot-light-shadow">Spot light shadow</h3>
 <p>A spot light uses one <strong>perspective</strong> depth map — same shape as a camera frustum aligned to the spot direction and outer cone angle.</p>
@@ -1321,6 +1359,22 @@ layout(std430, set = 0, binding = 6) readonly buffer PunctualShadowSSBO {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vulkanpunctualshadowpass">1b. Concept Deep Dive — VulkanPunctualShadowPass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spot-shadow-perspective-frustum-aligned-to-cone">Spot shadow — perspective frustum aligned to cone</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#point-light-six-face-cubemap-renders">Point light — six face cubemap renders</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#punctualshadowssbo-separate-from-directional-atlas">PunctualShadowSSBO — separate from directional atlas</a>
                         </li>
                         
                         <li class="toc-h2">

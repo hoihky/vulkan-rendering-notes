@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,136 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Part III taught toolchain, vertex/fragment stages, UBOs, push constants, includes, depth, blend, and debugging. Your engine now draws lit meshes with transparency and sky — but Spark ships <strong>many more passes</strong>: shadows, particles, sprites, UI, tonemap, post.</p>
 <p>Before diving into Part IV (textures and lighting depth), you need a <strong>roadmap</strong>: what exists, what binds where, and how to extend without combinatorial explosion. This chapter is the capstone inventory and forward plan.</p>
+<h3 id="how-part-iii-fits-the-bigger-picture-beginner">How Part III fits the bigger picture (beginner)</h3>
+<p>Part III taught you to <strong>author and wire shaders</strong>. You now understand:</p>
+<ul>
+<li>Vertex shader → clip position + varyings</li>
+<li>Fragment shader → color output</li>
+<li>UBO (per frame) vs push constants (per draw)</li>
+<li>Depth, cull, blend pipeline variants</li>
+</ul>
+<p><strong>What comes next in the book:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Part</th>
+<th>Shader topic added</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IV</td>
+<td>Texture sampling, lights in <code>scene.frag</code></td>
+</tr>
+<tr>
+<td>VII</td>
+<td>PBR maps, normal mapping, IBL includes</td>
+</tr>
+<tr>
+<td>IX</td>
+<td>Shadow sampling in <code>scene.frag</code>, <code>shadow_depth.vert</code></td>
+</tr>
+<tr>
+<td>X</td>
+<td><code>tonemap.frag</code> — separate pass, HDR → swapchain</td>
+</tr>
+<tr>
+<td>XI</td>
+<td><code>sprite.vert/frag</code>, UI shaders — same HDR pass</td>
+</tr>
+</tbody>
+</table>
+<p><strong>One shader pair (<code>scene.vert</code>/<code>scene.frag</code>) draws most 3D content.</strong> Other <code>.spv</code> files are for specialized passes (shadow depth, particles, post). Do not create a new fragment shader per material — use push constant <code>textureLayer</code> and PBR scalars instead.</p>
+<p><strong>Extension rule:</strong> add features as includes + UBO fields + push fields before forking entire shader files. Spark's <code>gltf_pbr_extensions.glsl</code> pattern scales KHR material features without duplicating <code>scene.frag</code>.</p>
+<h2 id="b.concept-deep-dive-scene-shader-architecture-and-extension-points">1b. Concept Deep Dive — Scene Shader Architecture and Extension Points</h2>
+<h3 id="scene.vert-scene.frag-anchor-the-3d-forward-pass">scene.vert / scene.frag anchor the 3D forward pass</h3>
+<p>Most visible geometry flows through one SPIR-V pair compiled from:</p>
+<pre><code class="language-text">scene.vert  +  scene_ubo.glsl  +  scene_push.glsl  +  SkinSSBO (binding 2)
+scene.frag  +  above includes    +  clustered_lights / ibl / punctual_shadows / glTF extensions
+</code></pre>
+<p>CMake lists both in <code>SHADER_SOURCES</code> and loads them via <code>VulkanSpvShaderLoader::ReadSpvFile("scene.vert.spv")</code>. Other passes (shadow depth, particles, sprites, tonemap) are separate <code>.spv</code> files with their own <code>VkPipelineLayout</code> — <strong>set 0 binding 1 is not interchangeable</strong> across passes.</p>
+<h3 id="descriptor-binding-map-scene-set-0">Descriptor binding map (scene set 0)</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Binding</th>
+<th>GLSL declaration</th>
+<th>Stages</th>
+<th>Update rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>SceneUBO ubo</code> (656 B std140)</td>
+<td>VS, FS</td>
+<td>Per frame</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>sampler2DArray sceneTextures</code></td>
+<td>FS</td>
+<td>Static atlas</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>SkinSSBO bones[]</code> (std430)</td>
+<td>VS</td>
+<td>Per skinned draw</td>
+</tr>
+<tr>
+<td>3+</td>
+<td>Cluster / shadow SSBOs</td>
+<td>FS</td>
+<td>Per frame</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>sampler2DArray sceneHdrTextures</code></td>
+<td>FS</td>
+<td>HDR env layers</td>
+</tr>
+</tbody>
+</table>
+<p>Per-draw material selection uses push constants (<code>textureLayer</code>, map layers, <code>shadingModel</code>) — not extra descriptor slots. This is why Spark scales to hundreds of draws without hundreds of descriptor sets.</p>
+<h3 id="three-specialization-strategies-in-one-pass">Three specialization strategies in one pass</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Technique</th>
+<th>Spark example</th>
+<th>When to choose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Separate pipelines</td>
+<td>lit / sky / transparent</td>
+<td>Fixed-function state differs (depth, blend)</td>
+</tr>
+<tr>
+<td>Runtime branch</td>
+<td><code>push.shadingModel</code>, <code>push.skyMode</code></td>
+<td>Few modes, same SPIR-V</td>
+</tr>
+<tr>
+<td>Include modules</td>
+<td><code>gltf_pbr_extensions.glsl</code></td>
+<td>Feature grows but <code>main()</code> stays readable</td>
+</tr>
+</tbody>
+</table>
+<p>Avoid compile-time <code>#define</code> permutations until profiling proves a branch is hot — Spark's production <code>scene.frag</code> is large but maintains one module per stage.</p>
+<h3 id="forward-path-for-new-features">Forward path for new features</h3>
+<p>When adding capability from later parts (shadows, IBL, new glTF extension):</p>
+<ol>
+<li>Add UBO or push fields to <strong>both</strong> C++ struct and <code>scene_ubo.glsl</code> / <code>scene_push.glsl</code></li>
+<li>Implement logic in a new <code>.glsl</code> include, not duplicated in <code>scene.frag</code></li>
+<li>Add the include to CMake DEPENDS on all consuming shaders</li>
+<li>Extend <code>ModelPushConstants</code> or <code>SceneUniformGpu</code> with <code>static_assert</code> proofs</li>
+<li>Only fork a new <code>.frag</code> file if the render pass target or descriptor set layout fundamentally differs (e.g. <code>tonemap.frag</code> writing to swapchain)</li>
+</ol>
+<p>Part III infrastructure — CMake <code>SparkShaders</code>, shared includes, UBO/push contracts — is the foundation every later part extends without rewriting the scene pass from scratch.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="spark-shader-pass-inventory">Spark shader pass inventory</h3>
 <table class="table">
@@ -1325,6 +1461,30 @@ endforeach()
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#how-part-iii-fits-the-bigger-picture-beginner">How Part III fits the bigger picture (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scene-shader-architecture-and-extension-points">1b. Concept Deep Dive — Scene Shader Architecture and Extension Points</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenevert-scenefrag-anchor-the-3d-forward-pass">scene.vert / scene.frag anchor the 3D forward pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#descriptor-binding-map-scene-set-0">Descriptor binding map (scene set 0)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#three-specialization-strategies-in-one-pass">Three specialization strategies in one pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#forward-path-for-new-features">Forward path for new features</a>
                         </li>
                         
                         <li class="toc-h2">

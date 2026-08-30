@@ -19,6 +19,111 @@ Shaders need **per-frame** data (view matrix, lights) and **per-draw** data (mod
 
 **Descriptor sets** bind UBOs, texture arrays, and SSBOs to shader slots. This chapter covers the UBO path — without it, shaders read uninitialized memory and everything renders black or magenta validation errors.
 
+## 1b. Concept Deep Dive — Scene Descriptor Set 0
+
+### Layout mirrors GLSL bindings — binding 0 is SceneUBO
+
+Spark's `VulkanSceneDescriptors::CreateSetLayout` declares 14 bindings matching `scene.vert` / `scene.frag`. Part II focuses on binding 0 — the per-frame uniform buffer both stages read:
+
+```cpp
+// src/spark/render/scene/VulkanSceneDescriptors.cpp (lines 20–35)
+void VulkanSceneDescriptors::CreateSetLayout(VkDevice device) {
+    VkDescriptorSetLayoutBinding bindings[14]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+```
+
+| Binding | Type | Part II role |
+|---------|------|--------------|
+| 0 | UBO | `viewProj`, lights, camera, time |
+| 1 | combined image sampler | Scene texture array (Part IV) |
+| 2 | SSBO | Skin joint palette (Part VI) |
+| 3–13 | mixed | Lights, shadows, IBL — later parts |
+
+The layout handle is passed to `vkCreatePipelineLayout` before any graphics pipeline exists.
+
+### Per-flight uniform buffers — CPU writes while GPU reads prior frame
+
+With two frames in flight, Spark allocates one host-visible UBO per flight index. Each buffer is mapped once at creation and `memcpy`'d every frame after the fence wait:
+
+```cpp
+// src/spark/render/scene/VulkanSceneDescriptors.cpp (lines 101–123)
+void VulkanSceneDescriptors::CreateUniformBuffers(
+        VkPhysicalDevice physicalDevice, VkDevice device, std::uint32_t framesInFlight) {
+    constexpr VkDeviceSize bufferSize = kSceneUniformGpuBytes;
+    for (std::size_t i = 0; i < framesInFlight; ++i) {
+        VulkanRendererGpu::CreateBuffer(
+                physicalDevice, device, bufferSize,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                uniformBuffers[i], uniformBuffersMemory[i]);
+        vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
+    }
+}
+```
+
+```text
+Frame 0: CPU writes uniformBuffersMapped[0]  →  GPU reads descriptor set 0 (flight 0)
+Frame 1: CPU writes uniformBuffersMapped[1]  →  GPU still reading flight 0 UBO — safe
+```
+
+### VulkanSceneUniformWriter — CPU struct must match std140
+
+`WriteUniformBuffer` calls `VulkanSceneUniformWriter::Write`, which packs `SceneRenderParams` and resolved lighting into the GPU layout with static asserts on every field offset:
+
+```cpp
+// src/spark/render/scene/VulkanSceneUniformWriter.cpp (lines 15–42)
+void VulkanSceneUniformWriter::Write(
+        void* mappedUbo,
+        const SceneRenderParams& scene,
+        const ResolvedSceneLighting& lighting,
+        const VkExtent2D swapchainExtent,
+        /* ... */) const {
+    using Ubo = SceneUniformGpu;
+    static_assert(offsetof(Ubo, ambientSky) == 128);
+    static_assert(sizeof(Ubo) == 656);
+    std::memset(mappedUbo, 0, static_cast<std::size_t>(kSceneUniformGpuBytes));
+
+    SceneUniformGpu u{};
+    std::memcpy(u.viewProj, scene.viewProjection.m, sizeof(u.viewProj));
+    u.lightDir[0] = lightDir.x;
+    // ... shadow matrices, cluster grid, IBL — zeroed in Part II
+}
+```
+
+Misaligned CPU packing causes subtle bugs — wrong light direction but no validation error.
+
+### Bind descriptor set before draw
+
+`VulkanSceneOpaquePass::Record` binds set 0 once per pass, then loops draws with push constants for per-object data:
+
+```cpp
+// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 99–107)
+    vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            ctx.pipelineLayout,
+            0,
+            1,
+            &ctx.descriptorSet,
+            0,
+            nullptr);
+```
+
+Push constants (`model` matrix, albedo) update per draw without touching the descriptor set.
+
 ## 2. Core Concepts
 
 ### Descriptor set layout

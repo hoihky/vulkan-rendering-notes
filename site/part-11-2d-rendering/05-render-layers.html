@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,29 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Alpha-blended 2D draws need <strong>predictable ordering</strong>. Depth buffer alone fails for coplanar quads and transparent overlap. <strong>Render layers</strong> are integer priorities computed at submit, combined with optional world-Y tie-breaks, and applied via stable sorts before <code>VulkanSpritePass</code> records instances.</p>
 <p>Spark centralizes resolution in <code>DrawableSortResolver</code> — your milestone: two overlapping sprites on different layers always composite the same way, with no frame-to-frame flicker.</p>
+<h2 id="b.concept-deep-dive-sort-keys-beat-depth-for-alpha-overlap">1b. Concept Deep Dive — Sort Keys Beat Depth for Alpha Overlap</h2>
+<h3 id="vulkan-submission-order-is-the-compositing-order-for-alpha">Vulkan submission order is the compositing order for alpha</h3>
+<p>Depth buffer alone fails for coplanar quads and transparent overlap. Spark assigns each 2D drawable a resolved sort key at submit — layer order, order within layer, optional world-Y tie-break — then stable-sorts before GPU record:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/DrawableSortResolver.cpp (lines 81–94)
+ResolvedDrawableSort DrawableSortResolver::Resolve(const GameObject&amp; drawable, const std::int32_t nativeOrder) noexcept {
+    const SortingGroupComponent* sortingGroup = FindNearestSortingGroup(drawable);
+    resolved.key.sortingLayerOrder = ResolveLayerSortingOrder(drawable, sortingGroup);
+    const std::int32_t localOrder = ResolveLocalOrderInLayer(drawable, nativeOrder);
+    if (sortingGroup != nullptr) {
+        const std::int64_t combined =
+                static_cast&lt;std::int64_t&gt;(sortingGroup-&gt;GetSortingOrder()) + static_cast&lt;std::int64_t&gt;(localOrder);
+        resolved.key.sortingOrder = SaturateSortingOrder(combined);
+    } else {
+        resolved.key.sortingOrder = localOrder;
+    }
+    resolved.worldYAnchor = ResolveWorldYAnchor(drawable, sortingGroup);
+    return resolved;
+}
+</code></pre>
+<h3 id="sortinggroupcomponent-batches-character-parts">SortingGroupComponent batches character parts</h3>
+<p>Walking the parent chain finds the nearest enabled sorting group — hat, body, and weapon on a platformer character sort as a unit against the tilemap while preserving internal order. <code>RenderLayerRegistry</code> maps named layer IDs to global integers at startup.</p>
+<h3 id="stable-sort-prevents-frame-to-frame-flicker">Stable sort prevents frame-to-frame flicker</h3>
+<p>Equal keys preserve submission order from the prior sort — critical for reproducible overlap when two sprites share layer and sortOrder. <code>SceneSpriteSortMode::SortOrderThenWorldY</code> adds world-Y anchor for top-down games where layer alone is insufficient.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-sort-keys-exist">Why sort keys exist</h3>
 <p>Without explicit <strong>draw order</strong>, alpha-blended sprites and tile layers intersect unpredictably — foreground props flicker behind the player, decals vanish when overlap angles change. Vulkan draw order within a pass is <strong>submission order</strong> unless you depth-sort (insufficient alone for alpha).</p>
@@ -1292,6 +1321,22 @@ SceneSubmitDetail::StableSortSprites(params.sprites, params.spriteSortMode);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sort-keys-beat-depth-for-alpha-overlap">1b. Concept Deep Dive — Sort Keys Beat Depth for Alpha Overlap</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vulkan-submission-order-is-the-compositing-order-for-alpha">Vulkan submission order is the compositing order for alpha</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#sortinggroupcomponent-batches-character-parts">SortingGroupComponent batches character parts</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#stable-sort-prevents-frame-to-frame-flicker">Stable sort prevents frame-to-frame flicker</a>
                         </li>
                         
                         <li class="toc-h2">

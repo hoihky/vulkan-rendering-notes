@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,96 @@
 <p>ASCII OBJ remains useful for quick props and debugging importers. Before glTF, you need a loader that turns
 <code>f</code> corners into Spark's interleaved <code>Mesh::Vertex</code> stream suitable for indexed draw and the custom mesh pool.</p>
 <p>Build along: load one <code>.obj</code> through the cache, assign <code>SceneMeshSlot::Custom</code>, and see it on the ground plane.</p>
+<h3 id="obj-format-for-beginners">OBJ format for beginners</h3>
+<p><strong>OBJ</strong> is a text file artists export from Blender/Maya. Key lines:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Line</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v x y z</code></td>
+<td>Vertex position</td>
+</tr>
+<tr>
+<td><code>vn x y z</code></td>
+<td>Vertex normal (optional)</td>
+</tr>
+<tr>
+<td><code>vt u v</code></td>
+<td>Texture coordinate (optional)</td>
+</tr>
+<tr>
+<td><code>f i j k</code></td>
+<td>Triangle corner indices (1-based!)</td>
+</tr>
+</tbody>
+</table>
+<p>Example face: <code>f 1/1/1 2/2/2 3/3/3</code> means three corners, each referencing position/texcoord/normal index.</p>
+<p><strong>Why expansion happens:</strong> one OBJ position can appear in multiple faces with <strong>different UVs</strong> — Spark expands each unique <code>(v, vt, vn)</code> triple into one GPU vertex (same strategy as many engines).</p>
+<pre><code class="language-text">OBJ file (indexed pools)     Spark Mesh (interleaved)
+v[0], v[1], v[2]      →    Vertex { pos, normal, uv }
+vt[0], vt[1]               one row per corner
+f 1/1 2/2 3/1
+</code></pre>
+<p><strong>Workflow:</strong> place <code>rock.obj</code> in assets → <code>GameWorld::LoadMesh("rock.obj")</code> → cache returns shared <code>Mesh*</code> → assign to <code>MeshRendererComponent</code> with <code>SceneMeshSlot::Custom</code>.</p>
+<p>OBJ lacks materials/PBR — use for graybox props; glTF (Chapter 3) for production assets.</p>
+<h2 id="b.concept-deep-dive-how-spark-parses-obj">1b. Concept Deep Dive — How Spark Parses OBJ</h2>
+<h3 id="three-separate-pools-one-interleaved-output">Three separate pools, one interleaved output</h3>
+<p>Wavefront OBJ was designed for exporters, not GPUs. A single corner on a cube face might reference <code>position 5</code>, <code>texcoord 12</code>, <code>normal 3</code> — three different indices into three different arrays. Spark's loader reads each pool independently, then <strong>expands</strong> every face corner into one <code>Mesh::Vertex</code>:</p>
+<pre><code class="language-text">File pools (1-based indices):          Spark output (interleaved):
+positions[1..N]                        vertices[0] = { pos[5], normal[3], uv[12] }
+texCoords[1..M]                        vertices[1] = { pos[6], normal[3], uv[13] }
+normals[1..K]                          indices = [0, 1, 2, 0, 2, 3, ...]
+</code></pre>
+<p>This is why a cube with per-face UVs has 24 vertices, not 8 — each face corner is unique even when positions repeat.</p>
+<h3 id="parsefacecorner-handles-all-slash-formats">ParseFaceCorner handles all slash formats</h3>
+<p>Spark's helper parses <code>1</code>, <code>1/2</code>, <code>1//3</code>, and <code>1/2/3</code> corners, including <strong>negative indices</strong> (relative to end of pool — Blender sometimes exports these):</p>
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp — ParseFaceCorner (concept)
+// "12/5/8"  → vi=12, ti=5, ni=8
+// "12//8"   → vi=12, ti=0 (no UV), ni=8
+// "-1"      → last position in pool
+</code></pre>
+<h3 id="fan-triangulation-for-n-gons">Fan triangulation for n-gons</h3>
+<p>Quads and n-gons are not GPU-native. Spark fans from corner 0:</p>
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 477–523)
+} else if (tag == "f") {
+    // ... collect faceV, faceT, faceN per corner ...
+    const std::size_t n = faceV.GetSize();
+    if (n &lt; 3) {
+        continue;
+    }
+    for (std::size_t k = 2; k &lt; n; ++k) {
+        outMesh.indices.PushBack(cornerIndices[0]);
+        outMesh.indices.PushBack(cornerIndices[k - 1]);
+        outMesh.indices.PushBack(cornerIndices[k]);
+    }
+}
+</code></pre>
+<p>A quad <code>f 1 2 3 4</code> becomes triangles <code>(1,2,3)</code> and <code>(1,3,4)</code> — winding follows file order, which matters for back-face culling.</p>
+<h3 id="cache-integration-one-load-many-instances">Cache integration — one load, many instances</h3>
+<p>After parse, <code>GameWorldAssetCache::LoadMesh</code> stores the result by path key:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/GameWorldAssetCache.cpp (lines 154–171)
+SharedPtr&lt;Mesh&gt; GameWorldAssetCache::LoadMesh(const char* path) {
+    if (IsGltfPath(path)) {
+        return LoadGltf(path).mesh;  // .gltf/.glb routes to glTF loader
+    }
+    const Utf8String key(path);
+    if (const SharedPtr&lt;Mesh&gt;* cached = meshCache.Find(key)) {
+        return *cached;  // cache hit — no disk I/O
+    }
+    auto mesh = MakeShared&lt;Mesh&gt;(Utf8String(path));
+    if (!Mesh::TryLoadFromObj(path, *mesh)) {
+        return SharedPtr&lt;Mesh&gt;();
+    }
+    meshCache.Add(key, mesh);
+    return mesh;
+}
+</code></pre>
+<p>Spawn ten rocks with the same path → ten <code>MeshComponent</code>s, one <code>SharedPtr&lt;Mesh&gt;</code>, one pool slice at upload time.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="obj-as-separate-index-pools">OBJ as separate index pools</h3>
 <p>Wavefront OBJ stores <strong>positions</strong>, <strong>normals</strong>, and <strong>UVs</strong> in independent arrays. Face lines reference triples <code>v/vt/vn</code> (1-based in file). The loader must expand each unique corner combination into one interleaved GPU vertex.</p>
@@ -1258,6 +1354,30 @@ by path. <strong>Custom Mesh Pool</strong> uploads the result when submit marks 
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#obj-format-for-beginners">OBJ format for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-how-spark-parses-obj">1b. Concept Deep Dive — How Spark Parses OBJ</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#three-separate-pools-one-interleaved-output">Three separate pools, one interleaved output</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#parsefacecorner-handles-all-slash-formats">ParseFaceCorner handles all slash formats</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fan-triangulation-for-n-gons">Fan triangulation for n-gons</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cache-integration-one-load-many-instances">Cache integration — one load, many instances</a>
                         </li>
                         
                         <li class="toc-h2">

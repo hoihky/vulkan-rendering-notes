@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,27 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Static sprites suffice for props; characters need <strong>flipbook animation</strong> — cycling atlas cells over time. CPU owns clip selection and frame timing; GPU only receives the current UV bounds in instance data, keeping the same instanced draw path as Chapter 1.</p>
 <p>Spark's <code>SpriteAnimatorComponent</code> demonstrates uniform-grid atlases; <code>Sprite2DCharacterAnimFsmComponent</code> connects clips to 2D physics velocity for platformer feel. Milestone: a 4-frame idle loop on a Kenney atlas with clean edges and jump clip switching on input.</p>
+<h2 id="b.concept-deep-dive-cpu-owns-time-gpu-owns-uv-rect">1b. Concept Deep Dive — CPU Owns Time, GPU Owns UV Rect</h2>
+<h3 id="clips-are-frame-ranges-not-separate-textures">Clips are frame ranges, not separate textures</h3>
+<p>Animation does not swap meshes — CPU advances a frame index over time and writes the current atlas sub-rectangle to <code>SpriteComponent::uvRect</code>. The instanced draw path is identical for static and animated sprites:</p>
+<pre><code class="language-cpp">// src/spark/ecs/components/animation/SpriteAnimatorComponent.cpp (lines 12–39)
+Vector4 SpriteAnimatorComponent::ComputeUniformGridUv(
+        const std::uint32_t columns, const std::uint32_t rows,
+        const std::uint32_t linearFrame, ...) noexcept {
+    const std::uint32_t frame = linearFrame % (columns * rows);
+    const std::uint32_t col = frame % columns;
+    const std::uint32_t rowFromBottom = frame / columns;
+    float u0 = static_cast&lt;float&gt;(col) / colsF;
+    float v0 = static_cast&lt;float&gt;(rowFromBottom) / rowsF;
+    // half-texel inset when atlasPixelWidth/Height known — prevents bleeding
+    return {u0, v0, u1, v1};
+}
+</code></pre>
+<p>Frame 0 is <strong>bottom-left</strong>, increasing +X then +Y — matching Kenney sheet exports.</p>
+<h3 id="onupdate-advances-time-submit-reads-uvrect">OnUpdate advances time; submit reads uvRect</h3>
+<p><code>SpriteAnimatorComponent::OnUpdate</code> picks clip index, accumulates <code>timeInClipSeconds</code>, converts to linear frame, calls <code>ComputeUniformGridUv</code>, then sets <code>SpriteComponent</code> UV bounds. Submit always reads <code>sc-&gt;GetUvRect()</code> — never queries animator state during GPU record.</p>
+<h3 id="fsm-connects-velocity-to-clip-index-for-platformers">FSM connects velocity to clip index for platformers</h3>
+<p><code>Sprite2DCharacterAnimFsmComponent</code> maps horizontal velocity and grounded state to walk/jump/idle clip indices on the same atlas. Platformer2DDemo wires Kenney atlases through this pattern — one texture, many clips, zero extra draw calls per animation frame.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="flipbook-clips-as-uv-rectangles">Flipbook clips as UV rectangles</h3>
 <p><strong>Sprite animation</strong> does not swap meshes — it changes which <strong>atlas sub-rectangle</strong> the shader samples each frame. Spark stores clips in <code>SpriteAnimationClip</code>:</p>
@@ -1311,6 +1338,22 @@ void SpriteAnimatorComponent::OnUpdate(const FrameTiming&amp; timing, GameObject
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cpu-owns-time-gpu-owns-uv-rect">1b. Concept Deep Dive — CPU Owns Time, GPU Owns UV Rect</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#clips-are-frame-ranges-not-separate-textures">Clips are frame ranges, not separate textures</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#onupdate-advances-time-submit-reads-uvrect">OnUpdate advances time; submit reads uvRect</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fsm-connects-velocity-to-clip-index-for-platformers">FSM connects velocity to clip index for platformers</a>
                         </li>
                         
                         <li class="toc-h2">

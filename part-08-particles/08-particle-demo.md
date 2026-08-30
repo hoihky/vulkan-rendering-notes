@@ -15,6 +15,51 @@ full Part VIII pipeline in one scene before integrating VFX into a game level.
 
 Build along: run ParticleDemo, inspect Load/OnRender, and verify all four presets against the checklist.
 
+## 1b. Concept Deep Dive — ParticleDemo Vertical Slice
+
+### Four preset archetypes in ApplyParticlePreset
+
+```cpp
+// include/spark/demo/ParticleDemoDetail.hpp
+inline void ApplyParticlePreset(const int presetIndex, ParticleEmitterComponent& pe) {
+    switch (presetIndex) {
+    case 0: // Fire — rate 110, upward cone, warm→red fade, low gravity
+        pe.SetMaxParticles(800);
+        pe.SetEmissionRate(110.0F);
+        pe.SetStartEndColor({1, 0.55, 0.12, 1}, {0.85, 0.05, 0, 0});
+        break;
+    case 1: // Snow — rate 240, downward drift, white fade
+        pe.SetMaxParticles(1400);
+        break;
+    case 2: // Smoke — slow rise, gray expand (sizeEnd > sizeStart)
+        pe.SetMaxParticles(500);
+        break;
+    default: // Magic — purple spark trail
+        pe.SetMaxParticles(900);
+        break;
+    }
+}
+```
+
+Each preset tunes rate, lifetime, size curve, color fade, gravity, spread, and speed independently — the same `ParticleEmitterComponent` API your game code uses.
+
+### Manual params build mirrors SceneSubmit
+
+```cpp
+// src/spark/demo/ParticleDemo.cpp (OnRender, concept)
+params.particles.Clear();
+for (each emitter entity) {
+    pe.CollectInstances(chunk);
+    // merge with MaxParticles cap — same loop as SceneSubmit.cpp
+}
+```
+
+ParticleDemo skips `FillStandardLitSceneFromWorld` for particles and collects manually so the demo runs before full submit integration is wired. Ground plane + ref cube provide depth occlusion for blend/depth verification.
+
+### Live UI tuning
+
+ImGui sliders bind directly to `ParticleEmitterComponent` fields via `MakeFloatBinding`. `OnResetPresetClicked` calls `ApplyParticlePreset` to restore archetype defaults after manual edits.
+
 ## 2. Core Concepts
 
 ### Four preset emitters

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1062,6 +1068,193 @@
 <li><strong>Execution</strong> — math error, wrong space, gamma mistake</li>
 </ol>
 <p>Professional debugging uses <strong>layered tools</strong> — each layer falsifies hypotheses. This chapter builds a checklist around Spark's <code>scene.vert</code> / <code>scene.frag</code> so you spend minutes, not afternoons, on each class of bug.</p>
+<h3 id="the-four-layers-of-shader-debugging-beginner">The four layers of shader debugging (beginner)</h3>
+<p>When the screen is wrong, work <strong>top to bottom</strong> — never jump to rewriting BRDF math first.</p>
+<table class="table">
+<thead>
+<tr>
+<th>Layer</th>
+<th>Tool</th>
+<th>Question answered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. Compile</strong></td>
+<td><code>glslangValidator</code>, CMake build</td>
+<td>Does GLSL compile to SPIR-V?</td>
+</tr>
+<tr>
+<td><strong>2. Pipeline</strong></td>
+<td>Vulkan validation layers</td>
+<td>Does pipeline match vertex layout, render pass, push size?</td>
+</tr>
+<tr>
+<td><strong>3. Bindings</strong></td>
+<td>Validation + RenderDoc</td>
+<td>Are descriptors, push constants, buffers bound correctly?</td>
+</tr>
+<tr>
+<td><strong>4. Math</strong></td>
+<td>RenderDoc pixel history, debug colors</td>
+<td>Is the shader logic wrong?</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-text">Black screen workflow:
+1. Did CMake build .spv? (layer 1)
+2. Any validation error on vkCmdDraw? (layer 2–3)
+3. RenderDoc: is draw call present? Pipeline bound? (layer 3)
+4. Replace outColor = vec4(1,0,0,1) in frag (layer 4)
+</code></pre>
+<p><strong>Debug visualization trick:</strong> output a solid color or <code>vTexCoord</code> as RGB temporarily. If solid red appears, pipeline and bindings work — bug is in lighting math. If still black, problem is earlier.</p>
+<p><strong>RenderDoc for beginners:</strong> capture one frame, find <code>vkCmdDrawIndexed</code> for your mesh, inspect bound vertex buffer, push constants, and fragment shader output at a pixel.</p>
+<h2 id="b.concept-deep-dive-debugging-scene.vert-scene.frag-end-to-end">1b. Concept Deep Dive — Debugging scene.vert / scene.frag End-to-End</h2>
+<h3 id="layer-1-compile-the-exact-translation-unit">Layer 1 — compile the exact translation unit</h3>
+<p>Scene shaders pull multiple includes — always compile with the same flags CMake uses:</p>
+<pre><code class="language-bash">glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.vert -o /tmp/scene.vert.spv
+glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.frag -o /tmp/scene.frag.spv
+</code></pre>
+<p>Common failures: missing <code>-Ishaders</code> (cannot open <code>scene_ubo.glsl</code>), undefined <code>ubo</code> (include order wrong), duplicate binding (forgot include guard). Fix at compile time before launching SparkDemo.</p>
+<h3 id="layer-2-validate-layout-contracts">Layer 2 — validate layout contracts</h3>
+<p>Three size proofs must pass before draw debugging:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Contract</th>
+<th>Proof</th>
+<th>Symptom if wrong</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UBO</td>
+<td><code>sizeof(SceneUniformGpu) == 656</code></td>
+<td>Sheared shadows, wrong sun color</td>
+</tr>
+<tr>
+<td>Push</td>
+<td><code>sizeof(ModelPushConstants) == 348</code></td>
+<td>Scrambled transforms / map layers</td>
+</tr>
+<tr>
+<td>Vertex</td>
+<td>80-byte stride, locations 0–7</td>
+<td>Exploded mesh, swimming UVs</td>
+</tr>
+</tbody>
+</table>
+<p>Validation layers flag push size mismatches (<code>VUID-vkCmdPushConstants-*</code>) and vertex location gaps (<code>VUID-VkGraphicsPipelineCreateInfo-pVertexInput-*</code>).</p>
+<h3 id="layer-3-renderdoc-scene-pass-checklist">Layer 3 — RenderDoc scene-pass checklist</h3>
+<p>For one <code>vkCmdDrawIndexed</code> in the opaque pass, verify in order:</p>
+<ol>
+<li><strong>Pipeline</strong> — <code>pipelineLit</code> vs <code>pipelineSky</code> vs <code>pipelineLitTransparent</code></li>
+<li><strong>Descriptor set 0</strong> — UBO binding 0, <code>sceneTextures</code> binding 1, skin SSBO binding 2 (skinned only)</li>
+<li><strong>Push constants</strong> — first 64 bytes = <code>model</code> matrix; <code>textureLayer</code> at offset 68; <code>shadingModel</code> at offset 104</li>
+<li><strong>Vertex inputs</strong> — six or eight attributes depending on mesh type</li>
+</ol>
+<h3 id="layer-4-surgical-debug-outputs-in-scene.frag">Layer 4 — surgical debug outputs in scene.frag</h3>
+<p>Replace <code>main()</code> body temporarily — rebuild SPIR-V after each change:</p>
+<pre><code class="language-glsl">// Normal visualization
+outColor = vec4(normalize(vNormal) * 0.5 + 0.5, 1.0);
+
+// UV visualization
+outColor = vec4(vTexCoord0, 0.0, 1.0);
+
+// Push constant reach test
+if (push.shadingModel == 99) outColor = vec4(1.0, 0.0, 1.0, 1.0);
+</code></pre>
+<p>If solid magenta appears but PBR is black, bindings and pipeline are fine — isolate lighting by commenting out <code>#include "clustered_lights.glsl"</code> and testing directional-only sun from <code>ubo.lightDir</code>.</p>
+<h3 id="stale-spir-v-the-silent-layer-zero">Stale SPIR-V — the silent layer zero</h3>
+<p>If debug color changes never appear despite successful compile, compare <code>.spv</code> timestamps in <code>${CMAKE_BINARY_DIR}/shaders/</code> against your edited <code>.glsl</code>. Missing CMake DEPENDS on an include file is the most common cause — touch <code>scene.frag</code> or run <code>cmake --build . --target SparkShaders</code> clean.</p>
+<h3 id="step-by-step-renderdoc-capture-guide-spark">Step-by-step RenderDoc capture guide (Spark)</h3>
+<p><strong>RenderDoc</strong> is a free GPU debugger. It records one frame of Vulkan commands and lets you inspect every draw call, bound buffer, shader, and pixel output — like a time machine for the GPU.</p>
+<p><strong>What a "capture guide" means:</strong> numbered steps to go from "something looks wrong" to "I can see exactly which <code>vkCmdDrawIndexed</code> failed and what data the shader received."</p>
+<h4 id="one-time-setup-macos-linux">One-time setup (macOS / Linux)</h4>
+<ol>
+<li>Install <a href="https://renderdoc.org/">RenderDoc</a> (1.29+ supports Vulkan on Apple Silicon via MoltenVK).</li>
+<li>Build Spark in <strong>Debug</strong> or <strong>RelWithDebInfo</strong> so validation layers and symbols are available.</li>
+<li>Launch RenderDoc → <strong>File → Launch Application</strong>.</li>
+<li><strong>Executable:</strong> path to your demo binary (e.g. <code>build/bin/ThreeDDemo</code>).</li>
+<li><strong>Working directory:</strong> Spark repo root (so relative asset paths resolve).</li>
+<li><strong>Environment:</strong> optional <code>VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation</code> if not enabled in-engine.</li>
+</ol>
+<h4 id="capture-one-frame">Capture one frame</h4>
+<ol>
+<li>Click <strong>Launch</strong> — demo window opens inside RenderDoc's hook.</li>
+<li>Reproduce the bug (black mesh, wrong texture, etc.).</li>
+<li>Press <strong>F12</strong> (default) or click <strong>Capture Frame</strong> in the RenderDoc overlay — saves a <code>.rdc</code> file.</li>
+<li>The capture opens automatically in the Event Browser.</li>
+</ol>
+<h4 id="navigate-to-your-draw-call">Navigate to your draw call</h4>
+<pre><code class="language-text">Event Browser (left)
+└── Queue 0
+      └── vkQueueSubmit
+            └── Command Buffer N
+                  ├── vkCmdBeginRenderPass  (HDR scene pass)
+                  ├── vkCmdBindPipeline     (pipelineLit)
+                  ├── vkCmdBindDescriptorSets (set 0)
+                  ├── vkCmdPushConstants
+                  └── vkCmdDrawIndexed      ← select this
+</code></pre>
+<p><strong>Tips for Spark:</strong></p>
+<ul>
+<li>Filter events by typing <code>DrawIndexed</code> in the search box.</li>
+<li>Sky draws use <code>pipelineSky</code>; opaque meshes use <code>pipelineLit</code>; particles use a separate pipeline.</li>
+<li>Multiple draws per frame — pick the draw whose <strong>Pipeline</strong> name matches the pass you care about.</li>
+</ul>
+<h4 id="inspect-pipeline-state-layer-3">Inspect pipeline state (Layer 3)</h4>
+<p>With a <code>vkCmdDrawIndexed</code> selected, open the <strong>Pipeline State</strong> tab:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Tab</th>
+<th>What to verify for Spark scene pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Vertex Input</strong></td>
+<td>Locations 0–2 (rigid) or 0–7 (skinned); stride 80 bytes for custom pool</td>
+</tr>
+<tr>
+<td><strong>Shader Stages</strong></td>
+<td><code>scene.vert</code> + <code>scene.frag</code> SPIR-V; click <strong>Edit</strong> to see disassembly</td>
+</tr>
+<tr>
+<td><strong>Descriptor Sets</strong></td>
+<td>Set 0: UBO (binding 0), <code>sceneTextures</code> (1), Skin SSBO (2 if skinned)</td>
+</tr>
+<tr>
+<td><strong>Push Constants</strong></td>
+<td><code>model</code> matrix at offset 0; <code>textureLayer</code> at byte 68; <code>shadingModel</code> at 104</td>
+</tr>
+</tbody>
+</table>
+<p>Red highlights mean bound resource is null or incompatible — common when descriptor not updated.</p>
+<h4 id="inspect-mesh-data">Inspect mesh data</h4>
+<ol>
+<li><strong>Mesh Output</strong> tab → click a vertex on the preview.</li>
+<li>Check <strong>VS Input</strong> attributes: position, normal, UV, joint indices (skinned).</li>
+<li><strong>VS Output</strong> / <strong>PS Input</strong>: interpolated varyings reaching the fragment shader.</li>
+</ol>
+<p>If VS Input positions look correct but VS Output <code>gl_Position</code> is off-screen, suspect <code>ubo.viewProj</code> or <code>push.model</code>.</p>
+<h4 id="pixel-debugging-layer-4">Pixel debugging (Layer 4)</h4>
+<ol>
+<li><strong>Texture Viewer</strong> tab → click a pixel on the mesh.</li>
+<li><strong>History</strong> shows which draw wrote that pixel (useful when something is occluded).</li>
+<li><strong>Debug</strong> picker → choose <strong>PS Output</strong> to see final fragment color before blend.</li>
+<li>Enable <strong>Highlight Drawcall</strong> to see only geometry from the selected draw.</li>
+</ol>
+<p><strong>Workflow for "black mesh":</strong></p>
+<pre><code class="language-text">1. Is there a DrawIndexed for your mesh?  → No: submit/cull bug (CPU)
+2. Pipeline bound?                        → No: record order bug
+3. Push model matrix sane?                → No: SceneSubmit transform
+4. textureLayer = -1 but expecting map?   → Material submit / upload
+5. PS output black but VS OK?             → lighting math — try debug color in frag
+</code></pre>
+<h4 id="export-and-share">Export and share</h4>
+<p><strong>File → Export</strong> saves <code>.rdc</code> for sharing with teammates. Captures include shaders and buffers — no need to reproduce locally if you attach the file to a bug report.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="layer-1-offline-compile-glslangvalidator">Layer 1: Offline compile (glslangValidator)</h3>
 <p>Catch syntax and type errors before running the app:</p>
@@ -1326,6 +1519,66 @@
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-four-layers-of-shader-debugging-beginner">The four layers of shader debugging (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-debugging-scenevert-scenefrag-end-to-end">1b. Concept Deep Dive — Debugging scene.vert / scene.frag End-to-End</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layer-1-compile-the-exact-translation-unit">Layer 1 — compile the exact translation unit</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layer-2-validate-layout-contracts">Layer 2 — validate layout contracts</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layer-3-renderdoc-scene-pass-checklist">Layer 3 — RenderDoc scene-pass checklist</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layer-4-surgical-debug-outputs-in-scenefrag">Layer 4 — surgical debug outputs in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#stale-spir-v-the-silent-layer-zero">Stale SPIR-V — the silent layer zero</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-by-step-renderdoc-capture-guide-spark">Step-by-step RenderDoc capture guide (Spark)</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#one-time-setup-macos-linux">One-time setup (macOS / Linux)</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#capture-one-frame">Capture one frame</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#navigate-to-your-draw-call">Navigate to your draw call</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#inspect-pipeline-state-layer-3">Inspect pipeline state (Layer 3)</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#inspect-mesh-data">Inspect mesh data</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#pixel-debugging-layer-4">Pixel debugging (Layer 4)</a>
+                        </li>
+                        
+                        <li class="toc-h4">
+                          <a href="#export-and-share">Export and share</a>
                         </li>
                         
                         <li class="toc-h2">

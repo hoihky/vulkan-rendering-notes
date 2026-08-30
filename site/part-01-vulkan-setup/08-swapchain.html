@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,148 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>The GPU renders into <strong>off-screen images</strong>. The <strong>swapchain</strong> is a queue of images the presentation engine shows on screen — typically double or triple buffered. You acquire an image, render into it, then present it.</p>
 <p>Swapchain creation is where window pixel size, display refresh rate, and GPU capabilities meet. Get extent wrong and the image stretches; pick <code>FIFO</code> vs <code>MAILBOX</code> and you trade latency for tearing. This chapter explains Spark's choices in <code>VulkanDeviceContext::CreateSwapchainImages</code>.</p>
+<h3 id="why-you-cannot-draw-directly-to-the-monitor">Why you cannot draw directly to the monitor</h3>
+<p>The GPU renders into <strong>images in memory</strong> (<code>VkImage</code>). Your monitor shows a <strong>different</strong> image each frame, owned by the operating system compositor. The <strong>swapchain</strong> is Vulkan's bridge:</p>
+<pre><code class="language-text">Your app renders → swapchain image N  →  OS compositor  →  monitor pixel
+</code></pre>
+<p>Typically you have <strong>2 or 3</strong> swapchain images ("double buffering" or "triple buffering"):</p>
+<pre><code class="language-text">Image 0: GPU drawing frame 105
+Image 1: monitor displaying frame 104
+Image 2: waiting in queue
+</code></pre>
+<p>Each frame you <strong>acquire</strong> one image (<code>vkAcquireNextImageKHR</code>), render into it, then <strong>present</strong> it (<code>vkQueuePresentKHR</code>). Part I Chapter 10 adds fences and semaphores so you never draw into an image the monitor is still reading.</p>
+<h3 id="beginner-glossary">Beginner glossary</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Term</th>
+<th>Plain English</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Extent</strong></td>
+<td>Width × height in pixels (matches window client area)</td>
+</tr>
+<tr>
+<td><strong>Format</strong></td>
+<td>How each pixel is stored (e.g. 8-bit RGBA per channel)</td>
+</tr>
+<tr>
+<td><strong>Present mode</strong></td>
+<td>V-sync on/off, latency vs tearing tradeoff</td>
+</tr>
+<tr>
+<td><strong>Image view</strong></td>
+<td>Typed view of a <code>VkImage</code> (color attachment for rendering)</td>
+</tr>
+<tr>
+<td><strong>OUT_OF_DATE</strong></td>
+<td>Swapchain must be recreated (window resized)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-frame-swapchain-dance-preview">Per-frame swapchain dance (preview)</h3>
+<p>You will use this every frame for the rest of the book:</p>
+<pre><code class="language-text">1. vkAcquireNextImageKHR     → "give me an image index to draw into"
+2. Record command buffer     → clear, draw, tonemap, UI
+3. vkQueueSubmit             → GPU starts work
+4. vkQueuePresentKHR         → "show this image on screen"
+</code></pre>
+<p>If the user resizes the window, step 1 may return <code>VK_ERROR_OUT_OF_DATE_KHR</code> — destroy and recreate the swapchain (Part XVI covers production handling).</p>
+<h2 id="b.concept-deep-dive-connecting-render-targets-to-the-display">1b. Concept Deep Dive — Connecting Render Targets to the Display</h2>
+<h3 id="swapchain-as-an-image-ring-not-the-framebuffer">Swapchain as an image ring, not the framebuffer</h3>
+<p>The swapchain is a pool of <code>VkImage</code> objects owned by the presentation engine, not your allocator. You never <code>vkDestroyImage</code> on swapchain images individually — they vanish when the swapchain is destroyed. Each frame you <strong>acquire</strong> an index into that pool, render through an <code>VkImageView</code> and framebuffer, then <strong>present</strong> that index back to the compositor.</p>
+<p>Spark queries surface capabilities once per physical device, then chooses format (<code>B8G8R8A8</code> sRGB when available), present mode (<code>MAILBOX</code> preferred for lower latency, <code>FIFO</code> fallback for guaranteed v-sync), and extent (framebuffer pixels clamped to <code>minImageExtent</code>/<code>maxImageExtent</code>). Image count is <code>minImageCount + 1</code>, capped by <code>maxImageCount</code> when the driver sets one — typically yielding double or triple buffering.</p>
+<p><code>imageUsage</code> includes <code>COLOR_ATTACHMENT | TRANSFER_SRC</code> so screenshot and video capture can read the swapchain without an extra resolve target. When graphics and present queue families differ, <code>VK_SHARING_MODE_CONCURRENT</code> lets both queues access the same image — Spark sets family indices accordingly in <code>CreateSwapchainImages</code>.</p>
+<h3 id="acquire-render-present-image-indices">Acquire → render → present (image indices)</h3>
+<pre><code class="language-text">Swapchain images [0] [1] [2]
+                │
+vkAcquireNextImageKHR ──► imageIndex = 1
+                │
+record CB ──► framebuffer(imageView[1])
+                │
+vkQueueSubmit ──► vkQueuePresentKHR(imageIndex=1)
+                │
+compositor ──► monitor
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Choice</th>
+<th>Spark helper</th>
+<th>Typical result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Format</td>
+<td><code>ChooseSwapSurfaceFormat</code></td>
+<td><code>B8G8R8A8_SRGB</code></td>
+</tr>
+<tr>
+<td>Present mode</td>
+<td><code>ChooseSwapPresentMode</code></td>
+<td><code>MAILBOX</code> or <code>FIFO</code></td>
+</tr>
+<tr>
+<td>Extent</td>
+<td><code>ChooseSwapExtent</code></td>
+<td><code>glfwGetFramebufferSize</code> clamped</td>
+</tr>
+<tr>
+<td>Image count</td>
+<td><code>minImageCount + 1</code></td>
+<td>2–3 images</td>
+</tr>
+</tbody>
+</table>
+<h3 id="query-surface-capabilities-up-front">Query surface capabilities up front</h3>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanGpuSwapchain.cpp (lines 22–43)
+SwapchainSupportDetails VulkanGpuSwapchain::QuerySwapchainSupport(
+        VkPhysicalDevice physicalDevice,
+        VkSurfaceKHR surface) {
+    SwapchainSupportDetails details;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &amp;details.capabilities);
+    // ... enumerate formats and presentModes ...
+    return details;
+}
+</code></pre>
+<p>Device suitability (Chapter 7) reuses this query — empty format or mode lists reject the GPU early.</p>
+<h3 id="present-mode-preference-mailbox-then-fifo">Present mode preference — MAILBOX then FIFO</h3>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanGpuSwapchain.cpp (lines 56–63)
+VkPresentModeKHR VulkanGpuSwapchain::ChooseSwapPresentMode(const Array&lt;VkPresentModeKHR&gt;&amp; presentModes) {
+    for (std::size_t i = 0; i &lt; presentModes.GetSize(); ++i) {
+        const VkPresentModeKHR presentMode = presentModes[i];
+        if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+            return presentMode;
+        }
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+</code></pre>
+<h3 id="vkcreateswapchainkhr-extent-usage-image-count"><code>vkCreateSwapchainKHR</code> — extent, usage, image count</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanDeviceContext.cpp (lines 229–250)
+void VulkanDeviceContext::CreateSwapchainImages() {
+    const VulkanRendererGpu::SwapchainSupportDetails swapchainSupport =
+            VulkanRendererGpu::QuerySwapchainSupport(physicalDevice, surface);
+    const VkSurfaceFormatKHR surfaceFormat = VulkanRendererGpu::ChooseSwapSurfaceFormat(swapchainSupport.formats);
+    const VkPresentModeKHR presentMode = VulkanRendererGpu::ChooseSwapPresentMode(swapchainSupport.presentModes);
+    const VkExtent2D extent =
+            VulkanRendererGpu::ChooseSwapExtent(swapchainSupport.capabilities, boundWindow-&gt;Handle());
+
+    std::uint32_t imageCount = swapchainSupport.capabilities.minImageCount + 1;
+    // clamp to maxImageCount ...
+
+    VkSwapchainCreateInfoKHR swapchainCreateInfo{};
+    swapchainCreateInfo.surface = surface;
+    swapchainCreateInfo.minImageCount = imageCount;
+    swapchainCreateInfo.imageFormat = surfaceFormat.format;
+    swapchainCreateInfo.imageExtent = extent;
+    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    vkCreateSwapchainKHR(device, &amp;swapchainCreateInfo, nullptr, &amp;swapchain.khr);
+</code></pre>
+<p>Part II attaches these image views to framebuffers; Chapter 10 acquires an index each frame before record.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="swapchain-support-query">Swapchain support query</h3>
 <p>For each physical device + surface, ask:</p>
@@ -1254,6 +1402,42 @@ for (std::size_t i = 0; i &lt; swapchain.images.GetSize(); ++i) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-you-cannot-draw-directly-to-the-monitor">Why you cannot draw directly to the monitor</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#beginner-glossary">Beginner glossary</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-frame-swapchain-dance-preview">Per-frame swapchain dance (preview)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-connecting-render-targets-to-the-display">1b. Concept Deep Dive — Connecting Render Targets to the Display</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#swapchain-as-an-image-ring-not-the-framebuffer">Swapchain as an image ring, not the framebuffer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#acquire-render-present-image-indices">Acquire → render → present (image indices)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#query-surface-capabilities-up-front">Query surface capabilities up front</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#present-mode-preference-mailbox-then-fifo">Present mode preference — MAILBOX then FIFO</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#extent-usage-image-count"> — extent, usage, image count</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -15,6 +15,35 @@ misses HDR glow. You must slot `particlePass.Record` correctly in the frame grap
 
 Build along: read RecordSceneCommandBuffer and annotate pass order in your engine diagram.
 
+## 1b. Concept Deep Dive — RecordSceneCommandBuffer Ordering
+
+### Particles are last inside the HDR subpass
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 320–365, simplified)
+sceneOpaquePass.Record(commandBuffer, opaqueCtx);       // sky + opaque meshes
+// optional transparent resume pass
+composite2DPass.Record(... tilemapPass, spritePass ...); // 2D layers
+particlePass.Record(commandBuffer, frameIndex, extent, pendingScene, sceneParamsValid);
+vkCmdEndRenderPass(commandBuffer);
+hdrTonemapPass.TransitionColorToShaderRead(...);         // tonemap AFTER particles
+```
+
+Particles contribute to HDR **before** the render pass ends. Tonemap, SSAO, and present run on the combined HDR color that already includes additive glow.
+
+### Shared depth with opaque pass
+
+The HDR subpass binds the same depth attachment created for scene opaque draws. Because particles use `depthTestEnable = true` and `depthWriteEnable = false`, they read depth written by meshes but leave the buffer unchanged for any later subpass content.
+
+### Shadow passes are unrelated to particles
+
+```cpp
+// RecordSceneCommandBuffer (line 229) — runs BEFORE HDR begins
+RecordShadowMapPass(commandBuffer, frameIndex);
+```
+
+Particles do not cast or receive shadows (`SceneDrawItem::shadowFlags` never applies to the particle pass). VFX glow is purely emissive/additive — intentional for fire and magic effects.
+
 ## 2. Core Concepts
 
 ### HDR subpass ordering

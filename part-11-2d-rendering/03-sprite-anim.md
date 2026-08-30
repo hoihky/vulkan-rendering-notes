@@ -13,6 +13,38 @@
 Static sprites suffice for props; characters need **flipbook animation** — cycling atlas cells over time. CPU owns clip selection and frame timing; GPU only receives the current UV bounds in instance data, keeping the same instanced draw path as Chapter 1.
 
 Spark's `SpriteAnimatorComponent` demonstrates uniform-grid atlases; `Sprite2DCharacterAnimFsmComponent` connects clips to 2D physics velocity for platformer feel. Milestone: a 4-frame idle loop on a Kenney atlas with clean edges and jump clip switching on input.
+
+## 1b. Concept Deep Dive — CPU Owns Time, GPU Owns UV Rect
+
+### Clips are frame ranges, not separate textures
+
+Animation does not swap meshes — CPU advances a frame index over time and writes the current atlas sub-rectangle to `SpriteComponent::uvRect`. The instanced draw path is identical for static and animated sprites:
+
+```cpp
+// src/spark/ecs/components/animation/SpriteAnimatorComponent.cpp (lines 12–39)
+Vector4 SpriteAnimatorComponent::ComputeUniformGridUv(
+        const std::uint32_t columns, const std::uint32_t rows,
+        const std::uint32_t linearFrame, ...) noexcept {
+    const std::uint32_t frame = linearFrame % (columns * rows);
+    const std::uint32_t col = frame % columns;
+    const std::uint32_t rowFromBottom = frame / columns;
+    float u0 = static_cast<float>(col) / colsF;
+    float v0 = static_cast<float>(rowFromBottom) / rowsF;
+    // half-texel inset when atlasPixelWidth/Height known — prevents bleeding
+    return {u0, v0, u1, v1};
+}
+```
+
+Frame 0 is **bottom-left**, increasing +X then +Y — matching Kenney sheet exports.
+
+### OnUpdate advances time; submit reads uvRect
+
+`SpriteAnimatorComponent::OnUpdate` picks clip index, accumulates `timeInClipSeconds`, converts to linear frame, calls `ComputeUniformGridUv`, then sets `SpriteComponent` UV bounds. Submit always reads `sc->GetUvRect()` — never queries animator state during GPU record.
+
+### FSM connects velocity to clip index for platformers
+
+`Sprite2DCharacterAnimFsmComponent` maps horizontal velocity and grounded state to walk/jump/idle clip indices on the same atlas. Platformer2DDemo wires Kenney atlases through this pattern — one texture, many clips, zero extra draw calls per animation frame.
+
 ## 2. Core Concepts
 
 ### Flipbook clips as UV rectangles

@@ -20,6 +20,80 @@ Lights originate in gameplay — sun entity, torches, flashlights. The GPU reads
 
 If gathering runs after GPU record, or clears arrays mid-frame, lights pop or lag one frame. Spark centralizes this in **scene submit** — the same pipeline that builds draw lists and texture arrays.
 
+### What "gather lights" means (beginner)
+
+The GPU does not know about your ECS `PointLightComponent` objects. **Gather** = translate game objects into flat arrays the shader can loop:
+
+```text
+Frame start:
+  SceneSubmit::GatherLights(world, params)
+    for each entity with PointLightComponent:
+      if enabled and in range:
+        params.pointLights[count++] = { position, color, radius, ... }
+    same for SpotLightComponent
+    copy DirectionalLightComponent → params.sun
+```
+
+**Why gather on CPU?**
+
+- Shader cannot traverse your C++ entity graph.
+- Culling disabled lights on CPU saves GPU loop iterations.
+- One upload per frame (`VulkanSceneUniformWriter`) instead of per-entity descriptor updates.
+
+**Order matters in Spark:**
+
+```text
+OnUpdate (gameplay)
+  → Animator updates joint palettes
+SceneSubmit::Gather
+  → lights, draw items, camera UBO fields
+VulkanRenderer::Record
+  → upload SSBO, draw indexed
+```
+
+If lights flicker or are one frame late, check whether gather runs **after** transforms update but **before** command buffer record.
+
+**Debug tip:** log `params.pointLightCount` each frame — if zero when lamps exist, component is disabled, entity inactive, or gather filter excludes it.
+
+## 1b. Concept Deep Dive — SceneSubmit Light Gather Loop
+
+### FillStandardLitSceneFromWorld clears and rebuilds
+
+Each submit pass starts from a clean snapshot — lights do not accumulate across frames:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (excerpt)
+params.pointLights.Clear();
+params.spotLights.Clear();
+const ResolvedSceneLighting resolvedLighting = SceneLightingResolver::Resolve(params);
+SceneSubmitDetail::ApplyEcsDirectionalLight(world, params);
+
+world.ForEachActiveGameObject([&params](GameObject* o) {
+    const PointLightComponent* pl = o->GetComponent<PointLightComponent>();
+    if (pl == nullptr || !pl->IsEnabled()) return;
+    ScenePointLight gpu{};
+    gpu.positionWorld = o->GetWorldMatrix().TranslationVector();
+    gpu.range = pl->GetRange();
+    gpu.color = pl->GetColor();
+    gpu.intensity = pl->GetIntensity();
+    params.pointLights.PushBack(gpu);
+});
+```
+
+World matrix translation picks up animated lamp parents — gather runs **after** transform updates in the same frame.
+
+### Lighting resolver before ECS walk
+
+`SceneLightingResolver::Resolve(params)` merges `lightingProfile`, per-scene overrides, and time-of-day into `ResolvedSceneLighting` (exposure, shadow fade, ambient hemisphere). Directional ECS light then overwrites sun fields when a `DirectionalLightComponent` exists on an active entity.
+
+### UBO write happens in VulkanRenderer
+
+Gather only fills `SceneRenderParams`. `VulkanSceneUniformWriter::Write` packs sun, ambient, camera, and cluster metadata into `SceneUniformGpu`; separate SSBO writers copy `pointLights` and `spotLights` arrays. If lights look one frame late, the bug is usually record order — not the gather loop itself.
+
+### Production entry point
+
+`SubmitStandardLitSceneFromWorldWithCamera` calls `TryFillSceneCameraFromWorld`, then `FillStandardLitSceneFromWorld` with resolved camera matrices — the path `Platformer2DDemo` and ECS 3D scenes share. Manual demos (`ThreeDDemo`) fill `params` directly but use the same light structs.
+
 ## 2. Core Concepts
 
 ### SceneRenderParams as lighting snapshot

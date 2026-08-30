@@ -14,6 +14,30 @@ Single-patch **TerrainMeshGenerator** suffices for demos; shipping open worlds n
 
 Milestone: written chunk/LOD plan plus baseline vertex count and RegenerateMesh timing from TerrainDemo.
 
+## 1b. Concept Deep Dive — From Single Patch to Streaming Design
+
+### TerrainDemo is the non-streaming regression baseline
+
+Spark ships one `TerrainMeshGenerator` patch — sufficient for Parts IX–XII integration. Memory and vertex cost grow with subdiv²; a 2048² grid is millions of triangles in one draw. Open worlds partition XZ into **fixed-size chunks**, each with independent height arrays and draw items:
+
+```text
+Per chunk (production extension):
+  heightSamples[] for cell resolution
+  MeshHandle / Custom slot registration
+  disk path (optional compressed R16)
+  lastUsed frame for LRU eviction
+```
+
+Master single-patch brush/regenerate/cull in TerrainDemo before implementing clipmaps — streaming doubles debug surface area.
+
+### LOD rings need skirt geometry
+
+Discrete chunk LOD (near 128², far 32² vertices) or GPU clipmap rings both require **skirt indices** or vertical strips between mismatched edge vertex counts — without skirts, T-junction cracks leak sunlight at ring boundaries. Load radius vs unload radius hysteresis prevents chunk thrashing at cell borders.
+
+### Async IO stays off the gameplay thread
+
+Height tile decode on a worker thread → main thread registers mesh into Custom pool → GPU sees new draw item next frame. Physics colliders must align with streamed height — rebasing world origin when the camera roams far from spawn avoids floating-point jitter at large coordinates.
+
 ## 2. Core Concepts
 
 ### Single-patch vs open world

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,40 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Hybrid games render <strong>3D meshes</strong> and <strong>2D billboards</strong> in the same camera view. A world sprite is a textured quad transformed in world space — not a screen-space HUD element. It must respect HDR lighting headroom (Part X), depth occlusion against terrain and props, and the same texture array as PBR materials (Part IV).</p>
 <p>Spark implements world sprites as <strong>instanced draws</strong> over a baked unit quad, with per-sprite data in mapped SSBOs recorded by <code>VulkanSpritePass</code> inside the HDR subpass. Your build-along milestone: submit one textured sprite, capture a frame in RenderDoc, and confirm it draws into the float16 scene target with depth testing against a mesh occluder.</p>
+<h3 id="d-sprites-in-a-3d-world-beginner">2D sprites in a 3D world (beginner)</h3>
+<p>A <strong>sprite</strong> here is a flat rectangle with a picture on it — like a cardboard cutout of a grass tuft or a character in a 2.5D game. It is placed at a <strong>3D world position</strong> but rendered as a quad that typically <strong>billboards</strong> (faces the camera).</p>
+<pre><code class="language-text">3D mesh tree     = full model with depth and lighting
+World sprite     = one quad + texture, often cheaper, always faces camera
+Screen UI        = drawn in 2D screen space AFTER tonemap (Part XI later chapter)
+</code></pre>
+<p>World sprites share the <strong>HDR scene pass</strong> with meshes so they:</p>
+<ul>
+<li>Occlude correctly behind walls (depth test).</li>
+<li>Receive scene lighting tint when using lit sprite path.</li>
+<li>Accumulate HDR brightness for glowing effects.</li>
+</ul>
+<h3 id="instancing-one-quad-many-sprites">Instancing: one quad, many sprites</h3>
+<p>Instead of 100 draw calls for 100 grass sprites, Spark stores per-sprite data (position, UV rect, color) in a <strong>storage buffer</strong> and draws the shared unit quad <strong>100 instances</strong> in one or few draws. The vertex shader reads instance ID to fetch the correct transform and UV offset.</p>
+<h2 id="b.concept-deep-dive-instanced-quads-in-the-hdr-subpass">1b. Concept Deep Dive — Instanced Quads in the HDR Subpass</h2>
+<h3 id="scenespritedraw-is-a-flat-snapshot-not-live-ecs">SceneSpriteDraw is a flat snapshot, not live ECS</h3>
+<p>Submit walks <code>SpriteComponent</code> entities and appends plain structs to <code>SceneRenderParams::sprites</code>. Gameplay never touches Vulkan — the renderer reads <code>pendingScene</code> once per frame slot:</p>
+<pre><code class="language-cpp">// src/spark/render/sprites2d/VulkanSpritePass.cpp (lines 18–39)
+void FillSpriteInstanceGpu(const SceneSpriteDraw&amp; sprite, VulkanSpriteInstanceGpu&amp; out) noexcept {
+    std::memcpy(out.model, sprite.model.m, sizeof(out.model));
+    out.uvRect[0] = sprite.uvRect.x;
+    out.uvRect[1] = sprite.uvRect.y;
+    out.uvRect[2] = sprite.uvRect.z;
+    out.uvRect[3] = sprite.uvRect.w;
+    out.textureLayer = sprite.textureLayer;
+    out.lightingMode = static_cast&lt;std::int32_t&gt;(sprite.lightingMode);
+    // ... lightingParam0/1 → lightingA/B ...
+}
+</code></pre>
+<p>One indexed draw with <code>gl_InstanceIndex</code> expands to N sprites — CPU cost is a memcpy loop, not N pipeline binds.</p>
+<h3 id="shared-unit-quad-unique-instance-transforms">Shared unit quad, unique instance transforms</h3>
+<p>Spark bakes four corners of a unit quad into the scene vertex buffer (<code>spriteQuadFirstIndex</code>, six indices). Each instance <code>model</code> matrix scales, rotates, and translates that template into world space. Tilemap draws share the same index range — corrupt quad upload breaks both systems.</p>
+<h3 id="hdr-pass-depth-test-not-swapchain">HDR pass + depth test, not swapchain</h3>
+<p>World sprites target RGBA16F inside the HDR subpass with depth write/read against terrain and props. They are <strong>not</strong> screen-space HUD (Chapter 6). Capture RenderDoc: sprite draws appear on float16 color attachment, occluded by closer opaque meshes.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="scenespritedraw-snapshot-record">SceneSpriteDraw snapshot record</h3>
 <p>Each frame, <code>SceneSubmit</code> walks active entities with <code>SpriteComponent</code> and appends <strong>plain structs</strong> to <code>SceneRenderParams::sprites</code>. A <code>SceneSpriteDraw</code> carries everything the GPU needs without touching ECS:</p>
@@ -1393,6 +1433,30 @@ void main() {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#2d-sprites-in-a-3d-world-beginner">2D sprites in a 3D world (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#instancing-one-quad-many-sprites">Instancing: one quad, many sprites</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-instanced-quads-in-the-hdr-subpass">1b. Concept Deep Dive — Instanced Quads in the HDR Subpass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenespritedraw-is-a-flat-snapshot-not-live-ecs">SceneSpriteDraw is a flat snapshot, not live ECS</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-unit-quad-unique-instance-transforms">Shared unit quad, unique instance transforms</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hdr-pass-depth-test-not-swapchain">HDR pass + depth test, not swapchain</a>
                         </li>
                         
                         <li class="toc-h2">

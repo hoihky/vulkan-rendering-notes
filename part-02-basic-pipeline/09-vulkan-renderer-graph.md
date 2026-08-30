@@ -19,6 +19,147 @@
 
 This **frame graph** is the roadmap for the rest of the book. Part II focuses on the **HDR scene subpass** inside `RecordSceneCommandBuffer`; this chapter shows where that slice sits so you do not get lost in later parts.
 
+### Frame graph for beginners
+
+A **frame** is one image on your monitor. A **frame graph** is the **ordered list of GPU work** your engine records each frame. Think of it as a recipe card pinned above the GPU:
+
+```text
+Frame N:
+  [Upload new texture pixels]
+  [Draw shadow maps]
+  [Draw 3D scene into HDR buffer]
+  [Draw 2D sprites into same HDR buffer]
+  [Tonemap HDR → window]
+  [Draw UI on top]
+  [Show on screen]
+```
+
+Order matters. You cannot tonemap before the scene is drawn. You cannot sample shadow maps before they are rendered. Spark encodes this order in one function: `VulkanRenderer::RecordSceneCommandBuffer` — not a fancy graph editor, but the same idea AAA engines use with more tooling.
+
+### CPU vs GPU: who does what each frame
+
+| Phase | Runs on | Spark entry point | What it does |
+|-------|---------|-------------------|--------------|
+| Gameplay | CPU | `game->OnUpdate` | Move entities, physics, input |
+| Scene gather | CPU | `FillStandardLitSceneFromWorld` | Build draw list from components |
+| Set snapshot | CPU | `SetSceneRenderParams` | Hand draw list to renderer |
+| Record commands | CPU | `RecordSceneCommandBuffer` | Write vkCmd* into command buffer |
+| Execute | GPU | Queue submit | Actually run draws |
+| Present | GPU + OS | `vkQueuePresentKHR` | Show swapchain image |
+
+Beginners often profile only the GPU and wonder why frames stutter — the CPU might still be building `SceneRenderParams` after the deadline. Both sides must finish before v-sync.
+
+### The full Spark frame (expanded)
+
+```text
+Engine::Run loop (every frame):
+│
+├─ OnUpdate()                    ← simulation (CPU)
+├─ OnRender() → SceneSubmit      ← build SceneRenderParams (CPU)
+├─ PresentFrame()
+│    └─ DrawFrame()
+│         ├─ WaitForFence        ← don't overwrite GPU-in-use buffers
+│         ├─ AcquireSwapchainImage
+│         ├─ WriteUniformBuffer  ← camera, lights for this flight index
+│         ├─ RecordSceneCommandBuffer:
+│         │    ├─ Upload textures/meshes
+│         │    ├─ Shadow passes
+│         │    ├─ HDR scene (opaque → maybe transparent resume)
+│         │    ├─ 2D composite + particles
+│         │    ├─ End HDR
+│         │    ├─ SSAO (optional)
+│         │    ├─ Tonemap → swapchain
+│         │    └─ UI + ImGui
+│         ├─ QueueSubmit
+│         └─ QueuePresent
+└─ Advance frame index
+```
+
+When learning, pick **one horizontal slice** (e.g. "HDR scene opaque pass") and ignore the rest until it works. Use this diagram to see where your slice sits.
+
+## 1b. Concept Deep Dive — RecordSceneCommandBuffer Ordering
+
+### Full GPU timeline inside one command buffer
+
+`RecordSceneCommandBuffer` is Spark's frame graph encoded as imperative C++. Order is fixed — later passes depend on earlier outputs:
+
+```text
+vkBeginCommandBuffer
+  ├─ deferredUploadBatch.Record          (textures, UI atlases)
+  ├─ customMeshPool.RecordUploads        (dynamic mesh staging)
+  ├─ RecordShadowMapPass                 (directional + punctual)
+  ├─ hdrTonemapPass barriers
+  ├─ vkCmdBeginRenderPass (HDR)
+  │    ├─ sceneOpaquePass.Record         ← Part II focus
+  │    ├─ [transparent resume if needed]
+  │    ├─ composite2DPass.Record         (tilemaps + sprites)
+  │    └─ particlePass.Record
+  ├─ vkCmdEndRenderPass (HDR)
+  ├─ hdrTonemapPass.TransitionColorToShaderRead
+  ├─ screenSpaceEffectsPass (SSAO, optional)
+  ├─ hdrTonemapPass.RecordTonemap        (HDR → swapchain)
+  └─ screenUi / ImGui overlay
+vkEndCommandBuffer
+```
+
+Part II needs only the upload + HDR begin + opaque pass + end + tonemap slice; shadows and 2D layers can run empty when params have no shadow casters or sprites.
+
+### Entry point — uploads before any render pass
+
+The function opens with resource uploads and shadow recording, then transitions depth and begins the HDR pass:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 217–290)
+void VulkanRenderer::RecordSceneCommandBuffer(
+        VkCommandBuffer commandBuffer, std::uint32_t imageIndex, std::uint32_t frameIndex) {
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    deferredUploadBatch.Record(commandBuffer, device(), sceneTextureUploader, sceneHdrTextureUploader, screenUi);
+    customMeshPool.RecordUploads(commandBuffer);
+    RecordShadowMapPass(commandBuffer, frameIndex);
+
+    hdrTonemapPass.BeginColorAttachmentBarrierIfNeeded(commandBuffer, frameIndex);
+    // ... depth UNDEFINED → DEPTH_STENCIL_ATTACHMENT_OPTIMAL barrier ...
+    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+```
+
+Textures must upload **before** the fragment shader samples them. Shadow maps must render **before** lit shading reads them — same dependency rule as tonemap-after-scene.
+
+### Opaque pass context — everything Part II wires together
+
+Inside the HDR render pass, Spark assembles one struct carrying scene snapshot, pipelines, descriptors, and mesh bindings:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 292–320)
+        const VulkanSceneOpaqueRecordContext opaqueCtx{
+                .scene = &pendingScene,
+                .sceneParamsValid = sceneParamsValid,
+                .pipelineLit = scenePipeline.PipelineLit(),
+                .pipelineLayout = scenePipeline.PipelineLayout(),
+                .descriptorSet = sceneDescriptors.DescriptorSet(frameIndex),
+                .meshBindings = { .staticVertexBuffer = vertexBuffer, /* ... */ },
+        };
+        sceneOpaquePass.Record(commandBuffer, opaqueCtx);
+```
+
+If `sceneParamsValid` is false or `draws` is empty, `Record` returns immediately — you get a cleared HDR buffer with no geometry.
+
+### DrawFrame outer shell — CPU work before record
+
+The frame graph's CPU half runs in `DrawFrame` before `RecordSceneCommandBuffer` is called:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 460–495)
+    frameSync.WaitForSwapchainImageFence(device(), imageIndex);
+    deferredUploadBatch.Prepare(/* texture upload scheduling */);
+    customMeshPool.UpdateFromScene(pendingScene, submittedFrameCounter, kMaxFramesInFlight);
+    WriteUniformBuffer(currentFrame);
+    RecordSceneCommandBuffer(commandBuffers[imageIndex], imageIndex, currentFrame);
+    frameSync.SubmitFrame(graphicsQueue(), commandBuffers[imageIndex], imageIndex);
+```
+
+Profiling stutter? Measure both `FillStandardLitSceneFromWorld` (CPU) and `RecordSceneCommandBuffer` (CPU record + GPU execute).
+
 ## 2. Core Concepts
 
 ### DrawFrame outer shell (Part I)
@@ -67,6 +208,57 @@ Lit fragment shader samples shadow maps. Depth attachments from shadow passes mu
 ### pendingScene consumption
 
 `RecordSceneCommandBuffer` reads `pendingScene` and `sceneParamsValid` captured when the game called `SetSceneRenderParams` **before** `PresentFrame`. The snapshot is stable for the entire record/submit of that frame.
+
+### Bootstrap: what exists before the first draw
+
+Spark's renderer constructor builds GPU infrastructure in a fixed order. Treat this as the checklist when implementing your own Vulkan engine:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 43–54)
+VulkanRenderer::VulkanRenderer(Window& inAppWindow) : deviceContext(inAppWindow), boundWindow(&inAppWindow) {
+    shaderLoader.SetDevice(device());
+    CreateCommandPool();
+    CreatePersistentSceneResources();  // descriptors, static geometry, shadow atlases
+    RecreateSwapchain();               // swapchain + HDR pass + all pipelines
+    frameSync.Create(device());
+}
+```
+
+`VulkanDeviceContext` (created as the first member) already owns instance, surface, physical/logical device, and queues. Swapchain images are created inside `RecreateSwapchain`, not in the device constructor — window size may still be settling at startup.
+
+`CreatePersistentSceneResources` allocates resources that **do not** depend on swapchain extent: scene descriptor layout and pool, uniform buffers, skin SSBOs, static unit-cube vertex/index buffers, shadow map atlases. These survive resize without recreation.
+
+`RecreateSwapchain` is the resize hub: depth buffers, HDR + present render passes, HDR flight framebuffers, scene/sprite/particle/tonemap pipelines, presentation framebuffers, and per-swapchain-image command buffers.
+
+### Transparent draws and the HDR resume pass
+
+When `pendingScene.transparentDraws` is non-empty, Spark **ends** the HDR render pass early, copies the opaque HDR color to `opaqueBackground`, then **resumes** HDR with `LOAD` (not `CLEAR`) so depth from opaque geometry is preserved:
+
+```text
+vkCmdBeginRenderPass (HDR, CLEAR)
+  → sceneOpaquePass.Record (opaque + sky)
+  → vkCmdEndRenderPass
+  → copy opaque HDR color → sceneOpaqueColor texture (binding 13)
+  → vkCmdBeginRenderPass (HDR resume, LOAD depth + color)
+  → sceneOpaquePass.RecordTransparent
+  → composite2D + particles
+vkCmdEndRenderPass
+```
+
+Transmission and screen-space refraction in `gltf_pbr_extensions.glsl` sample `sceneOpaqueColor` — the copy must happen between opaque and transparent recording. This is why transparent rendering is not "just another draw call" in the same subpass; it is a deliberate render-pass split tied to PBR extensions.
+
+### Descriptor set 0 at record time
+
+Scene draws bind **one descriptor set per frame-in-flight index**:
+
+```text
+binding 0  — SceneUniformGpu UBO (viewProj, lights, exposure)
+binding 1  — sceneTextures (sampler2DArray, LDR materials)
+binding 11 — sceneHdrTextures (HDR emissive / float albedo)
+binding 13 — sceneOpaqueColor (transmission background)
+```
+
+Per-draw material selection does **not** change descriptors — push constants carry `textureLayer`, `normalMapLayer`, `metallicRoughnessMapLayer`, and glTF extension fields. See Part IV binding chapter and Part VII material submit.
 
 ## 3. Design Decisions
 

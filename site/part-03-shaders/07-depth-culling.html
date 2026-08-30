@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1062,6 +1068,99 @@
 </ul>
 <p>Wrong settings produce classic bugs: everything invisible (cull wrong winding), z-fighting (depth precision), sky occluding geometry (depth test on sky), transparent objects blocking each other (depth write on glass).</p>
 <p>Spark encodes most depth/cull policy in <code>VulkanScenePipeline.cpp</code> with three pipeline variants and <strong>dynamic</strong> cull mode for per-draw overrides. Shaders influence depth only through <code>gl_Position</code> (sky Z nudge in <code>scene.vert</code>).</p>
+<h3 id="depth-buffer-for-beginners">Depth buffer for beginners</h3>
+<p>The <strong>depth buffer</strong> (Z-buffer) stores how far each pixel is from the camera. When two triangles overlap the same pixel, the GPU keeps the <strong>closer</strong> one:</p>
+<pre><code class="language-text">Pixel (100, 200):
+Triangle A depth = 0.45  ← wins, drawn
+Triangle B depth = 0.72  ← behind A, discarded
+</code></pre>
+<p>Settings in <code>VkPipelineDepthStencilStateCreateInfo</code>:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>depthTestEnable</code></td>
+<td>Compare new fragment depth vs stored</td>
+</tr>
+<tr>
+<td><code>depthWriteEnable</code></td>
+<td>Update stored depth when fragment passes test</td>
+</tr>
+<tr>
+<td><code>depthCompareOp</code></td>
+<td>Usually <code>VK_COMPARE_OP_LESS</code> (closer = smaller depth in Vulkan)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Opaque meshes:</strong> test ON, write ON — build correct occlusion.<br>
+<strong>Transparent glass:</strong> test ON, write OFF — see through objects behind, but do not block them.<br>
+<strong>Sky:</strong> test OFF or special Z hack — infinite distance shell.</p>
+<h3 id="face-culling-for-beginners">Face culling for beginners</h3>
+<p>A triangle has two sides. <strong>Back-face culling</strong> skips triangles facing away from the camera — saves roughly half the fragment work for closed meshes.</p>
+<pre><code class="language-text">Camera sees front face (CCW winding in Spark) → draw
+Camera sees back face → cull (skip entirely)
+</code></pre>
+<p>If your imported model uses opposite winding, the mesh looks <strong>inside-out</strong> or <strong>invisible</strong> — fix winding at import (Part VI) or flip <code>frontFace</code> / <code>cullMode</code> temporarily to confirm diagnosis.</p>
+<h2 id="b.concept-deep-dive-gl_position-sky-depth-and-pipeline-variants">1b. Concept Deep Dive — gl_Position, Sky Depth, and Pipeline Variants</h2>
+<h3 id="how-scene.vert-writes-depth-relevant-clip-coordinates">How scene.vert writes depth-relevant clip coordinates</h3>
+<p>For ordinary meshes, clip output is the standard perspective transform:</p>
+<pre><code class="language-glsl">// shaders/scene.vert (lines 105–111)
+vec4 clip = ubo.viewProj * vec4(worldPos, 1.0);
+if (push.skyMode != 0) {
+    float zw = max(clip.w, 1e-5);
+    gl_Position = vec4(clip.x, clip.y, zw * (1.0 - 1e-4), zw);
+} else {
+    gl_Position = clip;
+}
+</code></pre>
+<p>After the GPU perspective divide, fragment depth comes from <code>gl_Position.z / gl_Position.w</code>. Spark does <strong>not</strong> write <code>gl_FragDepth</code> in <code>scene.frag</code> — depth policy is entirely fixed-function pipeline state plus this vertex-side sky nudge.</p>
+<h3 id="why-sky-needs-a-clip-space-hack">Why sky needs a clip-space hack</h3>
+<p>Sky draws use <code>push.skyMode != 0</code> and a dedicated pipeline with depth test disabled. The Z nudge pushes NDC depth toward <strong>1.0</strong> (Vulkan far plane) so that if depth testing is accidentally enabled on a mixed pass, sky pixels still lose to foreground geometry. Combined with <code>pipelineSky</code> (<code>depthTestEnable = FALSE</code>), the dome renders as an infinite backdrop.</p>
+<p>Opaque and transparent pipelines re-enable depth test with <code>VK_COMPARE_OP_LESS</code> and differ only in <code>depthWriteEnable</code> — transparent keeps test ON but write OFF so glass does not block draws behind it.</p>
+<h3 id="push-constants-select-pipeline-branch-at-record-time">Push constants select pipeline branch at record time</h3>
+<p><code>VulkanSceneOpaquePass</code> switches pipelines based on draw item flags before binding:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Draw kind</th>
+<th>Pipeline</th>
+<th>Depth test</th>
+<th>Depth write</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opaque mesh</td>
+<td><code>pipelineLit</code></td>
+<td>ON</td>
+<td>ON</td>
+<td>Default forward path</td>
+</tr>
+<tr>
+<td>Sky</td>
+<td><code>pipelineSky</code></td>
+<td>OFF</td>
+<td>OFF</td>
+<td>Vertex Z hack active</td>
+</tr>
+<tr>
+<td>Transparent</td>
+<td><code>pipelineLitTransparent</code></td>
+<td>ON</td>
+<td>OFF</td>
+<td>Sorted back-to-front</td>
+</tr>
+</tbody>
+</table>
+<p><code>push.skyMode</code> must agree with the bound pipeline — binding the lit pipeline while <code>skyMode != 0</code> still runs the sky fragment early-out but depth state will be wrong.</p>
+<h3 id="culling-vs-shader-winding">Culling vs shader winding</h3>
+<p>Face culling is <strong>not</strong> decided in GLSL. Spark defaults to <code>VK_CULL_MODE_BACK_BIT</code> with <code>VK_FRONT_FACE_CLOCKWISE</code> to match glTF imports after index reordering. If culling hides a mesh, verify winding in RenderDoc (triangle order) before editing <code>scene.vert</code> — the shader cannot fix inverted index buffers.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="depth-buffer-recap">Depth buffer recap</h3>
 <p>The HDR scene pass attaches a <strong>depth image</strong> cleared to <code>1.0</code> (far plane in Vulkan). Each fragment computes a depth value in <code>[0, 1]</code> after perspective divide (unless depth range changed).</p>
@@ -1279,6 +1378,34 @@ dynamicStatesList.PushBack(VK_DYNAMIC_STATE_FRONT_FACE);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#depth-buffer-for-beginners">Depth buffer for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#face-culling-for-beginners">Face culling for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-glposition-sky-depth-and-pipeline-variants">1b. Concept Deep Dive — gl_Position, Sky Depth, and Pipeline Variants</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#how-scenevert-writes-depth-relevant-clip-coordinates">How scene.vert writes depth-relevant clip coordinates</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-sky-needs-a-clip-space-hack">Why sky needs a clip-space hack</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constants-select-pipeline-branch-at-record-time">Push constants select pipeline branch at record time</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#culling-vs-shader-winding">Culling vs shader winding</a>
                         </li>
                         
                         <li class="toc-h2">

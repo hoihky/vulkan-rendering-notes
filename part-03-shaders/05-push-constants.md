@@ -23,6 +23,125 @@ Spark pushes **192 bytes** per draw: model matrix, albedo tint, texture layer, P
 
 This chapter is about the **contract**: identical struct layout in C++ and both shader stages, pipeline layout range declaration, and command buffer updates.
 
+### Push constants for beginners
+
+**Push constants** are a small block of data (up to ~128–256 bytes) you upload **immediately before each draw** without binding a separate buffer:
+
+```cpp
+vkCmdPushConstants(cmd, layout, stages, offset, size, &push);
+vkCmdDrawIndexed(cmd, ...);
+```
+
+Spark's `ModelPushConstants` holds per-object data that changes every draw:
+
+| Field group | Examples |
+|-------------|----------|
+| Transform | `model` mat4 |
+| Material | `albedo`, `metallic`, `roughness`, `textureLayer` |
+| Maps | `normalMapLayer`, `metallicRoughnessMapLayer` |
+| Flags | `shadingModel`, `shadowFlags`, glTF extensions |
+
+**Why not put model matrix in the UBO?** You would need either thousands of UBOs or dynamic offsets with strict alignment. Push constants are designed for "small, frequent, per-draw" updates.
+
+### CPU struct must match GLSL exactly
+
+C++ (`VulkanSceneOpaquePass.hpp`):
+
+```cpp
+struct ModelPushConstants {
+    float model[16];
+    float albedo[4];
+    int textureLayer;
+    // ...
+};
+```
+
+GLSL (`scene.vert` / `scene.frag`):
+
+```glsl
+layout(push_constant) uniform Push {
+    mat4 model;
+    vec4 albedo;
+    int textureLayer;
+    // ...
+} push;
+```
+
+Same order, same sizes, same padding rules. Spark uses `static_assert` on sizeof. If you add a field on one side only, colors and transforms scramble silently.
+
+## 1b. Concept Deep Dive — scene_push.glsl and ModelPushConstants
+
+### The shared push block in both shader stages
+
+`scene_push.glsl` defines the per-draw uniform both stages include:
+
+```glsl
+// shaders/scene_push.glsl
+layout(push_constant) uniform Push {
+    mat4 model;
+    vec4 albedoTint;
+    int textureLayer;
+    int skyMode;
+    float metallic;
+    float roughness;
+    vec4 emissive;
+    int useSkinning;
+    int jointCount;
+    int shadingModel;
+    int toonDiffuseBands;
+    float toonRimIntensity;
+    float toonRimPower;
+    int normalMapLayer;
+    int metallicRoughnessMapLayer;
+    int emissiveMapLayer;
+    // glTF map UV transforms, clearcoat, transmission, iridescence ...
+} push;
+```
+
+Vertex code reads `push.model`, `push.useSkinning`, `push.jointCount`, and material varyings. Fragment code reads map layers, `push.shadingModel`, `push.shadowFlags`, and `push.alphaCutoff`. Identical layout in both stages is required — Vulkan links push ranges across the pipeline, not per stage.
+
+### C++ struct with offset proofs
+
+```cpp
+// include/spark/render/scene/VulkanSceneOpaquePass.hpp (excerpt)
+struct ModelPushConstants {
+    float model[16]{};
+    float albedo[4]{1, 1, 1, 1};
+    std::int32_t textureLayer = -1;
+    std::int32_t skyMode = 0;
+    float metallic = 0.0F;
+    float roughness = 0.45F;
+    float emissive[4]{};
+    std::int32_t useSkinning = 0;
+    std::int32_t jointCount = 0;
+    std::int32_t shadingModel = 0;
+    // normalMapLayer, mapUvScale[5], clearcoat, transmission ...
+};
+```
+
+Spark proves layout in `VulkanSceneOpaquePass.cpp`:
+
+```cpp
+static_assert(sizeof(ModelPushConstants) == 348);
+static_assert(offsetof(ModelPushConstants, mapUvScale) == 176);
+static_assert(offsetof(ModelPushConstants, clearcoatFactor) == 296);
+```
+
+The 4-byte `padMapUvAlign` before `mapUvScale` mirrors GLSL `vec2[]` 8-byte alignment — a common push-constant footgun when adding `int` fields before UV arrays.
+
+### Typical per-draw usage in scene.vert / scene.frag
+
+| Push field | Set from C++ | Shader use |
+|------------|--------------|------------|
+| `model` | Entity world matrix | Vertex transform; normal transport |
+| `textureLayer` | Material atlas slot | `flat vTextureLayer` → `texture()` layer |
+| `skyMode` | Sky draw flag | Vertex clip Z hack; fragment early-out |
+| `shadingModel` | Material enum | PBR / toon / unlit dispatch |
+| `shadowFlags` | Material flags | `(push.shadowFlags & 2)` receive shadows |
+| `mapUvScale`, `mapTexCoordSet` | glTF extensions | `sparkMapUv()` in fragment |
+
+Recording order in the opaque pass: memcpy skin SSBO (if needed) → `vkCmdPushConstants` with full 348 bytes → `vkCmdDrawIndexed`. RenderDoc's push constant viewer is the fastest way to verify C++ and GLSL agree after adding a field.
+
 ## 2. Core Concepts
 
 ### Push constant memory model

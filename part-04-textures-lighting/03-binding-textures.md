@@ -20,6 +20,95 @@ A `VkImage` on the GPU is invisible to shaders until you bind:
 
 Spark's scene pass uses **set 0** with ten bindings — binding 1 is the material texture array. This chapter focuses on that binding and how it fits the wider layout shaders in Part III already declared.
 
+### What is a texture? (beginner)
+
+A **texture** is a 2D image stored on the GPU. Instead of painting every pixel of a brick wall by hand in code, you:
+
+1. Load a photo of bricks into memory (`Texture2D` on CPU in Spark).
+2. Assign **UV coordinates** to each mesh vertex (Part IV Chapter 4).
+3. In the fragment shader, look up the photo at the interpolated UV: `texture(sampler, uv)`.
+
+The GPU's texture units are optimized for this lookup — millions of pixels per frame sample textures with filtering (blending neighboring texels for smooth minification).
+
+### Why Vulkan needs descriptors
+
+The fragment shader declares:
+
+```glsl
+layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+```
+
+That is only a **declaration**. At runtime you must tell Vulkan:
+
+- **Which VkImage** holds the texels
+- **Which VkImageView** interprets the memory as a 2D array
+- **Which VkSampler** defines filtering (linear vs nearest) and wrapping (repeat vs clamp)
+
+A **descriptor set** packages these handles. `vkCmdBindDescriptorSets` attaches the package to the pipeline before drawing.
+
+**Beginner analogy:** The shader is a function signature. The descriptor set is the argument you pass when calling the function.
+
+### Why Spark uses a texture *array* instead of one texture per material
+
+Naive approach: bind a different texture before every draw call. Problems:
+
+- Descriptor binding is expensive when done thousands of times per frame.
+- Vulkan has limits on descriptor updates per frame.
+
+Spark's approach:
+
+1. Upload **all** scene textures into layers of one `sampler2DArray` (up to `MaxSceneTextures` layers).
+2. Bind the array **once** per frame (descriptor set 0, binding 1).
+3. Per draw, pass a **layer index** in push constants (`textureLayer`, `normalMapLayer`, etc.).
+
+```text
+Draw chair seat:  push.textureLayer = 2, push.metallicRoughnessMapLayer = 5
+Draw chair legs:  push.textureLayer = 3, push.metallicRoughnessMapLayer = 6
+Same bound descriptor set for both draws — only push constants change.
+```
+
+This is the core of Spark's **material pipeline**: CPU assigns layers during submit; GPU samples by index during shade.
+
+## 1b. Concept Deep Dive — Descriptor Binding and Layer Indices
+
+### One array, many materials
+
+Scene descriptor set 0 binding 1 is a combined `sampler2DArray`. The uploader exposes handles the writer binds once per frame:
+
+```text
+VulkanSceneTextureUploader::ArrayView()  →  VkDescriptorImageInfo.imageView
+VulkanSceneTextureUploader::Sampler()    →  VkDescriptorImageInfo.sampler
+layout = SHADER_READ_ONLY_OPTIMAL
+```
+
+Every opaque draw shares this binding; per-draw variation comes from push constants, not rebinding textures.
+
+### Layer index flow from MaterialComponent
+
+`SceneSubmitMaterial.cpp` resolves each map through `FindOrAddSceneTexture`:
+
+```cpp
+item.textureLayer = FindOrAddSceneTexture(params, mat->GetBaseColorTexture(), ...);
+item.normalMapLayer = FindOrAddSceneTexture(params, mat->GetNormalTexture(), ...);
+item.metallicRoughnessMapLayer = FindOrAddSceneTexture(params, mat->GetMetallicRoughnessTexture(), ...);
+```
+
+`-1` means "no texture" — the shader branches to flat tint or default ORM values. HDR emissive layers index `sceneHdrTextures` with a separate push field (`textureIsHdrLinear` on the draw item).
+
+### GLSL sampling contract
+
+```glsl
+layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+// push.textureLayer selects the array slice:
+vec4 albedo = texture(sceneTextures, vec3(sparkMapUv(0), float(push.textureLayer)));
+```
+
+`sparkMapUv` applies atlas UV scale/offset from the draw item — the same layer index works for differently tiled materials when submit stored per-draw UV transforms.
+
+### Why push constants instead of per-material descriptors
+
+Vulkan limits descriptor updates per frame. Spark binds set 0 once, then changes only push constants (`textureLayer`, `normalMapLayer`, `metallicRoughnessMapLayer`, …) between draws — thousands of meshes, one texture array binding.
+
 ## 2. Core Concepts
 
 ### Combined image sampler
@@ -143,6 +232,28 @@ vkCmdBindDescriptorSets(
 ```
 
 Must occur after pipeline bind, before draws using `scene.frag`. Wrong set → validation error or wrong texture.
+
+### How binding 1 connects to the material pipeline
+
+Texture binding is not an isolated Vulkan exercise — it is the **GPU side** of Spark's material pipeline. The CPU path looks like this:
+
+```text
+MaterialComponent / MultiMaterialComponent
+  → SceneSubmit::FindOrAddSceneTexture(SharedPtr<Texture2D>)
+       returns layer index (0 … MaxSceneTextures-1)
+  → SceneDrawItem.textureLayer / normalMapLayer / metallicRoughnessMapLayer
+  → VulkanSceneTextureUploader::PrepareUploads (staging → GPU array layer)
+  → VulkanSceneDescriptors writes binding 1 (LDR) and binding 11 (HDR float)
+  → VulkanSceneOpaquePass push constants → scene.frag samples by layer
+```
+
+`FindOrAddSceneTexture` deduplicates by `SharedPtr` identity — ten draws sharing one brick albedo map reuse the same layer index. Different maps (albedo vs normal vs ORM) occupy **different layers in the same array**, selected by separate push constant fields.
+
+glTF import decodes PNG/JPEG into CPU `Texture2D` pixels in `GltfMaterialLoader::TryLoadTexturesFromMaterial`. GPU upload happens later at frame record via `deferredUploadBatch.Record` — the ECS never holds `VkImage` handles.
+
+For HDR emissive maps (`RGBA32F`), `ApplyAlbedoTexture` sets `item.textureIsHdrLinear` and the uploader routes pixels to `sceneHdrTextures` (binding 11). The fragment shader branches: LDR albedo uses `sparkSrgbToLinear` on `sceneTextures`; HDR layers skip sRGB decode.
+
+When building your engine, implement **layer assignment on the CPU** during scene gather, not descriptor rebinding per draw. Vulkan rewards one array + push constant layers over hundreds of descriptor sets.
 
 ## 3. Design Decisions
 

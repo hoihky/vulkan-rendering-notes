@@ -15,6 +15,57 @@ live toggles for every map Part VII introduced — the fastest feedback loop bef
 
 Finish Part VII by running MaterialShowcase3DDemo and documenting your baseline screenshot set.
 
+## 1b. Concept Deep Dive — MaterialShowcase3DDemo as Regression Harness
+
+### Demo purpose
+
+```cpp
+// include/spark/demo/MaterialShowcase3DDemo.hpp
+/**
+ * Single LitPbr sphere whose material is edited at runtime (texture toggles, metallic/roughness,
+ * emissive presets). Directional + point + spot lights. F1 fly, ESC menu.
+ */
+```
+
+Uses `Mesh::CreateSkySphere` (high segment count) as showcase geometry — smooth specular for normal map validation.
+
+### ApplyMaterialState — runtime toggles
+
+```cpp
+// src/spark/demo/MaterialShowcase3DDemo.cpp (lines 169–187)
+void MaterialShowcase3DDemo::ApplyMaterialState() {
+    showcaseMaterial->SetShadingModel(SceneShadingModel::LitPbr);
+    showcaseMaterial->SetBaseColorTexture(useBaseMap ? baseColorTex : SharedPtr<Texture2D>{});
+    showcaseMaterial->SetNormalTexture(useNormalMap ? normalTex : SharedPtr<Texture2D>{});
+    showcaseMaterial->SetMetallicRoughnessTexture(useOrmMap ? ormTex : SharedPtr<Texture2D>{});
+    showcaseMaterial->SetMetallic(metallic);
+    showcaseMaterial->SetRoughness(roughness);
+    showcaseMaterial->SetTint(TintForPreset(tintPreset));
+    ApplyEmissiveToMaterial(*showcaseMaterial, emissivePreset, useEmissiveMap, emissiveIntensity, emissiveTex);
+}
+```
+
+Every toggle calls setters → `MeshDirty` → next frame submit re-registers texture layers.
+
+### Key bindings for validation
+
+| Key | Effect | Chapter validated |
+|-----|--------|-------------------|
+| **1** | Toggle base color map | Part IV texture binding |
+| **2** | Toggle normal map | Chapter 07 normal mapping |
+| **3** | Toggle ORM map | Chapter 08 ORM |
+| **Q/E** | Metallic ± | PBR scalars |
+| **R/F** | Roughness ± | PBR + IBL specular blur |
+| **Emissive presets** | HDR headroom | Part X tonemap |
+
+### What to capture for baseline screenshots
+
+1. LitPbr sphere, base map only, single directional light.
+2. Normal map on — specular ripples visible.
+3. ORM on — chrome vs matte regions from B/G channels.
+4. Emissive intensity > 1 — HDR bloom headroom before tonemap.
+5. Side-by-side with `ToonShadingDemo` for shading model comparison.
+
 ## 2. Core Concepts
 
 ### Interactive material sandbox

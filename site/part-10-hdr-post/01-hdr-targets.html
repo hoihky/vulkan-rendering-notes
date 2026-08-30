@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,61 @@
 <p>If your scene pass writes <strong>UNORM8</strong> swapchain colors, lighting saturates at 1.0 before exposure or artistic grading. A sun disk, emissive panel, or specular highlight needs <strong>headroom above 1.0</strong> in linear space so post can compress dynamic range without clipping.</p>
 <p>Production engines render into <strong>floating-point offscreen color</strong> with depth, accumulate lighting in <strong>linear space</strong>, then <strong>tonemap</strong> to the display-referred swapchain. Part X builds that pipeline on top of everything from Parts IV–IX.</p>
 <p>Spark already routes world drawing through <code>VulkanHdrTonemapPass</code>'s HDR target. You will trace render pass creation, follow scene recording into the HDR framebuffer, and verify the migration checklist in RenderDoc before mirroring the pattern in your engine.</p>
+<h3 id="why-monitors-cannot-display-real-light-beginner">Why monitors cannot display "real" light (beginner)</h3>
+<p>Your monitor displays values roughly between <strong>0 (black)</strong> and <strong>1 (white)</strong> per channel. Real-world lighting is not limited to that range:</p>
+<ul>
+<li>A cloudy sky might be ~1.0 in display terms.</li>
+<li>The sun disc in the same scene might be <strong>50–100× brighter</strong> in physical units.</li>
+<li>A car headlight or emissive UI panel can be even brighter.</li>
+</ul>
+<p>If you render directly to an 8-bit swapchain and add sun + sky + headlights, everything <strong>clips to white</strong> — you lose detail in bright areas ("blown highlights").</p>
+<p><strong>HDR rendering</strong> solves this in two steps:</p>
+<ol>
+<li><strong>Render the scene into a floating-point buffer</strong> that can store values &gt; 1.0 (Spark: <code>R16G16B16A16_SFLOAT</code>).</li>
+<li><strong>Tonemap</strong> that buffer down to 0–1 for the monitor (Part X Chapter 2).</li>
+</ol>
+<pre><code class="language-text">Analogy: HDR buffer = photographer's RAW file (wide dynamic range)
+Tonemap      = export to JPEG for sharing (compressed range)
+</code></pre>
+<p>Until tonemap runs, you are working in <strong>scene-referred linear space</strong> — lighting math is physically plausible. After tonemap, you are in <strong>display-referred space</strong> — what the human eye sees on the monitor.</p>
+<h3 id="what-changes-when-you-add-hdr-to-your-engine">What changes when you add HDR to your engine</h3>
+<p>Before HDR (tutorial path):</p>
+<pre><code class="language-text">Scene pass → swapchain image (UNORM8) → monitor
+</code></pre>
+<p>After HDR (Spark path):</p>
+<pre><code class="language-text">Scene pass → HDR offscreen (RGBA16F) → tonemap pass → swapchain → monitor
+</code></pre>
+<p>Every pass that used to target the swapchain must now target the <strong>HDR framebuffer</strong> instead. That includes:</p>
+<ul>
+<li>Opaque meshes</li>
+<li>Sky</li>
+<li>Transparent objects</li>
+<li>Sprites and particles (in Spark)</li>
+</ul>
+<p>Shadow maps are <strong>not</strong> HDR color — they are separate depth passes that run <strong>before</strong> the HDR scene pass.</p>
+<h2 id="b.concept-deep-dive-post-module-owns-the-scene-target">1b. Concept Deep Dive — Post Module Owns the Scene Target</h2>
+<h3 id="rgba16f-is-the-contract-every-world-pass-must-target">RGBA16F is the contract every world pass must target</h3>
+<p>Spark centralizes HDR format in one constant — half-float color with enough mantissa for sun + emissive before tonemap:</p>
+<pre><code class="language-cpp">// include/spark/render/post/VulkanHdrTonemapPass.hpp (lines 14–17)
+/** HDR offscreen targets (R16G16B16A16) and swapchain tonemap pass. */
+class VulkanHdrTonemapPass {
+public:
+    static constexpr VkFormat kColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+</code></pre>
+<p>The swapchain image stays untouched until <code>RecordTonemap</code>. Scene, sky, transparent resume, tilemap, sprite, and particle pipelines all declare compatibility with <code>hdrRenderPass</code> — not the present pass from Part I.</p>
+<h3 id="one-render-pass-shared-depth-many-record-modules">One render pass, shared depth, many record modules</h3>
+<p><code>VulkanRenderer::RecordSceneCommandBuffer</code> binds the HDR framebuffer once, then chains opaque scene, 2D composite, and particles inside the same subpass. Depth written by terrain and props is the same buffer particles depth-test against — splitting sprites into a separate pass would require depth resolve or re-load.</p>
+<pre><code class="language-text">vkCmdBeginRenderPass (HDR RGBA16F + D32)
+  → sceneOpaquePass (sky, opaque, transparent)
+  → composite2DPass (tilemap + sprite)
+  → particlePass (additive billboards)
+vkCmdEndRenderPass
+  → TransitionColorToShaderRead  // SSAO + tonemap sample this image
+</code></pre>
+<h3 id="hdr-resume-pass-for-glass-and-transmission">HDR resume pass for glass and transmission</h3>
+<p>Transparent PBR cannot always share the initial CLEAR pass with opaque geometry. Spark ends the HDR pass after opaque + sky, copies color to <code>sceneOpaqueColor</code>, then begins <code>hdrResumeRenderPass</code> with LOAD on color and depth so transmission shaders sample the opaque world behind glass (binding 13 in <code>gltf_pbr_extensions.glsl</code>).</p>
+<h3 id="recreate-hooks-on-swapchain-resize">Recreate hooks on swapchain resize</h3>
+<p>HDR extent must match swapchain every frame. <code>RecreateSwapchain</code> calls <code>RecreateHdrFlightTargets()</code> before pipelines that depend on render-pass compatibility rebuild — missing this step produces <code>VK_ERROR_INCOMPATIBLE_RENDER_PASS</code> or stretched post.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="linear-vs-display-referred-color">Linear vs display-referred color</h3>
 <p>Real-time rendering separates <strong>scene-referred</strong> and <strong>display-referred</strong> signals:</p>
@@ -1127,6 +1188,40 @@ depth:  D32_SFLOAT             DEPTH_STENCIL_ATTACHMENT
 vkCmdEndRenderPass
 </code></pre>
 <p>Depth buffer persistence matters: Part VIII particles rely on depth testing against opaque geometry drawn earlier in the <strong>same subpass</strong>. Splitting sprites into a separate render pass would require depth resolve or re-load — expensive and error-prone.</p>
+<h3 id="hdr-resume-pass-for-transparent-materials">HDR resume pass for transparent materials</h3>
+<p>Transparent PBR draws (opacity &lt; 1, alpha blend, or glTF transmission) cannot always share the same render-pass begin as opaque geometry. Spark <strong>ends</strong> the HDR pass after opaque + sky, copies the opaque color to <code>sceneOpaqueColor</code>, then begins a <strong>resume</strong> render pass with <code>LOAD</code> on color and depth:</p>
+<pre><code class="language-text">hdrRenderPass         — CLEAR color + depth (opaque + sky)
+  → [end pass]
+  → RecordCopyFromHdrColor → opaqueBackground texture
+hdrResumeRenderPass   — LOAD color + depth (transparent + 2D + particles)
+</code></pre>
+<p><code>VulkanHdrTonemapPass</code> creates two render pass objects from the same attachment descriptions — only <code>loadOp</code> differs:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Pass</th>
+<th>Color loadOp</th>
+<th>Depth loadOp</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hdrRenderPass</code></td>
+<td>CLEAR</td>
+<td>CLEAR</td>
+<td>Fresh frame</td>
+</tr>
+<tr>
+<td><code>hdrResumeRenderPass</code></td>
+<td>LOAD</td>
+<td>LOAD</td>
+<td>Preserve opaque depth + color for transmission</td>
+</tr>
+</tbody>
+</table>
+<p>Transmission in <code>shaders/gltf_pbr_extensions.glsl</code> samples binding 13 (<code>sceneOpaqueColor</code>) to refract through glass materials. Without the copy step, the shader would not see the opaque world behind a transparent mesh.</p>
+<p>This is why HDR is not "one clear and done" — the post module owns both pass variants and exposes <code>BeginHdrResumeRenderPass</code> when <code>transparentDraws</code> is non-empty.</p>
 <p>Load ops: color and depth <strong>clear</strong> at pass start. Store ops: color <strong>store</strong> (tonemap reads it); depth <strong>store</strong> (SSAO may copy it in Chapter 3).</p>
 <h3 id="render-pass-ownership">Render pass ownership</h3>
 <p>Centralizing HDR render pass creation in <code>VulkanHdrTonemapPass</code> keeps attachment formats, subpass count, and final layouts consistent across every pipeline that draws the world. Scene modules receive the <code>VkRenderPass</code> handle at pipeline create time — when it changes (swapchain recreate), <strong>all</strong> dependent pipelines recreate.</p>
@@ -1475,6 +1570,34 @@ RecreateHdrFlightTargets();
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#why-monitors-cannot-display-real-light-beginner">Why monitors cannot display "real" light (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-changes-when-you-add-hdr-to-your-engine">What changes when you add HDR to your engine</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-post-module-owns-the-scene-target">1b. Concept Deep Dive — Post Module Owns the Scene Target</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#rgba16f-is-the-contract-every-world-pass-must-target">RGBA16F is the contract every world pass must target</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-render-pass-shared-depth-many-record-modules">One render pass, shared depth, many record modules</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hdr-resume-pass-for-glass-and-transmission">HDR resume pass for glass and transmission</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recreate-hooks-on-swapchain-resize">Recreate hooks on swapchain resize</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1489,6 +1612,10 @@ RecreateHdrFlightTargets();
                         
                         <li class="toc-h3">
                           <a href="#shared-hdr-subpass">Shared HDR subpass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hdr-resume-pass-for-transparent-materials">HDR resume pass for transparent materials</a>
                         </li>
                         
                         <li class="toc-h3">

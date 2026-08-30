@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,58 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Forward rendering with <strong>N lights × M pixels</strong> naively costs O(lights × fragments). At 256 point lights and a million fragments, that hurts. <strong>Clustered forward</strong> (also called forward+) assigns lights to <strong>3D clusters</strong> of screen space (XY tiles × depth slices) so each fragment only considers lights overlapping its cluster.</p>
 <p>Spark implements the <strong>full CPU cluster builder</strong> and SSBO infrastructure — grid metadata in UBO, lights in SSBO binding 4, indices in binding 5. The current <code>scene.frag</code> path <strong>iterates all punctual lights</strong> per fragment (acceptable at 256+128 cap) with a comment that cluster lookup is reserved for a future tiled path. This chapter teaches the architecture Spark has and the shader loop it runs today.</p>
+<h3 id="why-not-loop-all-256-lights-per-pixel-beginner">Why not loop all 256 lights per pixel? (beginner)</h3>
+<p>Naive forward shading:</p>
+<pre><code class="language-glsl">for (int i = 0; i &lt; pointLightCount; ++i)
+color += shadePoint(params.pointLights[i]);
+</code></pre>
+<p>With 200 lights and 2M pixels, that's 400M light evaluations per frame — too slow on mobile GPUs.</p>
+<p><strong>Clustered lighting</strong> divides view space into a grid (e.g. 16×16×16 cells). Each cell stores a <strong>small list</strong> of light indices that overlap that volume. Each pixel only loops lights in its cell:</p>
+<pre><code class="language-text">View frustum divided into clusters (like 3D buckets)
+Cluster (5,3,12) → lights [2, 7, 41]
+Pixel in that cluster → loop 3 lights, not 256
+</code></pre>
+<p><strong>Spark today:</strong> CPU builds the cluster grid and uploads SSBOs; <code>scene.frag</code> may still loop all punctual lights until tiled lookup is enabled — the data structures are ready.</p>
+<p><strong>Beginner mental model:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Approach</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>All lights per pixel</td>
+<td>O(pixels × all lights)</td>
+</tr>
+<tr>
+<td>Clustered</td>
+<td>O(pixels × lights in cell)</td>
+</tr>
+</tbody>
+</table>
+<p>Cells with no lights → cheap. Dense city night scene → more lights per cell but still bounded.</p>
+<h2 id="b.concept-deep-dive-cluster-grid-and-ssbo-layout">1b. Concept Deep Dive — Cluster Grid and SSBO Layout</h2>
+<h3 id="grid-on-cpu">16×16×16 grid on CPU</h3>
+<p><code>VulkanClusteredForwardLights.cpp</code> assigns each point/spot light to screen-depth clusters:</p>
+<pre><code class="language-cpp">// Cluster index: ix + iy * kClusterGridX + iz * (kClusterGridX * kClusterGridY)
+std::uint32_t ClusterIndex(const int ix, const int iy, const int iz);
+
+int FindDepthSlice(const float dist, const float nearPlane, const float farPlane, const int gridZ);
+// logarithmic depth slicing between near and far clip planes
+</code></pre>
+<p>Lights project to NDC, expand by screen-radius, and mark every overlapping tile — a conservative halo prevents boundary pixels from missing influencers.</p>
+<h3 id="ubo-metadata-ssbo-payload">UBO metadata + SSBO payload</h3>
+<pre><code class="language-cpp">// SceneUniformGpu cluster fields (written by VulkanSceneUniformWriter)
+float clusterGrid[4]{};   // xyz = grid dims; w = point light count
+float clusterDepth[4]{};  // z = spot count; w = clustered enabled flag
+</code></pre>
+<p>SSBO binding 4 holds packed <code>ClusterLightsGpu</code> records; binding 5 holds per-cluster index lists (<code>ClusterGridGpu</code>). Shaders decode light type from index ranges using counts in the UBO.</p>
+<h3 id="current-shader-path-vs-infrastructure">Current shader path vs infrastructure</h3>
+<p>Spark <strong>builds and uploads</strong> the full cluster grid every frame. <code>scene.frag</code> may still iterate all punctual lights in <code>accumulatePunctualPbr</code> until tiled lookup is enabled — the SSBO data is production-ready; the inner loop is the incremental optimization. Profiling at 256+128 lights is when cluster lookup pays off.</p>
+<h3 id="perspective-y-flip-alignment">Perspective Y flip alignment</h3>
+<p><code>NdcToScreenTile</code> flips clip Y to match <code>gl_FragCoord</code> and <code>sparkClusterIndex</code> in GLSL — mismatched Y convention assigns lights to wrong horizontal tiles (symptom: lights appear only on half the screen).</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cluster-grid-dimensions">Cluster grid dimensions</h3>
 <pre><code class="language-cpp">constexpr uint32_t kClusterGridX = 16;
@@ -1272,6 +1330,30 @@ for (uint j = 0; j &lt; count; ++j) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-not-loop-all-256-lights-per-pixel-beginner">Why not loop all 256 lights per pixel? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cluster-grid-and-ssbo-layout">1b. Concept Deep Dive — Cluster Grid and SSBO Layout</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#161616-grid-on-cpu">16×16×16 grid on CPU</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ubo-metadata-ssbo-payload">UBO metadata + SSBO payload</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#current-shader-path-vs-infrastructure">Current shader path vs infrastructure</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#perspective-y-flip-alignment">Perspective Y flip alignment</a>
                         </li>
                         
                         <li class="toc-h2">

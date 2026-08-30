@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1059,6 +1065,88 @@
 <pre><code class="language-text">Edit GLSL → glslangValidator (-V) → .spv in build tree → VkShaderModule → VkPipeline
 </code></pre>
 <p>This chapter makes every step explicit. Open <code>CMakeLists.txt</code> near line 294 and <code>shaders/scene.vert</code> side by side. Your goal is a reliable <strong>edit-compile-run</strong> cycle measured in seconds, not minutes.</p>
+<h3 id="what-is-a-shader-complete-beginner">What is a shader? (complete beginner)</h3>
+<p>A <strong>shader</strong> is a small program that runs on the <strong>GPU</strong>, not the CPU. Spark uses two kinds for 3D meshes:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Shader</th>
+<th>Runs how many times</th>
+<th>Job</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Vertex</strong></td>
+<td>Once per vertex</td>
+<td>Move corner to screen; pass UV/normal to next stage</td>
+</tr>
+<tr>
+<td><strong>Fragment</strong></td>
+<td>Once per pixel (approx.)</td>
+<td>Pick final color; lighting, textures, shadows</td>
+</tr>
+</tbody>
+</table>
+<p>You write shaders in <strong>GLSL</strong> (OpenGL Shading Language) with Vulkan-specific rules. The CPU never executes this code directly — it is compiled to <strong>SPIR-V</strong> bytecode, loaded into <code>VkShaderModule</code>, and bound to a <code>VkPipeline</code>.</p>
+<pre><code class="language-text">You edit scene.frag (GLSL text)
+→ CMake runs glslangValidator
+→ scene.frag.spv (binary SPIR-V)
+→ vkCreateShaderModule at startup / pipeline create
+→ GPU executes during vkCmdDrawIndexed
+</code></pre>
+<h3 id="why-not-compile-glsl-at-runtime">Why not compile GLSL at runtime?</h3>
+<p>OpenGL compiled shaders when you called <code>glCompileShader</code>. Vulkan <strong>requires</strong> offline SPIR-V because:</p>
+<ol>
+<li><strong>Faster startup</strong> — no driver compiler in the hot path.</li>
+<li><strong>Deterministic errors</strong> — compile fails at build time, not when player launches.</li>
+<li><strong>Cross-vendor consistency</strong> — SPIR-V is the contract; drivers optimize from there.</li>
+</ol>
+<p>If <code>scene.vert.spv</code> is missing, Spark throws at pipeline creation — check your CMake build ran <code>SparkShaders</code> target.</p>
+<h3 id="your-first-shader-edit-workflow">Your first shader edit workflow</h3>
+<ol>
+<li>Open <code>shaders/triangle.frag</code> (or <code>scene.frag</code>).</li>
+<li>Change <code>outColor = vec4(1, 0, 0, 1)</code> to green.</li>
+<li>Rebuild project (<code>cmake --build</code> — triggers SPIR-V regen).</li>
+<li>Run SparkDemo — confirm color change.</li>
+<li>If unchanged, you are loading stale <code>.spv</code> from wrong build directory.</li>
+</ol>
+<h2 id="b.concept-deep-dive-sparkshaders-cmake-graph-and-entry-points">1b. Concept Deep Dive — SparkShaders CMake Graph and Entry Points</h2>
+<h3 id="the-compile-loop-in-production">The compile loop in production</h3>
+<p>Spark's root <code>CMakeLists.txt</code> locates <code>glslangValidator</code>, emits <code>.spv</code> files into <code>${CMAKE_BINARY_DIR}/shaders/</code>, and wires the aggregate target <code>SparkShaders</code> so <code>SparkEngine</code> always builds shaders first:</p>
+<pre><code class="language-cmake"># CMakeLists.txt (lines 404–443)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+set(SPV_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+
+set(SHADER_SOURCES
+        ${SHADER_DIR}/scene.vert
+        ${SHADER_DIR}/scene.frag
+        ${SHADER_DIR}/shadow_depth.vert
+        ${SHADER_DIR}/particle.vert
+        ${SHADER_DIR}/particle.frag
+        # sprite, text, UI, tonemap, post_process ...
+)
+foreach (SHADER ${SHADER_SOURCES})
+    add_custom_command(
+            OUTPUT ${SPV}
+            COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.0 -I${SHADER_DIR} ${SHADER} -o ${SPV}
+            DEPENDS ${SHADER} ${SHADER_DIR}/scene_ubo.glsl ${SHADER_DIR}/scene_push.glsl ...
+    )
+endforeach ()
+add_custom_target(SparkShaders DEPENDS ${SPV_FILES})
+</code></pre>
+<p>The <code>-I${SHADER_DIR}</code> flag is what makes <code>#include "scene_ubo.glsl"</code> resolve — without it, even a valid <code>scene.vert</code> fails offline compile.</p>
+<h3 id="scene.vert-and-scene.frag-the-primary-spir-v-pair">scene.vert and scene.frag — the primary SPIR-V pair</h3>
+<p>Both entry shaders enable the Google include extension and pull shared layouts before stage-specific code:</p>
+<pre><code class="language-glsl">#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+</code></pre>
+<p><code>scene.vert</code> declares eight vertex locations (position through vertex color), the skin SSBO at binding 2, and eleven varyings. <code>scene.frag</code> mirrors those inputs, adds <code>sampler2DArray</code> at binding 1, and includes lighting headers (<code>clustered_lights.glsl</code>, <code>ibl.glsl</code>, …). <code>VulkanScenePipeline</code> loads the resulting <code>scene.vert.spv</code> and <code>scene.frag.spv</code> at runtime — every other file in <code>SHADER_SOURCES</code> follows the same offline compile path for its pass.</p>
+<h3 id="shared-headers-must-appear-in-depends">Shared headers must appear in DEPENDS</h3>
+<p>Editing <code>scene_ubo.glsl</code> or <code>scene_push.glsl</code> without listing them in the custom command <code>DEPENDS</code> line leaves stale SPIR-V on disk. Ninja only rebuilds outputs whose listed dependencies changed. When a visual change does not appear after a GLSL edit, check whether the modified file is in the DEPENDS list before suspecting runtime logic.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="glsl-450-and-vulkan-semantics">GLSL 450 and Vulkan semantics</h3>
 <p>Spark shaders start with:</p>
@@ -1281,6 +1369,34 @@ fragModule = shaders.CreateShaderModule(fragCode);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-is-a-shader-complete-beginner">What is a shader? (complete beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-not-compile-glsl-at-runtime">Why not compile GLSL at runtime?</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#your-first-shader-edit-workflow">Your first shader edit workflow</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparkshaders-cmake-graph-and-entry-points">1b. Concept Deep Dive — SparkShaders CMake Graph and Entry Points</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-compile-loop-in-production">The compile loop in production</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenevert-and-scenefrag-the-primary-spir-v-pair">scene.vert and scene.frag — the primary SPIR-V pair</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-headers-must-appear-in-depends">Shared headers must appear in DEPENDS</a>
                         </li>
                         
                         <li class="toc-h2">

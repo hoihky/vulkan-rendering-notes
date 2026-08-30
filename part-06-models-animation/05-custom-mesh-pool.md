@@ -15,6 +15,77 @@ Imported glTF props cannot each own a permanent device buffer if scenes churn at
 
 Build along: spawn two glTF trees on Custom slots and confirm one pooled vertex/index buffer in RenderDoc.
 
+### Mesh pool for beginners
+
+Each `VkBuffer` creation costs driver time. If every imported prop got its own vertex buffer, loading a city would allocate thousands of buffers.
+
+**Pool = one big buffer, many sub-ranges:**
+
+```text
+VulkanCustomMeshPool
+  vertexBuffer: [ meshA verts | meshB verts | meshC verts ... ]
+  indexBuffer:  [ meshA idx  | meshB idx  | meshC idx  ... ]
+
+Draw mesh B:
+  vkCmdBindVertexBuffers(pool.vertexBuffer)
+  vkCmdDrawIndexed(indexCount, ..., firstIndex = B.offset, ...)
+```
+
+**Fingerprint:** when scene's set of custom meshes changes (add/remove prop), pool **repacks** and re-uploads. Unchanged scenes skip upload.
+
+**SceneMeshSlot::Custom** tells submit "vertices live in pool slice X" — not the built-in cube/sphere primitives.
+
+**RenderDoc check:** two different props should show **same** `VkBuffer` handle, different `firstIndex` / vertex offsets.
+
+## 1b. Concept Deep Dive — Interleaved Pack and Slice Tables
+
+### CustomMeshGpuSlice — draw-time lookup
+
+```cpp
+// include/spark/render/scene/VulkanCustomMeshPool.hpp (concept)
+struct CustomMeshGpuSlice {
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t vertexOffset = 0;
+};
+HashMap<const Mesh*, CustomMeshGpuSlice> rigidSlices;
+HashMap<const SkinnedMesh*, CustomMeshGpuSlice> skinnedSlices;
+```
+
+At record time, `VulkanSceneOpaquePass` resolves `d.customMesh.Get()` → slice → `vkCmdDrawIndexed(indexCount, 1, firstIndex, vertexOffset, 0)`.
+
+### Skinned interleave — joints as float bit pattern
+
+```cpp
+// src/spark/render/gpu/VulkanGpuMeshInterleaved.cpp (lines 42–70)
+void AppendSkinnedVertexToInterleaved(const SkinnedMesh::Vertex& v, Array<float>& out) {
+    // position, normal, texCoord0/1, tangent, color ...
+    out.PushBack(std::bit_cast<float>(v.joints[0]));
+    out.PushBack(std::bit_cast<float>(v.joints[1]));
+    out.PushBack(std::bit_cast<float>(v.joints[2]));
+    out.PushBack(std::bit_cast<float>(v.joints[3]));
+    out.PushBack(v.weights[0]);
+    out.PushBack(v.weights[1]);
+    out.PushBack(v.weights[2]);
+    out.PushBack(v.weights[3]);
+}
+```
+
+Rigid meshes write zero joint indices and weight 1.0 on bone 0 — same vertex stride, `push.useSkinning = 0` skips SSBO read.
+
+### ClearKnownMeshes on demo teardown
+
+When leaving a scene, call `customMeshPool.ClearKnownMeshes()` so destroyed CPU `Mesh*` pointers are not hashed in the next session's fingerprint — prevents use-after-free in slice maps.
+
+### Frame timeline
+
+```text
+UpdateFromScene(scene)     → fingerprint changed? pack + memcpy staging
+RecordUploads(cmd)         → vkCmdCopyBuffer + barriers
+OpaquePass draw loop       → bind pool VB/IB, draw per slice
+ReleaseRetiredBuffers()    → after fence wait, free old device buffers
+```
+
 ## 2. Core Concepts
 
 ### Why a pool exists

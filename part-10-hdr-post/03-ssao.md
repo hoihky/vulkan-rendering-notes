@@ -15,6 +15,41 @@ Direct lighting and shadow maps handle **sun visibility**, but indirect ambient 
 
 It is not physically exact, yet it is cheap and convincing when tuned. Spark implements SSAO in `VulkanScreenSpaceEffectsPass` between the HDR scene pass and tonemap — you will trace depth copy, composite, and the renderer branch that selects SSAO output for tonemap input.
 
+## 1b. Concept Deep Dive — Screen-Space Ambient Occlusion Before Tonemap
+
+### Scene depth stays attachment-only; SSAO copies to a sample image
+
+Main scene depth is bound as `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` during the HDR pass — not safely sampleable for random kernel reads on all drivers. `RecordDepthCopy` transitions scene depth to transfer source, copies into per-flight `depthSampleImage`, then restores layouts:
+
+```cpp
+// src/spark/render/post/VulkanScreenSpaceEffectsPass.cpp (lines 525–536)
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].image = sceneDepth.image;
+    // ...
+    barriers[1].image = flight.depthSampleImage;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+```
+
+SSAO runs in **linear HDR** before tonemap — applying occlusion after display encoding produces wrong contrast.
+
+### Scratch RGBA16F avoids read-modify-write on scene HDR
+
+`VulkanScreenSpaceEffectsPass` writes a separate scratch color image: `scratchColor = hdrSceneColor * lerp(1.0, occlusion, strength)`. Tonemap descriptor switches to scratch view when `pendingScene.ssaoEnabled` is true; otherwise raw HDR.
+
+Push constants carry tuning without pipeline rebuild:
+
+```cpp
+// include/spark/render/post/VulkanScreenSpaceEffectsPass.hpp — PostPushConstants
+float ssaoRadius = 0.35F;
+float ssaoBias = 0.02F;
+float ssaoStrength = 0.65F;
+```
+
+### SSAO modulates ambient, not direct sun shadows
+
+Part IX CSM handles sun visibility. SSAO darkens creases based on **screen-space depth neighbors** — it fails on off-screen occluders and thin geometry, but cheaply sells contact shading on terrain ground and indoor corners. Toggle `ssaoEnabled` off for profiling; zero-cost path skips `Record` entirely.
+
 ## 2. Core Concepts
 
 ### SSAO purpose

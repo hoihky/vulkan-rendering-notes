@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,51 @@
 <li><code>PerspectiveVulkan</code> applied outside the struct (Chapter 4)</li>
 </ul>
 <p>This chapter implements movement, look, and view matrix — the pattern most students recognize from game dev tutorials, wired through Spark's <code>IInput</code> abstraction.</p>
+<h3 id="fly-camera-controls-explained-beginner">Fly camera controls explained (beginner)</h3>
+<p>A <strong>fly camera</strong> is like spectator mode in an editor — you are not walking on the ground mesh, you float through the world.</p>
+<p><strong>Yaw and pitch:</strong></p>
+<ul>
+<li><strong>Yaw</strong> — turn left/right (rotate around world up, usually +Y).</li>
+<li><strong>Pitch</strong> — look up/down (clamp to ±89° so you never flip upside down).</li>
+</ul>
+<pre><code class="language-text">Mouse moved right → yaw increases → look toward +X
+Mouse moved up    → pitch increases → look toward +Y
+</code></pre>
+<p><strong>WASD movement</strong> uses the camera's <strong>forward/right</strong> vectors, not world axes blindly:</p>
+<pre><code class="language-text">W → move along forward (where you look)
+S → backward
+A/D → strafe left/right
+Space/Shift → up/down in world space (optional)
+</code></pre>
+<p><strong>View matrix:</strong> <code>LookAt(eye, eye + forward, up)</code> — tells the GPU "place the camera here, look there." Combined with perspective projection (Chapter 4) → <code>viewProj</code> for shaders.</p>
+<p><strong>F1 cursor capture:</strong> without capture, mouse hits screen edge and stops turning — capture hides cursor and re-centers each frame for infinite look.</p>
+<h2 id="b.concept-deep-dive-flycamera-movement-and-lookat">1b. Concept Deep Dive — FlyCamera Movement and LookAt</h2>
+<h3 id="struct-not-ecs-component">Struct, not ECS component</h3>
+<pre><code class="language-cpp">// include/spark/scene/camera/FlyCamera.hpp
+struct FlyCamera {
+    Vector3 position{0.0F, 4.2F, 16.0F};
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+    float moveSpeed = 5.0F;
+    float mouseSensitivity = 0.12F;
+    void ProcessMovement(IInput&amp; input, float deltaSeconds) noexcept;
+    [[nodiscard]] Matrix4 ViewMatrix() const noexcept;
+};
+</code></pre>
+<p>Demos keep a <code>FlyCamera</code> on the stack or in demo state — no <code>GameObject</code> required. Projection (FOV, aspect, clip planes) stays outside the struct.</p>
+<h3 id="yawpitch-forward-vector">Yaw/pitch forward vector</h3>
+<pre><code class="language-cpp">// src/spark/scene/camera/FlyCamera.cpp
+Vector3 FlyCamera::Forward() const noexcept {
+    const float cy = std::cos(yaw), sy = std::sin(yaw);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    return Vector3{sy * cp, sp, -cy * cp}.Normalized();
+}
+</code></pre>
+<p>WASD moves along <code>forward</code> and <code>Cross(forward, UnitY)</code> — strafe stays horizontal even when looking down.</p>
+<h3 id="iinput-only-movement">IInput-only movement</h3>
+<p><code>ProcessMovement</code> queries <code>input.IsKeyDown(GLFW_KEY_W)</code> etc. — no GLFW window handle on the struct. Mouse look calls <code>AddLook(input.GetMouseDeltaX(), input.GetMouseDeltaY())</code> from demo update code after capture is enabled.</p>
+<h3 id="snaplookat-for-framing">SnapLookAt for framing</h3>
+<p><code>SnapLookAt(target)</code> derives yaw/pitch from a direction vector — demos call it once after placing the camera to frame a mesh without manual angle tuning.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="flycamera-state">FlyCamera state</h3>
 <pre><code class="language-cpp">struct FlyCamera {
@@ -1264,6 +1315,30 @@ params.cameraPositionWorld = camera.position;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fly-camera-controls-explained-beginner">Fly camera controls explained (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-flycamera-movement-and-lookat">1b. Concept Deep Dive — FlyCamera Movement and LookAt</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#struct-not-ecs-component">Struct, not ECS component</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#yawpitch-forward-vector">Yaw/pitch forward vector</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#iinput-only-movement">IInput-only movement</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#snaplookat-for-framing">SnapLookAt for framing</a>
                         </li>
                         
                         <li class="toc-h2">

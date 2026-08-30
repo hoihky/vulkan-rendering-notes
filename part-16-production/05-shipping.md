@@ -16,6 +16,38 @@ Spark's demo shell proves subsystems work; this chapter compresses that into **M
 
 Milestone: build `MyGame` target, launch from install directory (not source tree), play 60 s with validation off.
 
+## 1b. Concept Deep Dive — Demo Shell vs MyGame
+
+### SparkDemo shell vs single-entry shipping
+
+The book built capability through **20 demo modes** — each validates one part. Shipping compresses that into one `IGame` entry:
+
+```text
+SparkDemo shell:
+  menu → ThreeDDemo | Platformer2DDemo | SceneEditor3DDemo | ...
+
+MyGame (shipping):
+  main() → MyGameApp → fixed default scene → no mode selector
+```
+
+Same renderer, same asset loader — fewer menus, packaged assets under install dir, not source tree.
+
+### CMake flags strip dev tooling for retail
+
+| Dev build | Retail build |
+|-----------|--------------|
+| Validation layers on | Validation off |
+| ImGui overlay + F3 FPS | Optional or stripped |
+| 20-mode demo shell | Single game target |
+| Source-relative assets | `SPARK_BUILD_ASSETS_DIR` install copy |
+| Script host enabled | Optional `spark_script_host_run` |
+
+Launch from the **install directory** to verify relative asset paths match what players receive — running from the build tree hides path bugs.
+
+### Smoke test before ship
+
+Play 60 s with validation off: resize window twice, async-load one scene, exit cleanly. Zero leaked `VkDeviceMemory` with object tracking enabled in dev builds proves shutdown order is correct before you strip validation for retail.
+
 ## 2. Core Concepts
 
 ### Demo vs shipping shape

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,34 @@
 <p>Vulkan makes memory <strong>visible</strong>. Wrong flags mean slow UMA paths or allocation failure at load time. <strong>Production strategy</strong> centralizes buffer/image creation, batches uploads once per frame, rings per-flight resources, and budgets VRAM for the shadow/HDR/post stacks Spark built in Parts IX–X.</p>
 <p>You will trace Spark helpers — not adopt a proprietary allocator yet — and produce a numeric budget for your target hardware.</p>
 <p>Milestone: play ThreeDDemo for 60 s with two resizes, exit with validation object tracking enabled — zero leaked <code>VkDeviceMemory</code>.</p>
+<h2 id="b.concept-deep-dive-findmemorytype-selection">1b. Concept Deep Dive — FindMemoryType Selection</h2>
+<h3 id="explicit-heaptype-choice-on-every-allocation">Explicit heap/type choice on every allocation</h3>
+<p>Vulkan exposes multiple memory types per buffer/image requirement. Spark centralizes selection:</p>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanGpuBufferImage.cpp
+std::uint32_t VulkanGpuBufferImage::FindMemoryType(
+        VkPhysicalDevice physicalDevice,
+        const std::uint32_t typeFilter,
+        const VkMemoryPropertyFlags properties) {
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &amp;memProperties);
+    for (std::uint32_t i = 0; i &lt; memProperties.memoryTypeCount; ++i) {
+        if ((typeFilter &amp; (1U &lt;&lt; i)) != 0U &amp;&amp;
+            (memProperties.memoryTypes[i].propertyFlags &amp; properties) == properties) {
+            return i;
+        }
+    }
+    throw std::runtime_error("FindMemoryType failed");
+}
+</code></pre>
+<p>Device-local for GPU-only vertex/index buffers; host-visible + coherent for staging uploads.</p>
+<h3 id="createbuffer-pairs-usage-flags-with-property-flags">CreateBuffer pairs usage flags with property flags</h3>
+<pre><code class="language-cpp">allocInfo.memoryTypeIndex =
+        FindMemoryType(physicalDevice, memRequirements.memoryTypeBits, properties);
+vkAllocateMemory(vkDevice, &amp;allocInfo, nullptr, &amp;bufferMemory);
+vkBindBufferMemory(vkDevice, buffer, bufferMemory, 0);
+</code></pre>
+<p>Wrong flags on integrated GPUs (Apple Silicon, Intel UMA) still work but may take a slow path — always match Spark's staging → copy → device-local pattern from Part II uploads.</p>
+<h3 id="deferreduploadbatch-batches-per-frame-gpu-writes">DeferredUploadBatch batches per-frame GPU writes</h3>
+<p><code>VulkanDeferredUploadBatch::Prepare</code> collects texture/mesh uploads before command record — one staging ring per flight index instead of allocate-free per draw. Budget shadow + HDR targets using <code>frames-in-flight × extent × format bytes</code>; resize triggers recreate (Chapter 1), not leak.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="explicit-memory-types">Explicit memory types</h3>
 <p>Vulkan exposes memory <strong>heaps</strong> and <strong>types</strong> via <code>vkGetPhysicalDeviceMemoryProperties</code>. You choose types matching required <strong>property flags</strong>:</p>
@@ -1306,6 +1340,22 @@ void VulkanRenderer::RecordSceneCommandBuffer(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-findmemorytype-selection">1b. Concept Deep Dive — FindMemoryType Selection</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#explicit-heaptype-choice-on-every-allocation">Explicit heap/type choice on every allocation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#createbuffer-pairs-usage-flags-with-property-flags">CreateBuffer pairs usage flags with property flags</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#deferreduploadbatch-batches-per-frame-gpu-writes">DeferredUploadBatch batches per-frame GPU writes</a>
                         </li>
                         
                         <li class="toc-h2">

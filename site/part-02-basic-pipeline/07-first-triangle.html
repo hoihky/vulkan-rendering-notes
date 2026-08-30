@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1054,11 +1060,108 @@
 <li>Verify the full chain: render pass → pipeline → draw → submit → present.</li>
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
+<h3 id="if-you-have-never-rendered-a-3d-frame-before">If you have never rendered a 3D frame before</h3>
+<p>A <strong>video game image</strong> is not painted by hand each frame. The computer repeats a loop:</p>
+<pre><code class="language-text">while the game is running:
+1. Read input (keyboard, mouse)
+2. Update game state (move player, animate enemies)
+3. Build a list of "things to draw" (meshes, lights, camera)
+4. Tell the GPU to draw those things into an image
+5. Show that image on the monitor
+</code></pre>
+<p>Step 4 is <strong>rendering</strong>. The GPU is a specialized processor that can color millions of pixels per second by running small programs called <strong>shaders</strong> on every pixel (and every vertex).</p>
+<p><strong>Vulkan</strong> is the API (application programming interface) you use to talk to the GPU on Windows, Linux, and Android. It is explicit: you create objects, record commands, and submit them. Nothing happens until you call <code>vkQueueSubmit</code>.</p>
+<p>Before you draw a character, a tree, or a lit PBR scene, you draw <strong>one triangle</strong>. If the triangle fails, the problem is always in the infrastructure (device, swapchain, render pass, pipeline, sync) — not in your mesh loader or material system. That is why this chapter exists.</p>
+<h3 id="what-draw-means-in-vulkan">What "draw" means in Vulkan</h3>
+<p>A <strong>draw call</strong> is an instruction recorded into a <strong>command buffer</strong>:</p>
+<pre><code class="language-cpp">vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+</code></pre>
+<p>This tells the GPU: "Run the currently bound graphics pipeline on <strong>3 vertices</strong> to produce <strong>1 instance</strong> of a primitive." With triangle-list topology, 3 vertices = 1 triangle.</p>
+<p>The GPU then:</p>
+<ol>
+<li>Runs the <strong>vertex shader</strong> once per vertex (positions → clip space).</li>
+<li><strong>Rasterizes</strong> the triangle (figures out which pixels are inside).</li>
+<li>Runs the <strong>fragment shader</strong> once per covered pixel (outputs a color).</li>
+</ol>
+<p>You do not call these shaders yourself — binding the pipeline connects your SPIR-V bytecode to the hardware.</p>
 <p>Everything in Part II converges on one API call:</p>
 <pre><code class="language-cpp">vkCmdDraw(commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 </code></pre>
 <p>Before cubes, textures, and ECS, you need <strong>one successful draw</strong> — proof that shaders, render pass, pipeline, and sync from Part I work together. Spark's <code>triangle.vert</code> / <code>triangle.frag</code> are the smallest programs that produce colored fragments on screen.</p>
 <p>You may not run a separate triangle binary in Spark — the engine jumps to scene shaders quickly — but the <strong>steps are identical</strong> with fewer bindings. This chapter is the checklist you debug against when the screen stays black.</p>
+<h2 id="b.concept-deep-dive-minimal-draw-vs-spark-scene-path">1b. Concept Deep Dive — Minimal Draw vs Spark Scene Path</h2>
+<h3 id="vkcmddraw3-vs-vkcmddrawindexed-same-gpu-stages">vkCmdDraw(3) vs vkCmdDrawIndexed — same GPU stages</h3>
+<p>A tutorial triangle uses <code>vkCmdDraw</code> with positions hard-coded in the vertex shader via <code>gl_VertexIndex</code>. Spark's production path binds real geometry and calls <code>vkCmdDrawIndexed</code>:</p>
+<pre><code class="language-text">Triangle bootstrap                    Spark scene path
+──────────────────                    ────────────────
+triangle.vert (gl_VertexIndex)        scene.vert (vertex attributes)
+empty vertex input state              8-attribute interleaved layout
+vkCmdDraw(3, 1, 0, 0)                 vkCmdDrawIndexed(count, 1, firstIndex, vertexOffset, 0)
+empty pipeline layout                 layout + set 0 + push constants
+present render pass                   HDR render pass → tonemap → present
+</code></pre>
+<p>Both paths require: active render pass, bound pipeline, correct sync semaphores, and a submitted command buffer.</p>
+<h3 id="drawframe-where-the-draw-actually-executes">DrawFrame — where the draw actually executes</h3>
+<p>The triangle appears only after <code>DrawFrame</code> completes the full Part I shell — wait fence, acquire image, write UBO, record, submit, present:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 488–508)
+frameSync.ResetCurrentFrameFence(device());
+
+WriteUniformBuffer(currentFrame);
+
+if (vkResetCommandBuffer(commandBuffers[imageIndex], 0) != VK_SUCCESS) {
+    throw std::runtime_error("vkResetCommandBuffer failed");
+}
+RecordSceneCommandBuffer(commandBuffers[imageIndex], imageIndex, currentFrame);
+
+frameSync.SubmitFrame(graphicsQueue(), commandBuffers[imageIndex], imageIndex);
+
+const VkResult presentResult =
+        frameSync.PresentFrame(presentQueue(), presentSwapchain().khr, imageIndex);
+frameSync.AdvanceFrame();
+</code></pre>
+<p>If the screen stays the swapchain clear color, the problem is before <code>vkCmdDraw*</code> — sync, render pass, or pipeline bind.</p>
+<h3 id="inside-the-render-pass-bind-optional-bind-draw">Inside the render pass — bind, optional bind, draw</h3>
+<p>Spark's opaque pass follows the canonical order. For Part II with builtin meshes, the chain is pipeline → descriptors → vertex/index buffers → push constants → indexed draw:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 90–98, 206)
+vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLit);
+vkCmdBindVertexBuffers(commandBuffer, 0, 1, &amp;ctx.meshBindings.staticVertexBuffer, &amp;vbOffset);
+vkCmdBindIndexBuffer(commandBuffer, ctx.meshBindings.staticIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLayout, 0, 1, &amp;ctx.descriptorSet, 0, nullptr);
+// ... per draw: vkCmdPushConstants, then:
+vkCmdDrawIndexed(commandBuffer, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+</code></pre>
+<p>Reduce mentally to triangle complexity: if scene draws fail, temporarily strip descriptors and custom meshes to isolate infrastructure.</p>
+<h3 id="debugging-checklist-mapped-to-spark-files">Debugging checklist mapped to Spark files</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Check in Spark</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Black screen, no validation</td>
+<td><code>sceneParamsValid</code>, empty <code>pendingScene.draws</code></td>
+</tr>
+<tr>
+<td>Validation on draw</td>
+<td>Render pass active? Pipeline compatible?</td>
+</tr>
+<tr>
+<td>Wrong colors</td>
+<td>SPIR-V stale — rebuild <code>SparkShaders</code></td>
+</tr>
+<tr>
+<td>Flickering</td>
+<td>Per-flight UBO index mismatch with fence wait</td>
+</tr>
+<tr>
+<td>Nothing on screen but no error</td>
+<td>Tonemap pass — scene may render to HDR offscreen</td>
+</tr>
+</tbody>
+</table>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="hard-coded-vertices-in-the-vertex-shader">Hard-coded vertices in the vertex shader</h3>
 <pre><code class="language-glsl">vec2 positions[3] = vec2[]( ... );
@@ -1115,6 +1218,125 @@ vkCmdEndRenderPass
 </tbody>
 </table>
 <p>If scene draws fail, reduce mentally to triangle complexity — isolate pipeline vs data.</p>
+<h3 id="beginner-walkthrough-every-object-you-need-before-vkcmddraw">Beginner walkthrough: every object you need before vkCmdDraw</h3>
+<p>Think of Vulkan objects as a checklist. For one colored triangle, create them <strong>in this order</strong>:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Step</th>
+<th>Object</th>
+<th>Plain English</th>
+<th>Spark / your engine</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>VkInstance</code></td>
+<td>"Hello Vulkan, I am an app"</td>
+<td><code>VulkanDeviceContext::CreateInstance</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>VkSurfaceKHR</code></td>
+<td>Connection to the OS window</td>
+<td>GLFW creates surface</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>VkPhysicalDevice</code></td>
+<td>Choose a GPU</td>
+<td><code>SelectPhysicalDevice</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>VkDevice</code></td>
+<td>Logical handle to that GPU</td>
+<td><code>CreateLogicalDevice</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>VkSwapchainKHR</code></td>
+<td>Ring of images the monitor displays</td>
+<td><code>CreateSwapchainImages</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>VkRenderPass</code></td>
+<td>Description of attachments (color, depth)</td>
+<td><code>VulkanPresentRenderPass</code> or HDR pass</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>VkFramebuffer</code></td>
+<td>Actual images bound to the render pass</td>
+<td>Per swapchain image</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>VkShaderModule</code> ×2</td>
+<td>Compiled vertex + fragment programs</td>
+<td><code>triangle.vert.spv</code>, <code>triangle.frag.spv</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>VkPipelineLayout</code></td>
+<td>What descriptors/push constants exist</td>
+<td>Empty for triangle</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>VkPipeline</code></td>
+<td>Full graphics state + shaders</td>
+<td><code>vkCreateGraphicsPipelines</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>VkCommandPool</code> + buffer</td>
+<td>CPU-side list of GPU commands</td>
+<td><code>CreateCommandPool</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td>Sync (fence, semaphores)</td>
+<td>Wait until GPU finishes</td>
+<td><code>VulkanFrameSync</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Per frame</strong>, the sequence is:</p>
+<pre><code class="language-text">Wait until previous frame finished (fence)
+→ Acquire next swapchain image (semaphore)
+→ Reset + record command buffer:
+      BeginRenderPass
+      BindPipeline
+      Draw(3 vertices)
+      EndRenderPass
+→ Submit command buffer to graphics queue (semaphore)
+→ Present image to screen
+</code></pre>
+<p>Part I built steps 1–7 and 12. This chapter completes steps 8–11 for the smallest possible geometry.</p>
+<h3 id="what-gl_vertexindex-does-line-by-line">What gl_VertexIndex does (line by line)</h3>
+<p>In <code>triangle.vert</code>, Spark (and Vulkan tutorials) often avoid vertex buffers at first:</p>
+<pre><code class="language-glsl">// shaders/triangle.vert (concept)
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-0.5, -0.5),
+        vec2( 0.5, -0.5),
+        vec2( 0.0,  0.5)
+    );
+    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+}
+</code></pre>
+<ul>
+<li><code>vkCmdDraw(..., 3, ...)</code> invokes the vertex shader <strong>3 times</strong>.</li>
+<li><code>gl_VertexIndex</code> is <code>0</code>, then <code>1</code>, then <code>2</code> — built into the GPU.</li>
+<li><code>gl_Position</code> is a <code>vec4</code> in <strong>clip space</strong>. When <code>x,y</code> are between -1 and +1 and <code>w = 1</code>, the point is visible on screen.</li>
+<li>The fragment shader runs for every pixel inside the triangle and writes <code>outColor</code>.</li>
+</ul>
+<p>No <code>VkBuffer</code> is bound because positions live <strong>inside the shader</strong>. Chapter 8 adds buffers when meshes have thousands of vertices.</p>
+<h3 id="clip-space-in-one-paragraph">Clip space in one paragraph</h3>
+<p>The GPU ends vertex processing with coordinates where <strong>visible screen</strong> maps to a cube from (-1,-1,-1) to (+1,+1,+1) before perspective divide. You do not need to understand projection matrices yet — the triangle tutorial uses positions already in that range. When you add a camera in Part V, the vertex shader multiplies by <code>viewProj</code> to move world objects into clip space.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="keep-triangle-shaders-in-repo">Keep triangle shaders in repo</h3>
@@ -1250,6 +1472,34 @@ vkEndCommandBuffer(cmd);
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#if-you-have-never-rendered-a-3d-frame-before">If you have never rendered a 3D frame before</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-draw-means-in-vulkan">What "draw" means in Vulkan</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-minimal-draw-vs-spark-scene-path">1b. Concept Deep Dive — Minimal Draw vs Spark Scene Path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vkcmddraw3-vs-vkcmddrawindexed-same-gpu-stages">vkCmdDraw(3) vs vkCmdDrawIndexed — same GPU stages</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#drawframe-where-the-draw-actually-executes">DrawFrame — where the draw actually executes</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#inside-the-render-pass-bind-optional-bind-draw">Inside the render pass — bind, optional bind, draw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#debugging-checklist-mapped-to-spark-files">Debugging checklist mapped to Spark files</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1272,6 +1522,18 @@ vkEndCommandBuffer(cmd);
                         
                         <li class="toc-h3">
                           <a href="#sparks-equivalent-path">Spark's equivalent path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#beginner-walkthrough-every-object-you-need-before-vkcmddraw">Beginner walkthrough: every object you need before vkCmdDraw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-glvertexindex-does-line-by-line">What gl_VertexIndex does (line by line)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#clip-space-in-one-paragraph">Clip space in one paragraph</a>
                         </li>
                         
                         <li class="toc-h2">

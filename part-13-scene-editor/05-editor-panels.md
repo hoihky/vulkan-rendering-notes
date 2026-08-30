@@ -17,6 +17,54 @@ The architectural test: edit a Transform in inspector, save scene (Chapter 1–2
 
 Milestone: select entity in hierarchy; inspector shows name and position; extend with editable FloatField and verify viewport moves same frame.
 
+## 1b. Concept Deep Dive — Live ECS Editing
+
+### IEditorPanel plugin contract
+
+Each dock region is an `IEditorPanel` — hierarchy, inspector, project browser share one interface:
+
+```cpp
+// include/spark/editor/IEditorPanel.hpp
+class IEditorPanel {
+    [[nodiscard]] virtual Utf8String GetPanelId() const = 0;
+    [[nodiscard]] virtual Utf8String GetDisplayName() const = 0;
+    [[nodiscard]] virtual Ui::IUiElement* GetRootElement() noexcept = 0;
+    virtual void OnAttach(EditorContext& ctx) {}
+    virtual void OnTick(const FrameTiming& timing, EditorContext& ctx) {}
+};
+```
+
+`EditorApplication` arranges panel roots in `EditorDockShell`; adding a profiler panel means a new class, not edits to hierarchy internals.
+
+### Inspector mutates live components
+
+`InspectorPanel::OnTick` rebuilds widget context from `EditorContext` each frame — it reads the **selected entity's actual components**, not cached copies:
+
+```cpp
+void InspectorPanel::OnTick(const FrameTiming& /*timing*/, EditorContext& ctx) {
+    const InspectorWidgetContext widgetCtx = BuildWidgetContext(ctx);
+    // FloatField commits call TransformComponent::SetTranslation on the live object
+}
+```
+
+If inspector held a copy, save would persist stale data while the viewport showed edited values — the classic student bug this architecture prevents.
+
+### Hierarchy rebuilds on scene revision hash
+
+`HierarchyPanel::ComputeSceneRevision` XORs entity pointers, parent links, and names. When revision changes, the tree rebuilds without polling every node every frame:
+
+```cpp
+std::uint32_t HierarchyPanel::ComputeSceneRevision() const noexcept {
+    world->ForEachGameObject([&](GameObject* obj) {
+        rev ^= static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(obj) >> 4U);
+        rev = rev * 16777619U + ... parent + name chars ...
+    });
+    return rev;
+}
+```
+
+Selection sync stays O(1) when the graph is stable; structural edits (rep parent, rename, spawn) invalidate once.
+
 ## 2. Core Concepts
 
 ### IEditorPanel plugin contract

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,66 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Fire, sparks, snow, and hit effects need hundreds of <strong>short-lived quads</strong> facing the camera. Treating each as a full mesh draw with material push constants wastes CPU time, complicates sorting, and bloats <code>SceneDrawItem</code> arrays.</p>
 <p>A dedicated <strong>particle pipeline</strong> simulates on CPU, flattens to a compact instance array, and draws in one pass with additive blending. Build along: trace Spark's path from <code>ParticleEmitterComponent</code> through <code>SceneRenderParams::particles</code> to <code>VulkanParticlePass::Record</code>.</p>
+<h3 id="what-are-particles-beginner">What are particles? (beginner)</h3>
+<p><strong>Particles</strong> are cheap visual effects made of many small <strong>billboards</strong> (quads that always face the camera):</p>
+<ul>
+<li>Fire sparks, smoke puffs, rain, snow, magic trails, blood splats.</li>
+</ul>
+<p>Each particle is usually:</p>
+<ul>
+<li>A position in 3D space</li>
+<li>A color (often with alpha fade)</li>
+<li>A size</li>
+<li>A lifetime (spawn → age → die)</li>
+</ul>
+<p>You do <strong>not</strong> import a glTF model per spark. You simulate hundreds of lightweight structs on CPU and draw them as textured quads in <strong>one</strong> GPU pass.</p>
+<pre><code class="language-text">Analogy: particles = confetti pieces
+mesh drawing = cardboard cutout shapes
+</code></pre>
+<h3 id="why-a-separate-particle-pass">Why a separate particle pass</h3>
+<p>Drawing 500 particles as 500 <code>SceneDrawItem</code> mesh draws would:</p>
+<ul>
+<li>Bloat submit and sorting</li>
+<li>Rebind pipeline state unnecessarily</li>
+<li>Waste push constant bandwidth</li>
+</ul>
+<p>Spark instead:</p>
+<ol>
+<li><code>ParticleEmitterComponent::OnUpdate</code> — spawn, move, kill particles on CPU.</li>
+<li>Submit copies alive particles to <code>SceneRenderParams::particles[]</code>.</li>
+<li><code>VulkanParticlePass::Record</code> — expand each particle to 6 vertices (two triangles), one <code>vkCmdDraw</code>.</li>
+<li>Additive blend into <strong>HDR buffer</strong> (bright sparks accumulate).</li>
+</ol>
+<p>Particles run <strong>after</strong> opaque scene geometry in the HDR pass so they depth-test against the world but glow on top.</p>
+<h2 id="b.concept-deep-dive-sparks-particle-pipeline-end-to-end">1b. Concept Deep Dive — Spark's Particle Pipeline End-to-End</h2>
+<h3 id="three-layer-separation-in-production-code">Three-layer separation in production code</h3>
+<p>Spark keeps simulation, snapshot, and GPU draw in three distinct types:</p>
+<pre><code class="language-cpp">// include/spark/ecs/components/rendering/ParticleEmitterComponent.hpp
+class ParticleEmitterComponent final : public GameComponent {
+    void OnUpdate(...) override;  // CPU sim: spawn, integrate, kill
+    void CollectInstances(Array&lt;SceneParticleInstance&gt;&amp; out) const;
+private:
+    struct SimParticle { bool alive; Vector3 position; Vector3 velocity; /* ... */ };
+    Array&lt;SimParticle&gt; slots{};
+};
+</code></pre>
+<pre><code class="language-cpp">// include/spark/engine/SceneRenderParams.hpp (lines 89–94, 456–461)
+struct SceneParticleInstance {
+    Vector3 position{};
+    float size = 0.1F;
+    Vector4 color{1.0F, 1.0F, 1.0F, 1.0F};
+};
+Array&lt;SceneParticleInstance&gt; particles;
+Vector3 particleCameraRight{1.0F, 0.0F, 0.0F};
+Vector3 particleCameraUp{0.0F, 1.0F, 0.0F};
+</code></pre>
+<pre><code class="language-cpp">// include/spark/render/sprites2d/VulkanParticlePass.hpp
+void Record(VkCommandBuffer, std::uint32_t frameIndex, VkExtent2D extent,
+            const SceneRenderParams&amp; scene, bool sceneParamsValid) const;
+</code></pre>
+<p>Simulation never touches Vulkan. Submit copies a flat array once per frame. Record expands quads and draws additively into the HDR subpass.</p>
+<h3 id="why-velocity-stays-off-the-snapshot">Why velocity stays off the snapshot</h3>
+<p><code>SimParticle</code> carries <code>velocity</code> for integration, but <code>SceneParticleInstance</code> exports only <code>{ position, size, color }</code> — size and color are already age-interpolated in <code>CollectInstances</code>. The GPU billboard pass has no use for velocity; keeping the snapshot small reduces upload bytes and keeps the particle shader push-free.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="simulation-vs-rendering-split">Simulation vs rendering split</h3>
 <p>Spark simulates particles on CPU inside <code>ParticleEmitterComponent::OnUpdate</code>. Rendering never reads live ECS state — submit copies a flat <code>Array&lt;SceneParticleInstance&gt;</code> into <code>SceneRenderParams</code> each frame, immutable for the GPU slot.</p>
@@ -1215,6 +1281,26 @@ Vector3 particleCameraUp{0.0F, 1.0F, 0.0F};
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-are-particles-beginner">What are particles? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-a-separate-particle-pass">Why a separate particle pass</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparks-particle-pipeline-end-to-end">1b. Concept Deep Dive — Spark's Particle Pipeline End-to-End</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#three-layer-separation-in-production-code">Three-layer separation in production code</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-velocity-stays-off-the-snapshot">Why velocity stays off the snapshot</a>
                         </li>
                         
                         <li class="toc-h2">

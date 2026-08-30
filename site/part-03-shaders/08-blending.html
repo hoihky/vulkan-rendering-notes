@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,9 +1063,59 @@
 <p>Opaque rendering is straightforward: write color and depth, nearest fragment wins. <strong>Transparency</strong> requires combining the new fragment color with what is already in the framebuffer — typically <strong>alpha compositing</strong>:</p>
 <pre><code class="language-text">C_out = C_src * α + C_dst * (1 - α)
 </code></pre>
+<h3 id="transparency-for-beginners">Transparency for beginners</h3>
+<p><strong>Opaque</strong> objects block what is behind them — the depth buffer remembers the closest surface. <strong>Transparent</strong> objects (glass, foliage cards, fade effects) let you see through partially:</p>
+<pre><code class="language-text">α = 1.0  → fully opaque (brick wall)
+α = 0.5  → half see-through (dirty glass)
+α = 0.0  → invisible (skip draw)
+</code></pre>
+<p>The GPU <strong>blends</strong> the new fragment color with the color already in the framebuffer:</p>
+<pre><code class="language-text">finalColor = sourceColor × α + destinationColor × (1 − α)
+</code></pre>
+<p><strong>Why transparent is harder than opaque:</strong></p>
+<ol>
+<li><strong>Order matters</strong> — blend with wrong background if you draw far glass before near wall.</li>
+<li><strong>Depth write</strong> — if transparent pixels write depth, they block objects behind incorrectly.</li>
+<li><strong>Separate pipeline</strong> — Spark uses <code>pipelineLitTransparent</code> with blend ON, depth write OFF.</li>
+</ol>
+<p>Spark sorts <code>transparentDraws</code> <strong>back-to-front</strong> from the camera before recording. Opaque draws skip sorting (depth test handles occlusion).</p>
+<p><strong>HDR resume pass (Part X):</strong> when any transparent mesh exists, Spark copies opaque HDR color first so transmission shaders can refract — advanced case, but the blend rules above still apply.</p>
+<h2 id="b.concept-deep-dive-alpha-in-scene.frag-and-transparent-pipeline-pair">1b. Concept Deep Dive — Alpha in scene.frag and Transparent Pipeline Pair</h2>
+<h3 id="fragment-alpha-comes-from-push-tint-vertex-color-and-texture">Fragment alpha comes from push tint, vertex color, and texture</h3>
+<p>Transparent blending uses the alpha channel computed in <code>scene.frag</code> before lighting:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 435–454)
+vec3 base = vAlbedo * vVertexColor.rgb;
+float alpha = push.albedoTint.a * vVertexColor.a;
+if (vTextureLayer &gt;= 0) {
+    vec4 tex = texture(sceneTextures, vec3(sparkMapUv(0), float(layer)));
+    base *= sparkSrgbToLinear(tex.rgb);
+    alpha *= tex.a;
+}
+if (push.alphaCutoff &gt; 0.0) {
+    if (alpha &lt; push.alphaCutoff) {
+        discard;
+    }
+}
+</code></pre>
+<p><code>push.albedoTint</code> is set from C++ per draw (<code>ModelPushConstants::albedo[3]</code>). Cutout foliage uses <code>alphaCutoff &gt; 0</code> with <strong>opaque</strong> pipeline (discard, not blend); true transparency uses <code>alphaCutoff == 0</code> and routes to <code>pipelineLitTransparent</code>.</p>
+<h3 id="hdr-output-preserves-alpha-for-compositing">HDR output preserves alpha for compositing</h3>
+<p>The final write carries alpha through to the HDR target:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 612–614)
+vec3 color = ambient + Lo + iblSpecular + emissive;
+outColor = vec4(color, alpha);
+</code></pre>
+<p>The transparent pipeline enables standard straight-alpha blending:</p>
+<pre><code class="language-text">RGB_out = src.rgb × src.a + dst.rgb × (1 − src.a)
+</code></pre>
+<p>Because lighting runs before the write, partially transparent glass receives correct specular highlights — unlike premultiplied paths that would require dividing by alpha after shading.</p>
+<h3 id="same-spir-v-different-fixed-function-state">Same SPIR-V, different fixed-function state</h3>
+<p><code>pipelineLitTransparent</code> shares <code>scene.vert.spv</code> and <code>scene.frag.spv</code> with the opaque pipeline. Only <code>VkPipelineColorBlendAttachmentState</code> and <code>depthWriteEnable</code> differ. Push constants and descriptors are identical — transparent draws are collected separately, sorted back-to-front from the camera, and recorded in <code>RecordTransparent</code> after opaque work completes.</p>
+<h3 id="transmission-and-advanced-alpha-preview">Transmission and advanced alpha (preview)</h3>
+<p><code>sparkApplyTransmission</code> at the end of <code>main()</code> can modify both <code>color</code> and <code>alpha</code> for glTF transmission extension. That path expects opaque geometry already present in the HDR buffer (Part X resume pass). The blend rules above still apply — transmission is an extension of the same alpha contract, not a separate shader module.</p>
+<h2 id="core-concepts">2. Core Concepts</h2>
 <p>Vulkan does not sort fragments for you. The <strong>blend unit</strong> runs after the fragment shader (and depth test) with factors you configure in the pipeline. Wrong factors produce dark halos, invisible glass, or premultiplied alpha bugs.</p>
 <p>Spark uses a dedicated <strong>lit transparent pipeline</strong> sharing the same shaders as opaque but with blend enabled and depth write disabled. Transparent <code>SceneDrawItem</code>s are collected and recorded in <code>RecordTransparent</code> after opaque work.</p>
-<h2 id="core-concepts">2. Core Concepts</h2>
+<h2 id="core-concepts-1">2. Core Concepts</h2>
 <h3 id="fixed-function-blend-equation">Fixed-function blend equation</h3>
 <p>For each color attachment, Vulkan applies:</p>
 <pre><code class="language-text">color = (srcColor * srcColorFactor) OP (dstColor * dstColorFactor)
@@ -1248,6 +1304,34 @@ Transparent pass: depth write OFF, blend ON
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#transparency-for-beginners">Transparency for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-alpha-in-scenefrag-and-transparent-pipeline-pair">1b. Concept Deep Dive — Alpha in scene.frag and Transparent Pipeline Pair</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fragment-alpha-comes-from-push-tint-vertex-color-and-texture">Fragment alpha comes from push tint, vertex color, and texture</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hdr-output-preserves-alpha-for-compositing">HDR output preserves alpha for compositing</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-spir-v-different-fixed-function-state">Same SPIR-V, different fixed-function state</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#transmission-and-advanced-alpha-preview">Transmission and advanced alpha (preview)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
                         
                         <li class="toc-h2">

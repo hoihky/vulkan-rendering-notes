@@ -15,6 +15,93 @@ the renderer recognizes as **skinned** rather than rigid.
 
 Build along: load a Khronos sample character, spawn the component trio, verify bind-pose render on Custom slot.
 
+### Skinned glTF pipeline for beginners
+
+Importing a character is three connected pieces:
+
+```text
+SkinnedGltfAsset (shared data)
+  ├─ Mesh with joint indices/weights per vertex
+  ├─ Skeleton (joint hierarchy + inverse binds)
+  └─ Animation clips (walk, idle, ...)
+
+Per-entity components:
+  SkinnedMeshComponent  → which asset, which mesh slot
+  AnimatorComponent     → which clip, current time
+  TransformComponent    → where in the world
+```
+
+**Bind pose:** first frame with no animation — joints at rest, mesh looks like Blender export. If T-pose explodes, weights or inverse binds are wrong.
+
+**Submit path:**
+
+```text
+SceneSubmit sees SkinnedMeshComponent
+  → SceneDrawItem with useSkinning = true
+  → jointPalette from AnimatorComponent
+  → opaque pass uploads Skin SSBO + draws
+```
+
+**Not the same as rigid glTF:** rigid uses 4 weights of 0; skinned needs `scene.vert` skinning branch (`push.useSkinning`).
+
+## 1b. Concept Deep Dive — Skinned Import and ECS Wiring
+
+### SkinnedMesh::Vertex — rigid layout plus joints
+
+```cpp
+// include/spark/scene/mesh/SkinnedMesh.hpp
+struct Vertex {
+    Vector3 position;
+    Vector3 normal;
+    Vector2 texCoord;
+    Vector2 texCoord1;
+    Vector4 color;
+    Vector4 tangent;
+    std::uint32_t joints[4]{0, 0, 0, 0};
+    float weights[4]{1.0F, 0.0F, 0.0F, 0.0F};
+};
+```
+
+Importer normalizes weights when glTF data does not sum to 1.0. Joint indices reference `Skeleton` joint array order from glTF skin.
+
+### TryLoadSkinnedCharacterFromGltf — find skin node, build mesh + skeleton
+
+```cpp
+// src/spark/scene/mesh/skinned_mesh_gltf.cpp (concept)
+// 1. cgltf_parse file
+// 2. Scan scene for first node with mesh + skin
+// 3. GltfSkinNodeLoader::TryBuildSkinNode → SkinnedMesh + Skeleton
+// 4. Load materials via GltfMaterialLoader
+// 5. Auto-detect walkClipIndex from clip name containing "walk"
+```
+
+### ECS component trio on spawn
+
+```cpp
+// Typical character spawn (ThreeDDemo / CharacterCameraDemo pattern)
+auto asset = world.GetAssetCache().LoadSkinnedGltf("characters/hero.glb");
+auto* go = world.CreateGameObject();
+go->AddComponent<TransformComponent>()->SetTranslation(spawnPos);
+go->AddComponent<SkinnedMeshComponent>(asset.mesh, asset.skeleton);
+go->AddComponent<Character3DAnimFsmComponent>()->ConfigureLocomotionFromSkeleton(
+        *asset.skeleton, asset.walkClipIndex);
+go->AddComponent<AnimatorComponent>(asset.skeleton, asset.walkClipIndex);
+```
+
+`SkinnedMeshComponent` holds `SharedPtr<SkinnedMesh>` + optional `SharedPtr<Skeleton>` for bind pose when no animator runs.
+
+### SceneSubmit skinned gather
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (concept)
+baseItem.mesh = SceneMeshSlot::Custom;
+baseItem.skinnedMesh = smc.GetMesh();
+baseItem.jointPalette.Resize(jointCount);
+SkinnedMeshPalette::TryFill(smc, anim, baseItem.jointPalette.GetData(), Skeleton::MaxJoints);
+```
+
+`SkinnedMeshPalette::TryFill` prefers `AnimatorComponent::ComputeJointPalette`; falls back to `skeleton->BuildBindPosePalette` when no animator is present.
+
 ## 2. Core Concepts
 
 ### SkinnedMesh vertex layout

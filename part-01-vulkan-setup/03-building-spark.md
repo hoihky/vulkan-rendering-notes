@@ -14,6 +14,88 @@ You cannot build along with a book if the reference project does not compile. Be
 
 This chapter is practical. Follow every step on your machine. When SparkDemo shows a window (even a blank or clearing color), Part I's Vulkan chapters have a running target to compare against.
 
+## 1b. Concept Deep Dive — Spark's Build-to-Runtime Pipeline
+
+### Why shaders compile at build time, not ship time
+
+Spark treats SPIR-V as a **build artifact**, not a source-tree constant. GLSL lives under `shaders/`; CMake's `SparkShaders` custom target invokes `glslangValidator` for every `.vert` and `.frag`, writing `.spv` files into the build tree. The engine target depends on `SparkShaders`, so a shader edit triggers recompilation before link — you never run with stale bytecode silently.
+
+Runtime paths are baked in as compile definitions: `SPARK_SHADER_SPV_DIR` points at the generated SPIR-V folder; `SPARK_BUILD_ASSETS_DIR` points at copied fonts, textures, and screenshot output. That means `./cmake-build-debug/SparkDemo` finds everything relative to the binary without environment variables — CI and teammates get identical layout. `VulkanSpvShaderLoader` concatenates `SPARK_SHADER_SPV_DIR` + filename when creating `VkShaderModule` objects in Part II.
+
+Assets follow the same pattern: CMake `file(COPY ...)` stages runtime files into `spark_runtime_assets/` under the build directory. First configure may fetch GLFW via FetchContent and download fonts — network on first run is expected, not a bug.
+
+### Build preset → runtime layout
+
+| CMake preset | Binary dir | Key macros |
+|--------------|------------|------------|
+| `debug` | `cmake-build-debug/` | `SPARK_BUILD_ASSETS_DIR`, `SPARK_SHADER_SPV_DIR` |
+| `editor-debug` | `cmake-build-editor/` | Same pattern; slimmer target set |
+
+```text
+cmake --preset debug
+cmake --build cmake-build-debug
+        │
+        ├─► SparkShaders  →  cmake-build-debug/.../shaders/*.spv
+        ├─► file(COPY)    →  cmake-build-debug/spark_runtime_assets/
+        └─► SparkDemo     →  links engine + depends on SparkShaders
+```
+
+### SPIR-V generation rule (one shader file → one `.spv`)
+
+```cmake
+# CMakeLists.txt (lines 432–443)
+    add_custom_command(
+            OUTPUT ${SPV}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SPV_DIR}
+            COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.0 -I${SHADER_DIR} ${SHADER} -o ${SPV}
+            DEPENDS ${SHADER} ${SHADER_DIR}/clustered_lights.glsl ...
+            COMMENT "SPIR-V: ${NAME_WE}.${EXT_NO_DOT}"
+            VERBATIM
+    )
+    list(APPEND SPV_FILES ${SPV})
+endforeach ()
+
+add_custom_target(SparkShaders DEPENDS ${SPV_FILES})
+```
+
+Shared `.glsl` includes are listed in `DEPENDS` so changing `scene_ubo.glsl` rebuilds every shader that `#include`s it.
+
+### Runtime loader reads from the build tree
+
+```cpp
+// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 12–18)
+Array<char> VulkanSpvShaderLoader::ReadSpvFile(const char* filename) const {
+    Utf8String pathUtf(SPARK_SHADER_SPV_DIR);
+    pathUtf.AppendUtf8("/");
+    pathUtf.AppendUtf8(filename);
+    FILE* file = std::fopen(pathUtf.CStr(), "rb");
+    if (file == nullptr) {
+        throw std::runtime_error(std::string("failed to open shader: ") + pathUtf.CStr());
+    }
+```
+
+If Part II throws "failed to open shader", compare this path with `find cmake-build-debug -name '*.spv'`.
+
+### Preset pins the debug workflow
+
+```json
+// CMakePresets.json (lines 8–18)
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug (SparkDemo)",
+      "description": "Default CLion profile: SparkDemo",
+      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SPARK_BUILD_DEMO": "ON",
+        "SPARK_BUILD_INTEROP": "ON"
+      }
+    }
+```
+
+A working build is the foundation for every Vulkan milestone — if configure fails here, fix toolchain before reading instance creation.
+
 ## 2. Core Concepts
 
 ### Toolchain requirements

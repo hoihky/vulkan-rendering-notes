@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1066,6 +1072,101 @@
 <li>Image-based lighting (IBL)</li>
 </ul>
 <p>You will not implement all of this in one sitting. This chapter teaches the <strong>structure</strong>: inputs, texture binding, shading dispatch, and HDR output — so each feature in Parts IV–VII slots into a place you already understand.</p>
+<h3 id="what-the-fragment-shader-does-beginner">What the fragment shader does (beginner)</h3>
+<p>After the vertex shader places triangle corners on screen, the <strong>rasterizer</strong> fills the triangle with <strong>fragments</strong> (potential pixels). The fragment shader runs for each fragment and answers:</p>
+<blockquote class="blockquote">
+<p>"What color should this pixel be?"</p>
+</blockquote>
+<p>For a lit mesh in Spark, that involves:</p>
+<ol>
+<li><strong>Sample textures</strong> — albedo, normal map, ORM at interpolated UV.</li>
+<li><strong>Build surface frame</strong> — normal, tangent, bitangent for lighting direction.</li>
+<li><strong>Add light</strong> — sun, point lights, spot lights (from UBO + SSBOs).</li>
+<li><strong>Apply shadows</strong> — compare depth against shadow map (Part IX).</li>
+<li><strong>Add environment</strong> — IBL reflection (Part VII).</li>
+<li><strong>Output linear HDR color</strong> — may exceed 1.0 before tonemap.</li>
+</ol>
+<pre><code class="language-text">One pixel's journey in scene.frag:
+vTexCoord → sample brick albedo
+vNormal + normal map → perturbed N
+N · L → diffuse term
+specular GGX → highlight
+shadow map → darken if occluded
+outColor = linear RGB (HDR)
+</code></pre>
+<h3 id="why-fragment-work-is-expensive">Why fragment work is expensive</h3>
+<p>A mesh with 1,000 vertices might generate <strong>100,000+ fragments</strong> at 1080p when close to the camera. That is why:</p>
+<ul>
+<li>Texture array + push constant layers beat rebinding descriptors per draw.</li>
+<li>Clustered lights (Part IV) limit how many lights each pixel considers.</li>
+<li>Early depth pass / culling (Part XII) skip invisible pixels entirely.</li>
+</ul>
+<p>As a beginner, start with <strong>unlit textured</strong> output (<code>outColor = texture(albedo)</code>) before enabling full PBR.</p>
+<h2 id="b.concept-deep-dive-scene.frag-material-resolve-and-shading-dispatch">1b. Concept Deep Dive — scene.frag Material Resolve and Shading Dispatch</h2>
+<h3 id="stage-inputs-mirror-scene.vert-exactly">Stage inputs mirror scene.vert exactly</h3>
+<p>The fragment shader re-declares every varying with matching location and <code>flat</code> qualification:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 4–14)
+layout(location = 0) in vec3 vWorldPos;
+layout(location = 1) in vec3 vNormal;
+layout(location = 2) in vec3 vAlbedo;
+layout(location = 3) in vec2 vTexCoord0;
+layout(location = 4) flat in int vTextureLayer;
+// ... vMetallic, vRoughness, vEmissive, vTangent, vTexCoord1, vVertexColor
+</code></pre>
+<p>SPIR-V linking catches type or location mismatches at pipeline creation — but only if you rebuild both stages after editing one.</p>
+<h3 id="descriptor-bindings-used-in-the-lit-path">Descriptor bindings used in the lit path</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 16–17, 19–21)
+layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+layout(set = 0, binding = 11) uniform sampler2DArray sceneHdrTextures;
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+</code></pre>
+<p>Binding 0 (<code>SceneUBO</code>) supplies camera, sun, shadows, and cluster metadata. Binding 1 is the LDR texture array atlas; binding 11 holds HDR environment layers for emissive or sky content. Push constants select array layer, map indices, and shading model without rebinding descriptors per draw.</p>
+<h3 id="material-resolve-before-lighting">Material resolve before lighting</h3>
+<p><code>main()</code> first handles sky (<code>push.skyMode != 0</code>) by reconstructing a per-pixel view ray from <code>gl_FragCoord</code> and <code>ubo.invViewProj</code> — not from interpolated <code>vWorldPos</code>. For meshes, base color and alpha come from varyings, push tint, and optional texture fetch:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 435–454)
+vec3 base = vAlbedo * vVertexColor.rgb;
+float alpha = push.albedoTint.a * vVertexColor.a;
+if (vTextureLayer &gt;= 0) {
+    vec4 tex = texture(sceneTextures, vec3(sparkMapUv(0), float(layer)));
+    base *= sparkSrgbToLinear(tex.rgb);
+    alpha *= tex.a;
+}
+if (push.alphaCutoff &gt; 0.0 &amp;&amp; alpha &lt; push.alphaCutoff) {
+    discard;
+}
+</code></pre>
+<p>ORM and normal-map layers use separate <code>push.*MapLayer</code> fields and <code>sparkMapUv()</code> helpers from <code>gltf_map_uv.glsl</code>.</p>
+<h3 id="shading-model-dispatch-and-hdr-output">Shading model dispatch and HDR output</h3>
+<p>Three runtime branches share one SPIR-V module:</p>
+<table class="table">
+<thead>
+<tr>
+<th><code>push.shadingModel</code></th>
+<th>Path in <code>main()</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>Unlit — base + emissive, early return</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Toon — banded diffuse, rim, punctual toon loops</td>
+</tr>
+<tr>
+<td>0</td>
+<td>PBR — <code>evalBRDF</code>, CSM shadows, clustered lights, IBL</td>
+</tr>
+</tbody>
+</table>
+<p>The default PBR path accumulates sun BRDF, punctual lights via <code>accumulatePunctualPbr</code>, ambient, and IBL specular/diffuse, then writes linear HDR without clamping:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 612–614)
+vec3 color = ambient + Lo + iblSpecular + emissive;
+outColor = vec4(color, alpha);
+</code></pre>
+<p>Tonemapping happens later in <code>tonemap.frag</code> (Part X) — do not clamp to <code>[0,1]</code> here unless debugging.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="fragments-vs-vertices">Fragments vs vertices</h3>
 <pre><code class="language-text">Triangle (3 vertices)
@@ -1328,6 +1429,34 @@ outColor = vec4(col, 1.0);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-the-fragment-shader-does-beginner">What the fragment shader does (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-fragment-work-is-expensive">Why fragment work is expensive</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenefrag-material-resolve-and-shading-dispatch">1b. Concept Deep Dive — scene.frag Material Resolve and Shading Dispatch</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#stage-inputs-mirror-scenevert-exactly">Stage inputs mirror scene.vert exactly</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#descriptor-bindings-used-in-the-lit-path">Descriptor bindings used in the lit path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#material-resolve-before-lighting">Material resolve before lighting</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shading-model-dispatch-and-hdr-output">Shading model dispatch and HDR output</a>
                         </li>
                         
                         <li class="toc-h2">

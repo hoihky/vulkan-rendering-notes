@@ -13,6 +13,34 @@
 HUD and menus are **not** world geometry. They must stay fixed on screen while the camera moves, use **display-referred** colors after tonemap, and batch efficiently. Spark's `VulkanScreenUiPass` records orthographic quads and text into the swapchain render pass — separate from HDR world sprites.
 
 Milestone: full-screen dim overlay at 50% alpha after tonemap, plus corner-anchored health bar surviving window resize on Retina displays.
+
+## 1b. Concept Deep Dive — Display-Referred UI After Tonemap
+
+### Screen space uses framebuffer pixels, not viewProj
+
+HUD rects live in `ScreenRectDraw` / `ScreenTextDraw` on `SceneRenderParams` — emitted during gameplay prep, never from Vulkan code. `VulkanScreenUiPass` builds an orthographic projection from swapchain pixel width/height; Y increases downward:
+
+```text
+World sprite:  model × viewProj → HDR pass (camera moves → sprite moves)
+Screen UI:     pixel rect → ortho NDC → swapchain present pass (camera moves → HUD fixed)
+```
+
+Mixing the two by assigning screen pixel coords to a world `model` matrix breaks when the camera zooms in 3D hybrid scenes.
+
+### Record order: tonemap first, then screenUi, then ImGui
+
+UI colors are authored 0–1 for the monitor, not linear HDR radiance. Drawing before tonemap makes widgets respond to exposure sliders — wrong for shipping HUD:
+
+```text
+HDR scene → SSAO (optional) → RecordTonemap → screenUi.Record → RecordImGuiDrawData
+```
+
+Spark records both UI paths inside the **present render pass** targeting swapchain UNORM — not `hdrRenderPass`.
+
+### paintOrder and scissor for stacking
+
+Multiple rects sort by `paintOrder` before record. `VulkanScreenUiClip` applies scissor regions for scroll panels — same command buffer as rects/text, no separate render pass per widget. Use `GetFramebufferSize` on Retina, not window client size, for corner anchors.
+
 ## 2. Core Concepts
 
 ### Screen space vs world space

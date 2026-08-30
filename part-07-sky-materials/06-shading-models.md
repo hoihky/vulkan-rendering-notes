@@ -14,6 +14,77 @@ Realistic PBR and stylized cel shading share the same mesh, texture fetch, and s
 
 Your engine should select the shading model **per material** with a single push constant branch inside `scene.frag`. Build along: place two identical spheres, set one `LitPbr` and one `ToonCel`, and tune bands until the cel read is crisp under the same sun and point lights.
 
+## 1b. Concept Deep Dive — Cook-Torrance PBR in scene.frag
+
+### evalBRDF — the LitPbr core
+
+Spark's PBR path uses GGX normal distribution, Smith geometry, and Schlick Fresnel:
+
+```glsl
+// shaders/scene.frag (lines 203–237)
+vec3 evalBRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness,
+        vec3 radiance, float wrapNL) {
+    float rawNL = dot(N, L);
+    float NdotL = (wrapNL > 1e-5) ? max((rawNL + wrapNL) / (1.0 + wrapNL), 0.0) : max(rawNL, 0.0);
+    if (NdotL <= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(V + L);
+    float rough = clamp(roughness, 0.04, 1.0);
+    vec3 F0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 F = F_Schlick(max(dot(V, H), 0.0), F0);
+
+    float D = D_GGX(max(dot(N, H), 0.0), rough);
+    float G = G_Smith(max(dot(N, V), 0.001), max(rawNL, 0.0), rough);
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * max(rawNL, 1e-4), 1e-6);
+
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = kD * baseColor / PI;
+    return (diffuse * NdotL + specular * max(rawNL, 0.0)) * radiance;
+}
+```
+
+**Energy conservation:** `kD = (1-F) × (1-metallic)` — metals have no diffuse term; dielectrics use F0 ≈ 0.04.
+
+### LitPbr output assembly
+
+```glsl
+// shaders/scene.frag (concept — after toon early-out)
+vec3 sunBrdf = evalBRDF(N, V, Ld, base, met, rough, sunRad, sunDiffuseWrap);
+Lo += sunBrdf * sunShadow;
+accumulatePunctualPbr(N, V, base, met, rough, Lo);  // clustered point/spot lights
+vec3 iblSpecular = sparkEvalSpecularIbl(...);
+vec3 iblDiffuse = sparkEvalDiffuseIbl(...);
+vec3 color = ambient + Lo + iblSpecular + emissive;
+sparkApplyTransmission(...);  // KHR_materials_transmission
+outColor = vec4(color, alpha);
+```
+
+### Toon path — quantized N·L before return
+
+```glsl
+// shaders/scene.frag (lines 504–527)
+if (push.shadingModel == 1) {
+    float b = clamp(float(push.toonDiffuseBands), 2.0, 8.0);
+    float steppedNL = floor(ndl * b + 1e-4) / max(b - 1.0, 1.0);
+    vec3 sunDiffuse = base * (1.0 - met * 0.92) * steppedNL * sunRad * sunShadow;
+    // hard spec band + view rim ...
+    Lo = sunDiffuse + specCol + rimCol;
+    accumulatePunctualToon(...);
+    outColor = vec4(ambient + Lo + emissive, alpha);
+    return;  // skip IBL specular entirely
+}
+```
+
+### Push constant wiring from CPU
+
+```cpp
+// VulkanSceneOpaquePass.cpp (concept)
+push.shadingModel = static_cast<std::int32_t>(d.shadingModel);
+push.toonDiffuseBands = std::clamp(d.toonDiffuseBands, 2, 8);
+push.toonRimIntensity = d.toonRimIntensity;
+push.toonRimPower = d.toonRimPower;
+```
+
 ## 2. Core Concepts
 
 ### Single pipeline, shader branch

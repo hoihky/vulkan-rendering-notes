@@ -14,6 +14,67 @@ Flat meshes need **surface detail** without extra geometry. Normal maps perturb 
 
 Build along: assign a normal texture on `MaterialComponent`, toggle it in `MaterialShowcase3DDemo` (**2** key), and compare specular footprint on the high-segment sphere.
 
+## 1b. Concept Deep Dive — TBN Construction in scene.frag
+
+### Submit registers normal map layer
+
+```cpp
+// src/spark/scene/submit/SceneSubmitMaterial.cpp (concept)
+if (mat->GetNormalTexture()) {
+    item.normalMapLayer = FindOrAddSceneTexture(params, mat->GetNormalTexture(), ...);
+    item.normalScale = mat->GetNormalScale();
+    item.normalUv = mat->GetNormalUvMap();
+}
+```
+
+`push.normalMapLayer = -1` when no map — shader uses interpolated vertex normal only.
+
+### Fragment shader normal perturbation
+
+```glsl
+// shaders/scene.frag (concept — normal map block)
+if (push.normalMapLayer >= 0) {
+    vec3 tN = texture(sceneTextures, vec3(sparkMapUv(1), float(push.normalMapLayer))).xyz;
+    tN = tN * 2.0 - 1.0;
+    tN.y = -tN.y;  // OpenGL-style green channel convention
+    tN.xy *= max(push.normalScale, 0.0);
+
+    vec3 T, B, Ngeom = normalize(vNormal);
+    if (dot(vTangent.xyz, vTangent.xyz) > 1e-8) {
+        T = normalize(vTangent.xyz);
+        B = normalize(cross(Ngeom, T) * vTangent.w);  // handedness from tangent.w
+    } else {
+        // derivative fallback when glTF tangents missing
+        vec3 dpdx = dFdx(vWorldPos), dpdy = dFdy(vWorldPos);
+        vec2 duvdx = dFdx(vTexCoord0), duvdy = dFdy(vTexCoord0);
+        T = normalize(dpdx * duvdy.y - dpdy * duvdx.y);
+        B = normalize(-dpdx * duvdy.x + dpdy * duvdx.x);
+    }
+    mat3 TBN = mat3(T, B, Ngeom);
+    N = normalize(TBN * tN);
+}
+```
+
+**MikkTSpace tangents** from glTF land in `vTangent` (location 3) with `w` = bitangent sign. Derivative fallback costs extra ALU but saves broken imports.
+
+### Procedural normal in MaterialShowcase3DDemo
+
+```cpp
+// src/spark/demo/MaterialShowcase3DDemo.cpp (concept)
+Texture2D BuildTangentNormalRipples(uint32_t size, Utf8String name) {
+    // encode unit normals to RGB: (n * 0.5 + 0.5)
+    // ripple pattern in XY, Z always positive (pointing out)
+    tex.SetPixels(size, size, rgba);
+    return tex;
+}
+```
+
+Press **2** to toggle — specular highlights follow ripple bumps without adding geometry subdivisions.
+
+### Normal affects all shading branches
+
+Perturbed `N` feeds `evalBRDF`, toon stepped N·L, IBL `sparkEvalSpecularIbl`, and shadow bias calculations — one TBN block before shading model branch.
+
 ## 2. Core Concepts
 
 ### Tangent-space perturbation

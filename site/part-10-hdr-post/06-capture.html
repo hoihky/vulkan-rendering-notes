@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,27 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Debugging HDR, shadows, and SSAO requires <strong>seeing intermediate buffers</strong> — not just the final tonemapped image. <strong>Capture tools</strong> copy GPU images to CPU files after safe layout transitions, fence waits, and correct row pitch alignment.</p>
 <p>Spark includes <code>VulkanFrameCapture</code> on the renderer with swapchain PNG and video paths — you will follow the record hook, then extend the same staging pattern to HDR attachments for linear diagnosis.</p>
+<h2 id="b.concept-deep-dive-gpu-readback-without-stalling-every-frame">1b. Concept Deep Dive — GPU Readback Without Stalling Every Frame</h2>
+<h3 id="request-flag-defers-copy-to-command-buffer-record">Request flag defers copy to command buffer record</h3>
+<p>Capture is dev-triggered, not per-frame. <code>RequestScreenshotSave</code> sets a pending path; the next <code>RecordSceneCommandBuffer</code> inserts the copy after tonemap, screen UI, and ImGui so captures include overlays when desired:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 409–412)
+frameCapture.RecordCopyFromSwapchain(
+        commandBuffer,
+        presentSwapchain().images[imageIndex],
+        presentSwapchain().extent,
+        frameIndex);
+</code></pre>
+<p>File I/O runs in <code>OnFlightFenceSignaled</code> after fence wait — not inside submit from gameplay thread.</p>
+<h3 id="staging-path-layout-transition-copy-restore-present-layout">Staging path: layout transition → copy → restore present layout</h3>
+<p>Swapchain image must transition <code>PRESENT_SRC_KHR</code> → <code>TRANSFER_SRC_OPTIMAL</code> → copy to HOST_VISIBLE staging → restore before WSI continues. Row pitch must respect <code>bufferImageGranularity</code> — wrong pitch skews PNG diagonally.</p>
+<pre><code class="language-text">DEVICE_LOCAL swapchain
+→ TRANSFER_SRC layout
+→ vkCmdCopyImageToBuffer → staging buffer
+→ fence wait → mmap → stb PNG encode
+→ restore PRESENT_SRC_KHR
+</code></pre>
+<h3 id="extending-to-hdr-float16-capture">Extending to HDR float16 capture</h3>
+<p>Swapchain PNG is display-referred UNORM8. HDR stage capture reuses the same pattern against <code>R16G16B16A16_SFLOAT</code> with different row pitch — apply exposure + ACES on CPU when writing 8-bit preview, or export <code>.exr</code> to preserve values above 1.0. Guard during swapchain <code>OUT_OF_DATE</code> resize to avoid corrupt captures.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="readback-pipeline">Readback pipeline</h3>
 <p>Copying GPU images to CPU files requires a <strong>staging path</strong>:</p>
@@ -1343,6 +1370,22 @@ void VulkanFrameCapture::OnFlightFenceSignaled(const std::uint32_t waitedFlightI
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-gpu-readback-without-stalling-every-frame">1b. Concept Deep Dive — GPU Readback Without Stalling Every Frame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#request-flag-defers-copy-to-command-buffer-record">Request flag defers copy to command buffer record</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#staging-path-layout-transition-copy-restore-present-layout">Staging path: layout transition → copy → restore present layout</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#extending-to-hdr-float16-capture">Extending to HDR float16 capture</a>
                         </li>
                         
                         <li class="toc-h2">

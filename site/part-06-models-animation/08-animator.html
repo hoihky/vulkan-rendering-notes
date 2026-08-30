@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,69 @@
 <p>Skeletal <strong>animation clips</strong> are time-varying TRS keys on joints. Gameplay needs a component that advances time,
 samples keys, blends states, and feeds the skeleton — without embedding glTF details in the renderer.</p>
 <p>Build along: add AnimatorComponent to your skinned character and play the walk clip in a loop.</p>
+<h3 id="animation-clips-for-beginners">Animation clips for beginners</h3>
+<p>An <strong>animation clip</strong> is keyframed motion over time — "at 0.0s knee bent 10°, at 0.5s knee bent 40°".</p>
+<p><strong>Playback loop:</strong></p>
+<pre><code class="language-text">Each frame:
+timeSeconds += dt
+if loop: wrap time to [0, clipDuration)
+sample TRS keys at time → local joint transforms
+multiply up hierarchy → world joint matrices
+world × inverseBind → jointPalette[i]
+</code></pre>
+<p><strong>Crossfade:</strong> switching walk → run over 0.2s blends two clip poses instead of popping:</p>
+<pre><code class="language-text">pose = lerp(poseWalk, poseRun, blendFactor)
+</code></pre>
+<p><strong>AnimatorComponent</strong> owns time and clip index; <strong>does not</strong> parse glTF — it reads <code>SkinnedGltfAsset::clips</code>.</p>
+<p><strong>Update order:</strong> <code>AnimatorPlayback</code> runs before render gather so <code>jointPalette</code> is ready when <code>SceneSubmit</code> builds draw items.</p>
+<p><strong>Loop modes:</strong> <code>Loop</code> (walk cycle), <code>Once</code> (attack), <code>Hold</code> (freeze last frame).</p>
+<h2 id="b.concept-deep-dive-clip-playback-and-crossfade">1b. Concept Deep Dive — Clip Playback and Crossfade</h2>
+<h3 id="update-priority-fsm-before-animator">Update priority: FSM before Animator</h3>
+<pre><code class="language-cpp">// include/spark/ecs/GameComponent.hpp (concept)
+ComponentUpdatePriority::AnimationDriver = 100;   // Character3DAnimFsm
+ComponentUpdatePriority::AnimatorPlayback = 200;    // AnimatorComponent
+</code></pre>
+<p>FSM selects clip index on frame N; Animator advances time and samples keys <strong>after</strong> FSM runs — same entity, ordered by priority.</p>
+<h3 id="computejointpalette-crossfade-blends-two-poses">ComputeJointPalette — crossfade blends two poses</h3>
+<pre><code class="language-cpp">// src/spark/ecs/components/animation/AnimatorComponent.cpp (lines 120–146)
+void AnimatorComponent::ComputeJointPalette(Matrix4* outPalette, std::uint32_t paletteMax) const {
+    if (crossfade.active &amp;&amp; crossfade.duration &gt; 1.0e-4F) {
+        const float blend = crossfade.elapsed / crossfade.duration;
+        skeleton-&gt;ComputeBlendedPalette(
+                crossfade.fromClip, fromSampleT, currentClip, sampleT, blend,
+                outPalette, paletteMax);
+        return;
+    }
+    Array&lt;Transform&gt; pose;
+    skeleton-&gt;SampleClipPose(currentClip, sampleT, pose);
+    skeleton-&gt;BuildPaletteFromPose(pose, outPalette, paletteMax);
+}
+</code></pre>
+<p><code>SetClipIndexWithCrossfade</code> sets <code>crossfade.fromClip</code>, <code>crossfade.elapsed</code>, and <code>crossfade.duration</code> — locomotion FSM calls this when switching idle→walk so feet do not pop.</p>
+<h3 id="skinnedmeshpalette-at-submit-animator-or-bind-pose">SkinnedMeshPalette at submit — animator or bind pose</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/detail/SkinnedMeshPalette.cpp
+bool SkinnedMeshPalette::TryFill(..., const AnimatorComponent* animator, ...) {
+    if (animator != nullptr &amp;&amp; animator-&gt;GetSkeleton()) {
+        animator-&gt;ComputeJointPalette(outPalette, paletteMax);
+        return true;
+    }
+    if (const SharedPtr&lt;Skeleton&gt;&amp; skeleton = mesh.GetSkeleton()) {
+        skeleton-&gt;BuildBindPosePalette(outPalette, paletteMax);
+        return skeleton-&gt;GetJointCount() &gt; 0;
+    }
+    return false;
+}
+</code></pre>
+<p>Static props with skinned mesh but no animation still render correctly in bind pose — useful for editor placement before clips are assigned.</p>
+<h3 id="animloopmode-controls-time-at-end-of-clip">AnimLoopMode controls time at end of clip</h3>
+<pre><code class="language-cpp">// include/spark/animation/AnimLoopMode.hpp
+enum class AnimLoopMode : std::uint8_t {
+    Loop = 0,   // wrap time with fmod
+    Once = 1,   // clamp at duration, IsClipFinished() returns true
+    Hold = 2,   // freeze on last frame
+};
+</code></pre>
+<p>Attack animations use <code>Once</code>; idle/walk use <code>Loop</code>. FSM checks <code>IsClipFinished()</code> before leaving attack state.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="clip-playback-on-onupdate">Clip playback on OnUpdate</h3>
 <p><code>AnimatorComponent</code> advances <code>timeSeconds</code> each frame using <code>AnimLoopMode</code> (Loop, Once, Hold). Update priority <code>AnimatorPlayback</code> runs before render gather so palettes are fresh.</p>
@@ -1269,6 +1338,30 @@ from jointPalette each draw. <strong>Skeleton</strong> owns clip data imported f
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#animation-clips-for-beginners">Animation clips for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-clip-playback-and-crossfade">1b. Concept Deep Dive — Clip Playback and Crossfade</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#update-priority-fsm-before-animator">Update priority: FSM before Animator</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#computejointpalette-crossfade-blends-two-poses">ComputeJointPalette — crossfade blends two poses</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skinnedmeshpalette-at-submit-animator-or-bind-pose">SkinnedMeshPalette at submit — animator or bind pose</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#animloopmode-controls-time-at-end-of-clip">AnimLoopMode controls time at end of clip</a>
                         </li>
                         
                         <li class="toc-h2">

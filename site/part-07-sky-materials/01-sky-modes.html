@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,48 @@
 as a lit mesh with sun <strong>N·L</strong> is wrong — sky radiance is <strong>emitted</strong>, not reflected.</p>
 <p>Your build-along milestone: spawn a <code>SkyComponent</code> entity, cycle Box/Dome/Plane in <code>SkyDemo</code>, and confirm the HDR
 background stays fixed when you orbit the camera.</p>
+<h2 id="b.concept-deep-dive-sky-as-emissive-background-not-lit-geometry">1b. Concept Deep Dive — Sky as Emissive Background, Not Lit Geometry</h2>
+<h3 id="sky-is-not-a-regular-mesh-draw">Sky is not a regular mesh draw</h3>
+<p>A lit mesh multiplies albedo by <code>N·L</code> — the sky has no meaningful surface normal toward the camera. Spark treats sky as <strong>emissive radiance</strong>: fragment shader early-outs before BRDF, outputting color directly from view direction or equirect sample.</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 389–431) — sky branch entry
+void main() {
+    if (push.skyMode != 0) {
+        vec3 cam = ubo.cameraPos.xyz;
+        vec2 vp = max(ubo.viewportSize.xy, vec2(1.0));
+        float sx = (gl_FragCoord.x + 0.5) / vp.x;
+        float sy = (gl_FragCoord.y + 0.5) / vp.y;
+        vec2 ndc = vec2(sx * 2.0 - 1.0, sy * 2.0 - 1.0);
+        vec4 farH = ubo.invViewProj * vec4(ndc, 1.0, 1.0);
+        vec3 dir = normalize(farH.xyz / max(farH.w, 1e-5) - cam);
+        // ... sample equirect or procedural gradient ...
+        outColor = vec4(skyCol, 1.0);
+        return;  // skip all PBR lighting below
+    }
+</code></pre>
+<h3 id="why-per-pixel-view-rays-not-interpolated-mesh-uv">Why per-pixel view rays (not interpolated mesh UV)</h3>
+<p>If you pass world position from the vertex shader on a large sky sphere, <strong>interpolated</strong> positions lie <em>inside</em> the mesh volume — <code>normalize(interpPos - cam)</code> shifts as the camera rotates, making HDR equirects <strong>swim</strong>. Reconstructing direction from <code>invViewProj × NDC</code> gives a ray through each pixel independent of mesh tessellation.</p>
+<h3 id="skydemo-mode-switching">SkyDemo mode switching</h3>
+<pre><code class="language-cpp">// src/spark/demo/SkyDemo.cpp (concept)
+void SkyDemo::ApplySkyModeVisuals() {
+    if (skyModeIndex == 0) {
+        sky-&gt;SetSkyMode(SceneSkyMode::Box);    // closed env, gradient or equirect
+    } else if (skyModeIndex == 1) {
+        sky-&gt;SetSkyMode(SceneSkyMode::Dome);   // hemisphere math in shader
+    } else {
+        sky-&gt;SetSkyMode(SceneSkyMode::Plane);  // billboard quad UV gradient
+        skyMesh-&gt;SetMesh(skyHasEquirect ? skyBoxMesh : skyPlaneMesh);
+    }
+}
+</code></pre>
+<p>Press <strong>M</strong> in SkyDemo to cycle modes. Box and Dome use <code>Mesh::CreateSkySphere</code>; Plane uses <code>CreateSkyBillboardPlane</code> when no equirect is loaded.</p>
+<h3 id="ecs-sky-entity-pattern">ECS sky entity pattern</h3>
+<pre><code class="language-text">GameObject "Sky"
+├── SkyComponent(mode=Box, tint, optional skyTexture)
+├── MeshComponent(CreateSkySphere, SceneMeshSlot::Custom)
+├── MaterialComponent(equirect HDR texture)  // optional
+└── TransformComponent(follows camera position, large scale)
+</code></pre>
+<p>Submit sets <code>SceneDrawItem.skyMode != None</code> → opaque pass binds <code>pipelineSky</code> (no depth write).</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="sceneskymode-taxonomy">SceneSkyMode taxonomy</h3>
 <p>Spark encodes sky <strong>geometry + shading path</strong> in <code>SceneSkyMode</code>: <code>None</code> (standard lit mesh), <code>Box</code> (closed environment sphere/cube), <code>Dome</code> (hemisphere-style gradient math), <code>Plane</code> (billboard quad UV gradient). The mode rides on each <code>SceneDrawItem::skyMode</code> and early-outs in <code>scene.frag</code> — not a global render flag.</p>
@@ -1065,7 +1113,7 @@ background stays fixed when you orbit the camera.</p>
 <p>HDR skies must stay fixed when the camera rotates. Spark reconstructs a <strong>world view direction</strong> from <code>invViewProj</code> and pixel NDC in the fragment shader instead of interpolating mesh positions — interpolated <code>vWorldPos</code> on a large sphere <strong>swims</strong> under rotation.</p>
 <h3 id="procedural-vs-textured-fallback">Procedural vs textured fallback</h3>
 <p>When <code>textureLayer &gt;= 0</code>, Box/Dome/Plane sample an <strong>equirectangular</strong> map via <code>(phi, mu)</code> spherical coords. Without a texture, each mode uses a distinct procedural gradient keyed off <code>push.albedoTint</code>.</p>
-<h3 id="ecs-sky-entity-pattern">ECS sky entity pattern</h3>
+<h3 id="ecs-sky-entity-pattern-1">ECS sky entity pattern</h3>
 <p>A sky is a normal <code>GameObject</code> with <code>SkyComponent</code> + <code>MeshComponent</code> + optional <code>MaterialComponent</code> (equirect texture). Submit marks the draw item <code>skyMode != None</code>; the GPU skips BRDF entirely.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
@@ -1264,6 +1312,26 @@ on the sky draw item.</p>
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sky-as-emissive-background-not-lit-geometry">1b. Concept Deep Dive — Sky as Emissive Background, Not Lit Geometry</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#sky-is-not-a-regular-mesh-draw">Sky is not a regular mesh draw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-per-pixel-view-rays-not-interpolated-mesh-uv">Why per-pixel view rays (not interpolated mesh UV)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skydemo-mode-switching">SkyDemo mode switching</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-sky-entity-pattern">ECS sky entity pattern</a>
                         </li>
                         
                         <li class="toc-h2">

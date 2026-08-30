@@ -14,6 +14,84 @@ Fire, sparks, snow, and hit effects need hundreds of **short-lived quads** facin
 
 A dedicated **particle pipeline** simulates on CPU, flattens to a compact instance array, and draws in one pass with additive blending. Build along: trace Spark's path from `ParticleEmitterComponent` through `SceneRenderParams::particles` to `VulkanParticlePass::Record`.
 
+### What are particles? (beginner)
+
+**Particles** are cheap visual effects made of many small **billboards** (quads that always face the camera):
+
+- Fire sparks, smoke puffs, rain, snow, magic trails, blood splats.
+
+Each particle is usually:
+
+- A position in 3D space
+- A color (often with alpha fade)
+- A size
+- A lifetime (spawn → age → die)
+
+You do **not** import a glTF model per spark. You simulate hundreds of lightweight structs on CPU and draw them as textured quads in **one** GPU pass.
+
+```text
+Analogy: particles = confetti pieces
+         mesh drawing = cardboard cutout shapes
+```
+
+### Why a separate particle pass
+
+Drawing 500 particles as 500 `SceneDrawItem` mesh draws would:
+
+- Bloat submit and sorting
+- Rebind pipeline state unnecessarily
+- Waste push constant bandwidth
+
+Spark instead:
+
+1. `ParticleEmitterComponent::OnUpdate` — spawn, move, kill particles on CPU.
+2. Submit copies alive particles to `SceneRenderParams::particles[]`.
+3. `VulkanParticlePass::Record` — expand each particle to 6 vertices (two triangles), one `vkCmdDraw`.
+4. Additive blend into **HDR buffer** (bright sparks accumulate).
+
+Particles run **after** opaque scene geometry in the HDR pass so they depth-test against the world but glow on top.
+
+## 1b. Concept Deep Dive — Spark's Particle Pipeline End-to-End
+
+### Three-layer separation in production code
+
+Spark keeps simulation, snapshot, and GPU draw in three distinct types:
+
+```cpp
+// include/spark/ecs/components/rendering/ParticleEmitterComponent.hpp
+class ParticleEmitterComponent final : public GameComponent {
+    void OnUpdate(...) override;  // CPU sim: spawn, integrate, kill
+    void CollectInstances(Array<SceneParticleInstance>& out) const;
+private:
+    struct SimParticle { bool alive; Vector3 position; Vector3 velocity; /* ... */ };
+    Array<SimParticle> slots{};
+};
+```
+
+```cpp
+// include/spark/engine/SceneRenderParams.hpp (lines 89–94, 456–461)
+struct SceneParticleInstance {
+    Vector3 position{};
+    float size = 0.1F;
+    Vector4 color{1.0F, 1.0F, 1.0F, 1.0F};
+};
+Array<SceneParticleInstance> particles;
+Vector3 particleCameraRight{1.0F, 0.0F, 0.0F};
+Vector3 particleCameraUp{0.0F, 1.0F, 0.0F};
+```
+
+```cpp
+// include/spark/render/sprites2d/VulkanParticlePass.hpp
+void Record(VkCommandBuffer, std::uint32_t frameIndex, VkExtent2D extent,
+            const SceneRenderParams& scene, bool sceneParamsValid) const;
+```
+
+Simulation never touches Vulkan. Submit copies a flat array once per frame. Record expands quads and draws additively into the HDR subpass.
+
+### Why velocity stays off the snapshot
+
+`SimParticle` carries `velocity` for integration, but `SceneParticleInstance` exports only `{ position, size, color }` — size and color are already age-interpolated in `CollectInstances`. The GPU billboard pass has no use for velocity; keeping the snapshot small reduces upload bytes and keeps the particle shader push-free.
+
 ## 2. Core Concepts
 
 ### Simulation vs rendering split

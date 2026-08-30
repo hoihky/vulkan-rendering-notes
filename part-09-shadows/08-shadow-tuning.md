@@ -14,6 +14,51 @@ Shadow maps discretize continuous geometry into texels. **Acne** and **Peter pan
 
 Tuning is half math, half art — you need a systematic debug workflow with ImGui sliders and false-color modes.
 
+## 1b. Concept Deep Dive — shadowParams Bias in scene.frag
+
+### Slope-scaled depth bias before compare
+
+```glsl
+// shaders/scene.frag — sampleSunShadowAtCascade (lines 160–163)
+float g = sunGracing;  // grazing angle factor from N·L
+float depthBias = max(ubo.shadowParams.x, 1e-5) * (1.0 + 6.25 * g);
+depthBias += ubo.shadowParams.y * 0.22 * g;
+float refZ = clamp(proj.z - depthBias, 0.0, 1.0);
+```
+
+| UBO field | Role |
+|-----------|------|
+| `shadowParams.x` | Constant bias — fixes acne on flat surfaces |
+| `shadowParams.y` | Slope-scaled bias — scales with grazing angle |
+| `shadowParams.z` | Texel size (1/resolution) — PCF kernel step |
+| `shadowParams.w` | Master enable (>0.5 = shadows on) |
+
+Subtracting bias from receiver depth before compare pushes the test point slightly toward the light — curing self-shadow acne without moving the shadow map.
+
+### Penumbra widens at grazing sun angles
+
+```glsl
+float penumbraScale = clamp(1.0 + 2.75 * g, 1.0, 2.85);
+float sh = sampleSunShadowPcf(shadowMap, uv, refZ, texel, penumbraScale, rot01);
+return pow(clamp(sh, 0.0, 1.0), 1.08);
+```
+
+Low sun elevation (large `g`) expands the PCF kernel — softer terminator at dawn/dusk. The final `pow(..., 1.08)` slightly darkens penumbra for visual contrast.
+
+### Peter panning vs acne tradeoff
+
+Increasing `shadowParams.x/y` reduces acne but lifts shadows off contact points (Peter panning). Spark snaps cascade projections to texel grids (`ComputeWorldToShadowClip`) to reduce another shimmer source — tune bias **after** confirming stable cascade bounds in RenderDoc.
+
+### Distance fade at far clip
+
+```glsl
+// scene.frag (lines 521–524)
+float fadeStart = shadowFadeEnd * clamp(ubo.timeGlobal.y, 0.5, 0.98);
+float fade = smoothstep(fadeStart, shadowFadeEnd, distCam);
+```
+
+Shadows fade out near the far plane where cascade resolution is lowest — hides blocky distant shadows without extra cascades.
+
 ## 2. Core Concepts
 
 ### Shadow acne

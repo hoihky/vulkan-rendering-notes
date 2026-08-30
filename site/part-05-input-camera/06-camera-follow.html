@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1083,8 +1089,90 @@
 </tbody>
 </table>
 <p>This chapter explains each math model and update order — not just "lerp the camera" in one sentence.</p>
-<h2 id="core-concepts">2. Core Concepts</h2>
+<h3 id="follow-cameras-for-beginners">Follow cameras for beginners</h3>
+<p><strong>Fly camera</strong> = you control position directly. <strong>Follow camera</strong> = camera chases something else (player, pivot).</p>
+<p><strong>Orbit (editor style):</strong></p>
+<pre><code class="language-text">Pivot at mesh center
+Mouse drag → rotate camera on sphere around pivot
+Scroll → zoom distance
+Result: always looking at the object
+</code></pre>
+<p><strong>Spring arm (third-person games):</strong></p>
+<pre><code class="language-text">Character at origin
+Arm extends backward from character forward
+Camera at end of arm
+Optional: shorten arm if wall blocks line of sight
+</code></pre>
+<p><strong>Smooth follow (simple tracking):</strong></p>
+<pre><code class="language-text">camera.position = lerp(camera.position, target.position + offset, smoothness * dt)
+camera looks at target
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Who moves?</th>
+<th>Spark</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orbit</td>
+<td>Camera on sphere</td>
+<td><code>OrbitFlyCameraAroundPivot</code></td>
+</tr>
+<tr>
+<td>Spring arm</td>
+<td>Camera behind ECS character</td>
+<td><code>SpringArm3DComponent</code></td>
+</tr>
+<tr>
+<td>Smooth follow</td>
+<td>Camera lerps to target</td>
+<td><code>CameraFollow3DComponent</code></td>
+</tr>
+</tbody>
+</table>
+<p>Pick orbit for tools, spring arm for action games, smooth follow for cutscenes or simple 2.5D.</p>
+<h2 id="b.concept-deep-dive-orbit-spring-arm-and-smooth-follow">1b. Concept Deep Dive — Orbit, Spring Arm, and Smooth Follow</h2>
 <h3 id="editor-orbit-on-flycamera">Editor orbit on FlyCamera</h3>
+<p><code>SceneEditor3DDemo</code> wraps <code>FlyCamera</code> with pivot orbit — Alt+drag rotates on a sphere around a world point while scroll adjusts radius. The fly camera struct stays the same; orbit math writes <code>position</code> from pivot + spherical coordinates each frame. Same <code>ViewMatrix()</code> path feeds <code>params.viewProjection</code>.</p>
+<h3 id="ecs-springarm3dcomponent">ECS SpringArm3DComponent</h3>
+<p>Third-person characters attach <code>SpringArm3DComponent</code> to the player entity and a <code>CameraComponent</code> on a child camera object. Each tick the arm:</p>
+<ul>
+<li>Extends backward from character forward by <code>armLength</code></li>
+<li>Optionally raycasts to shorten the arm when geometry blocks line of sight</li>
+<li>Positions the child camera at the arm tip</li>
+</ul>
+<p>Transform hierarchy supplies world matrices — submit reads the camera child's <code>CameraComponent::ViewMatrix</code>.</p>
+<h3 id="camerafollow3dcomponent-smooth-tracking">CameraFollow3DComponent smooth tracking</h3>
+<p>For simpler chase cameras, <code>CameraFollow3DComponent</code> lerps owner transform toward <code>target</code> + offset and optionally <code>LookAt</code>s the target each frame. Lower complexity than spring arm — good for cutscenes and top-down follow without collision response.</p>
+<h3 id="when-to-pick-which-pattern">When to pick which pattern</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Need</th>
+<th>Spark type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inspect static mesh in editor</td>
+<td>Orbit on <code>FlyCamera</code></td>
+</tr>
+<tr>
+<td>Action third-person with wall collision</td>
+<td><code>SpringArm3DComponent</code></td>
+</tr>
+<tr>
+<td>Smooth chase without arm logic</td>
+<td><code>CameraFollow3DComponent</code></td>
+</tr>
+</tbody>
+</table>
+<p>All three produce a <code>Matrix4</code> view matrix consumed identically by <code>SceneRenderParams::viewProjection</code> — follow style is a CPU update choice, not a separate render path.</p>
+<h2 id="core-concepts">2. Core Concepts</h2>
+<h3 id="editor-orbit-on-flycamera-1">Editor orbit on FlyCamera</h3>
 <p>Alt+drag orbit in <code>SceneEditor3DDemo</code> preserves distance from pivot:</p>
 <pre><code class="language-cpp">void OrbitFlyCameraAroundPivot(FlyCamera&amp; cam, const Vector3&amp; pivot,
     float&amp; orbitDistance, float deltaX, float deltaY) {
@@ -1274,6 +1362,30 @@ if (lookAtTarget) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#follow-cameras-for-beginners">Follow cameras for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-orbit-spring-arm-and-smooth-follow">1b. Concept Deep Dive — Orbit, Spring Arm, and Smooth Follow</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#editor-orbit-on-flycamera">Editor orbit on FlyCamera</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-springarm3dcomponent">ECS SpringArm3DComponent</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#camerafollow3dcomponent-smooth-tracking">CameraFollow3DComponent smooth tracking</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#when-to-pick-which-pattern">When to pick which pattern</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -14,6 +14,39 @@ CPU particles cap around a few thousand with acceptable frame time on mid-range 
 
 Build along: document a two-milestone roadmap from current Spark code to GPU-driven particles.
 
+## 1b. Concept Deep Dive — What the CPU Path Does Today
+
+### Current bottleneck: scratchVertices expansion on CPU
+
+```cpp
+// VulkanParticlePass::Record — every frame, every particle, six verts
+scratchVertices.Clear();
+for (std::size_t pi = 0; pi < nPart; ++pi) {
+    for (int t = 0; t < 6; ++t) {
+        scratchVertices.PushBack(/* 10 floats per corner */);
+    }
+}
+std::memcpy(vertexMapped, scratchVertices.GetData(), vbBytes);
+vkCmdDraw(commandBuffer, vertCount, 1, 0, 0);
+```
+
+At 8192 particles this is ~49k vertices rebuilt on CPU. GPU sim would store `{pos, vel, age, ...}` in an SSBO and let the vertex shader (or a compute prepass) emit corners procedurally — eliminating the inner expansion loop.
+
+### Migration anchor points in existing code
+
+| Current hook | GPU replacement |
+|--------------|-----------------|
+| `ParticleEmitterComponent::OnUpdate` | Compute dispatch: integrate SSBO |
+| `CollectInstances` | GPU compaction → indirect draw count |
+| `scratchVertices` + `vkCmdDraw` | `vkCmdDrawIndirect` with alive count |
+| `ParticleUniformGpu` | Same UBO — camera basis unchanged |
+
+Keep `SceneParticleInstance` and `CollectInstances` during transition so CPU demos keep working while GPU path is feature-flagged.
+
+### ParticleEmitterComponent API stays stable
+
+Demos and scripts call `SetEmissionRate`, `SetLifetime`, etc. A GPU backend would read those constants once per frame into a small UBO/SSBO header; gameplay code would not change. Only the internal `OnUpdate` body swaps from slot-loop to dispatch.
+
 ## 2. Core Concepts
 
 ### GPU simulation

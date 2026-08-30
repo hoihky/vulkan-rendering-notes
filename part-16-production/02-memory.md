@@ -16,6 +16,46 @@ You will trace Spark helpers — not adopt a proprietary allocator yet — and p
 
 Milestone: play ThreeDDemo for 60 s with two resizes, exit with validation object tracking enabled — zero leaked `VkDeviceMemory`.
 
+## 1b. Concept Deep Dive — FindMemoryType Selection
+
+### Explicit heap/type choice on every allocation
+
+Vulkan exposes multiple memory types per buffer/image requirement. Spark centralizes selection:
+
+```cpp
+// src/spark/render/gpu/VulkanGpuBufferImage.cpp
+std::uint32_t VulkanGpuBufferImage::FindMemoryType(
+        VkPhysicalDevice physicalDevice,
+        const std::uint32_t typeFilter,
+        const VkMemoryPropertyFlags properties) {
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+    for (std::uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+        if ((typeFilter & (1U << i)) != 0U &&
+            (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+    throw std::runtime_error("FindMemoryType failed");
+}
+```
+
+Device-local for GPU-only vertex/index buffers; host-visible + coherent for staging uploads.
+
+### CreateBuffer pairs usage flags with property flags
+
+```cpp
+allocInfo.memoryTypeIndex =
+        FindMemoryType(physicalDevice, memRequirements.memoryTypeBits, properties);
+vkAllocateMemory(vkDevice, &allocInfo, nullptr, &bufferMemory);
+vkBindBufferMemory(vkDevice, buffer, bufferMemory, 0);
+```
+
+Wrong flags on integrated GPUs (Apple Silicon, Intel UMA) still work but may take a slow path — always match Spark's staging → copy → device-local pattern from Part II uploads.
+
+### DeferredUploadBatch batches per-frame GPU writes
+
+`VulkanDeferredUploadBatch::Prepare` collects texture/mesh uploads before command record — one staging ring per flight index instead of allocate-free per draw. Budget shadow + HDR targets using `frames-in-flight × extent × format bytes`; resize triggers recreate (Chapter 1), not leak.
+
 ## 2. Core Concepts
 
 ### Explicit memory types

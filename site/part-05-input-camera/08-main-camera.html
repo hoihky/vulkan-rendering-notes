@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,52 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Demos can manually assign <code>params.viewProjection</code> from <code>FlyCamera</code> or <code>CharacterCameraRig</code>. Production scenes place cameras on entities with transforms, FOV, clip planes, and <strong>priority</strong>. At submit time Spark must answer: <strong>which camera renders this frame?</strong></p>
 <p><code>TryResolveMainCamera</code>, <code>TryResolveMainCamera2D</code>, and <code>TryBuildSceneCameraMatrices</code> implement that policy. <code>SubmitStandardLitSceneFromWorldWithCamera</code> combines resolution with mesh/light gather — the path <code>Platformer2DDemo</code> and ECS 3D scenes use.</p>
+<h3 id="which-camera-renders-beginner">Which camera renders? (beginner)</h3>
+<p>Scenes can have <strong>many</strong> cameras — minimap cam, cinematic cam, player cam. Only <strong>one</strong> supplies <code>viewProj</code> each frame.</p>
+<pre><code class="language-text">Entity "PlayerCamera"  → CameraComponent, priority = 10
+Entity "CutsceneCam"   → CameraComponent, priority = 100  ← wins when enabled
+</code></pre>
+<p><strong>Resolution rules (simplified):</strong></p>
+<ol>
+<li>Collect all enabled <code>CameraComponent</code> / <code>Camera2DComponent</code>.</li>
+<li>Pick <strong>highest priority</strong> number.</li>
+<li>Build <code>viewProj</code> from that entity's transform + FOV/ortho settings.</li>
+</ol>
+<p><strong>Hybrid 2D/3D:</strong> if both exist, Spark's resolver picks based on scene mode — platformer uses <code>Camera2DComponent</code>; 3D world uses <code>CameraComponent</code>.</p>
+<p><strong>Manual path (early demos):</strong> <code>FlyCamera</code> fills <code>params.viewProjection</code> directly — no ECS. Production path: attach camera to <code>GameObject</code>, let <code>TryBuildSceneCameraMatrices</code> find it at submit.</p>
+<p><strong>Debug:</strong> log resolved camera entity name — if wrong camera wins, check <code>priority</code> and <code>enabled</code> flag.</p>
+<h2 id="b.concept-deep-dive-trybuildscenecameramatrices-resolution">1b. Concept Deep Dive — TryBuildSceneCameraMatrices Resolution</h2>
+<h3 id="ecs-cameracomponent-fields">ECS CameraComponent fields</h3>
+<pre><code class="language-cpp">// include/spark/ecs/components/camera/CameraComponent.hpp
+class CameraComponent final : public GameComponent {
+    CameraProjectionMode projectionMode = CameraProjectionMode::Perspective;
+    float fovYDegrees = 60.0F;
+    float nearPlane = 0.12F;
+    float farPlane = 400.0F;
+    std::int32_t priority = 0;
+    bool enabled = true;
+    [[nodiscard]] Matrix4 ViewMatrix(const GameObject&amp; owner) const noexcept;
+};
+</code></pre>
+<p>Higher <code>priority</code> wins when multiple enabled cameras exist. World pose comes from the owner's <code>TransformComponent</code> — the component stores projection parameters only.</p>
+<h3 id="trybuildscenecameramatrices">TryBuildSceneCameraMatrices</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp
+bool TryFillSceneCameraFromWorld(
+        const GameWorld&amp; world, float fbW, float fbH, SceneRenderParams&amp; outParams) {
+    SceneCameraMatrices cam{};
+    if (!TryBuildSceneCameraMatrices(world, fbW, fbH, cam)) return false;
+    outParams.viewProjection = cam.viewProjection;
+    outParams.cameraPositionWorld = cam.positionWorld;
+    outParams.particleCameraRight = cam.rightWorld;
+    outParams.particleCameraUp = cam.upWorld;
+    return true;
+}
+</code></pre>
+<p>Failure returns false — caller must fall back to manual matrices or skip submit. Particle billboards use <code>rightWorld</code>/<code>upWorld</code> extracted during resolution.</p>
+<h3 id="hybrid-2d-vs-3d-arbitration">Hybrid 2D vs 3D arbitration</h3>
+<p><code>TryResolveMainCamera2D</code> competes with <code>TryResolveMainCamera</code> — platformer scenes with <code>Camera2DComponent</code> use orthographic <code>ViewProjection(fbW, fbH)</code>; pure 3D scenes use perspective FOV from <code>CameraComponent</code>. Same output fields on <code>SceneRenderParams</code>.</p>
+<h3 id="one-call-production-submit">One-call production submit</h3>
+<p><code>SubmitStandardLitSceneFromWorldWithCamera</code> combines camera resolution, mesh gather, light gather, and texture dedup — the standard path once you outgrow manual <code>FlyCamera</code> assignment in demo code.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cameracomponent-3d-ecs">CameraComponent (3D ECS)</h3>
 <pre><code class="language-cpp">class CameraComponent {
@@ -1253,6 +1305,30 @@ Matrix4 ViewProjection(const GameObject&amp; owner, float aspect) const {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#which-camera-renders-beginner">Which camera renders? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-trybuildscenecameramatrices-resolution">1b. Concept Deep Dive — TryBuildSceneCameraMatrices Resolution</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-cameracomponent-fields">ECS CameraComponent fields</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#trybuildscenecameramatrices">TryBuildSceneCameraMatrices</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hybrid-2d-vs-3d-arbitration">Hybrid 2D vs 3D arbitration</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-call-production-submit">One-call production submit</a>
                         </li>
                         
                         <li class="toc-h2">

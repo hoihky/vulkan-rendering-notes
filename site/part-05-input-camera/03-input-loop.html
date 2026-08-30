@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,68 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Input is not a background service — it is <strong>synchronized to frames</strong>. If you read keys before polling events, you see stale state. If UI reads input before the game consumes capture, focus fights erupt. If render runs before update, you display last frame's world with this frame's camera.</p>
 <p>Spark's <code>Engine::Run</code> loop fixes a canonical order used across all demos. This chapter is the <strong>temporal contract</strong> every camera and controller in Part V assumes.</p>
+<h3 id="frame-order-cheat-sheet-beginner">Frame order cheat sheet (beginner)</h3>
+<p>Think of one game frame as a <strong>pipeline</strong> — each step consumes output from the previous:</p>
+<pre><code class="language-text">while (running) {
+  PollEvents()              // 1. OS → GLFW queue (MUST be first)
+  input.BeginFrame()        // 2. snapshot keys/mouse
+  engine.HandleHotkeys()    // 3. F11 fullscreen, etc.
+  game.OnUpdate(dt, ctx)    // 4. movement, physics, camera
+  ui.BeginFrame()           // 5. ImGui wants input after game
+  game.OnRender(ctx)        // 6. build SceneRenderParams
+  renderer.PresentFrame()   // 7. GPU + swapchain
+}
+</code></pre>
+<p><strong>Why order matters:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Wrong order</th>
+<th>Symptom</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Update before PollEvents</td>
+<td>One-frame input lag</td>
+</tr>
+<tr>
+<td>BeginFrame before PollEvents</td>
+<td>Missed key releases</td>
+</tr>
+<tr>
+<td>UI before game with capture</td>
+<td>Camera and menu fight for mouse</td>
+</tr>
+<tr>
+<td>Render before Update</td>
+<td>Camera one frame behind player</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>IEngineContext</code></strong> passes the same <code>IInput&amp;</code> into <code>OnUpdate</code> — camera code never polls GLFW itself.</p>
+<h2 id="b.concept-deep-dive-enginerun-frame-order">1b. Concept Deep Dive — Engine::Run Frame Order</h2>
+<h3 id="canonical-loop-in-engine.cpp">Canonical loop in Engine.cpp</h3>
+<p>Spark's production loop fixes input timing for every demo:</p>
+<pre><code class="language-cpp">// src/Engine.cpp (simplified)
+while (!window.ShouldClose()) {
+    window.PollEvents();
+    input-&gt;BeginFrame();
+    // engine hotkeys (F3 overlay, F9 record, F12 screenshot)
+    game-&gt;OnUpdate(timing, *engineContext);
+    Ui::UiSystem::Get().OnEnginePreRender(window, *input, timing.deltaTimeSeconds);
+    game-&gt;OnRender(renderFrame, *engineContext);
+    Ui::UiSystem::Get().OnEnginePostRender();
+    renderer-&gt;PresentFrame();
+}
+</code></pre>
+<p><code>PollEvents</code> <strong>must</strong> precede <code>BeginFrame</code> — otherwise GLFW queues are stale and edge detection misses releases that happened since last frame.</p>
+<h3 id="update-before-render">Update before render</h3>
+<p>Camera matrices computed in <code>OnUpdate</code> (or scene submit during <code>OnRender</code>) must reflect input from the <strong>same</strong> frame's <code>BeginFrame</code> snapshot. Rendering last frame's <code>viewProj</code> with this frame's mouse delta produces jitter — especially visible on fast fly-camera turns.</p>
+<h3 id="ui-reads-input-after-gameplay">UI reads input after gameplay</h3>
+<p><code>OnEnginePreRender</code> runs ImGui after <code>OnUpdate</code> so a game with captured cursor consumes mouse delta first. When a menu opens and releases capture, UI gets clean cursor coordinates without the camera stealing delta.</p>
+<h3 id="frametiming-passed-to-onupdate">FrameTiming passed to OnUpdate</h3>
+<p><code>FrameTiming</code> carries <code>deltaTimeSeconds</code>, <code>totalTimeSeconds</code>, and <code>frameIndex</code> — fly cameras multiply <code>moveSpeed * deltaSeconds</code>; time-of-day drivers in scene submit use <code>sceneTimeSeconds</code> from the same clock.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="one-frame-timeline">One frame timeline</h3>
 <pre><code class="language-text">┌─────────────────────────────────────────────────────────────────┐
@@ -1152,7 +1220,7 @@ lastTime = now;
 <p><strong>Decision:</strong> Never interleave; documented in FlyCamera header</p>
 <p><strong>Why:</strong> Edge detection and mouse delta depend on fresh poll.</p>
 <p><strong>In Spark:</strong> <code>Engine.cpp</code> while loop top.</p>
-<h3 id="update-before-render">Update before render</h3>
+<h3 id="update-before-render-1">Update before render</h3>
 <p><strong>Concept:</strong> IGame contract</p>
 <p><strong>Decision:</strong> <code>OnUpdate</code> then <code>OnRender</code> same frame</p>
 <p><strong>Why:</strong> Render snapshot reflects post-simulation transforms and camera.</p>
@@ -1231,6 +1299,30 @@ lastTime = now;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frame-order-cheat-sheet-beginner">Frame order cheat sheet (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-enginerun-frame-order">1b. Concept Deep Dive — Engine::Run Frame Order</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#canonical-loop-in-enginecpp">Canonical loop in Engine.cpp</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#update-before-render">Update before render</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ui-reads-input-after-gameplay">UI reads input after gameplay</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frametiming-passed-to-onupdate">FrameTiming passed to OnUpdate</a>
                         </li>
                         
                         <li class="toc-h2">

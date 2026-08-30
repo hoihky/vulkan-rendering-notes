@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,80 @@
 <p>Every direct-light shading model asks the same question: <strong>Is this point visible from the light?</strong> Ray tracing answers by intersecting scene geometry — accurate but expensive for a forward renderer drawing thousands of meshes each frame.</p>
 <p><strong>Shadow mapping</strong> trades exactness for speed: render the scene from the light's viewpoint, store the nearest depth per texel, then during the main pass compare each shaded point's light-space depth against that texture. Wrong answers appear as blocky edges, acne, or detached shadows — but the core recipe is stable across decades of engines.</p>
 <p>You already have opaque mesh drawing with depth testing from earlier parts. Part IX adds offscreen depth images, depth-only pipelines, matrix upload for <code>worldToShadowClip</code>, and a visibility multiplier in the sun term. Spark implements the full path — you will trace it top-down before writing your own.</p>
+<h3 id="shadows-in-plain-english">Shadows in plain English</h3>
+<p>Stand outdoors on a sunny day. Your <strong>shadow</strong> on the ground exists because <strong>something closer to the sun blocks light</strong> from reaching you. The GPU asks the same question for every lit pixel:</p>
+<blockquote class="blockquote">
+<p>"Is there geometry between this surface point and the light?"</p>
+</blockquote>
+<p>If yes → pixel is darker (in shadow).<br>
+If no → pixel receives full direct light.</p>
+<p><strong>Ray tracing</strong> answers by shooting a ray toward the light — accurate but slow for real-time games with millions of triangles.</p>
+<p><strong>Shadow mapping</strong> cheats:</p>
+<ol>
+<li><strong>Render the scene from the light's camera</strong> — store only depth (how far each texel is from the light).</li>
+<li><strong>Render the scene from the player's camera</strong> — for each pixel, project world position into light space and compare depth.</li>
+</ol>
+<p>If the pixel's depth to the light is <strong>greater</strong> than what the shadow map stored, something else is in the way → shadow.</p>
+<pre><code class="language-text">Light's view (shadow pass)          Player's view (main pass)
+┌─────────────────┐                ┌─────────────────┐
+│ depth texture   │                │ "Am I farther   │
+│ (closest surf)  │──compare────►│  than stored?"  │
+└─────────────────┘                └─────────────────┘
+</code></pre>
+<h3 id="what-you-build-in-part-ix-overview">What you build in Part IX (overview)</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Piece</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Shadow render pass</td>
+<td>Offscreen depth-only target</td>
+</tr>
+<tr>
+<td>Shadow pipeline</td>
+<td>Depth write ON, color write OFF</td>
+</tr>
+<tr>
+<td>Light view-projection matrix</td>
+<td>Uploaded in scene UBO</td>
+</tr>
+<tr>
+<td>Shadow sampler in scene.frag</td>
+<td>PCF filtering for soft edges</td>
+</tr>
+<tr>
+<td>Frame graph ordering</td>
+<td>Shadow passes <strong>before</strong> HDR scene pass</td>
+</tr>
+</tbody>
+</table>
+<p>You already have depth testing on the main pass from Part II. Shadow mapping adds a <strong>second depth buffer</strong> from the light's point of view.</p>
+<h2 id="b.concept-deep-dive-sparks-two-pass-shadow-recipe">1b. Concept Deep Dive — Spark's Two-Pass Shadow Recipe</h2>
+<h3 id="frame-graph-shadow-before-hdr-scene">Frame graph: shadow before HDR scene</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp — RecordSceneCommandBuffer
+RecordShadowMapPass(commandBuffer, frameIndex);   // depth-only, offscreen
+hdrTonemapPass.BeginColorAttachmentBarrierIfNeeded(...);
+// ... opaque scene pass, sprites, particles ...
+</code></pre>
+<p>Shadow maps are populated <strong>before</strong> the HDR color pass begins. The scene fragment shader samples a read-only depth texture bound at <code>set=0, binding=3</code>.</p>
+<h3 id="recordshadowmappass-dispatches-both-shadow-pass-types">RecordShadowMapPass dispatches both shadow pass types</h3>
+<pre><code class="language-cpp">// RecordShadowMapPass (lines 717–718)
+punctualShadow.Record(commandBuffer, frameIndex, ctx, punctualShadowFrameState);
+directionalShadow.Record(commandBuffer, frameIndex, ctx, shadowFrameState);
+</code></pre>
+<p>Punctual (spot/point) shadows render first, then directional CSM cascades. Both call <code>RecordShadowCastMeshes</code> with the same <code>shadow_depth.vert</code> pipeline but different light view-projection matrices.</p>
+<h3 id="depth-only-render-pass-no-color-attachment">Depth-only render pass — no color attachment</h3>
+<pre><code class="language-cpp">// VulkanDirectionalShadowPass.cpp — render pass setup (concept)
+VkSubpassDescription subpass{};
+subpass.pDepthStencilAttachment = &amp;depthRef;  // only depth, no color refs
+depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+</code></pre>
+<p>After the shadow pass completes, depth images transition to <code>READ_ONLY_OPTIMAL</code> so <code>scene.frag</code> can sample them in the main pass. The lit pipeline writes HDR color + camera depth independently.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="two-pass-shadow-recipe">Two-pass shadow recipe</h3>
 <p>Shadow mapping approximates <strong>visibility along a light ray</strong> without tracing rays per pixel. The algorithm splits work into two raster passes:</p>
@@ -1393,6 +1473,30 @@ void VulkanRenderer::WriteUniformBuffer(std::uint32_t frameIndex) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shadows-in-plain-english">Shadows in plain English</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-you-build-in-part-ix-overview">What you build in Part IX (overview)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparks-two-pass-shadow-recipe">1b. Concept Deep Dive — Spark's Two-Pass Shadow Recipe</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frame-graph-shadow-before-hdr-scene">Frame graph: shadow before HDR scene</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recordshadowmappass-dispatches-both-shadow-pass-types">RecordShadowMapPass dispatches both shadow pass types</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#depth-only-render-pass-no-color-attachment">Depth-only render pass — no color attachment</a>
                         </li>
                         
                         <li class="toc-h2">

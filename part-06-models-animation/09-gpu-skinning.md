@@ -21,6 +21,119 @@ A skinned mesh has thousands of vertices, each influenced by up to four bones. U
 
 This chapter connects Part VI animation (`jointPalette`) to Part III shader code (`scene.vert`) and the opaque pass upload in `VulkanSceneOpaquePass`.
 
+### GPU skinning for beginners
+
+**CPU skinning** (slow): for each vertex, blend 4 bone matrices, write new position — millions of ops per character per frame.
+
+**GPU skinning** (Spark): upload up to **128** joint matrices once per draw; **vertex shader** blends per vertex in parallel:
+
+```glsl
+// Simplified LBS in scene.vert
+vec4 skinnedPos = vec4(0);
+for (int i = 0; i < 4; ++i)
+  skinnedPos += jointPalette[joints[i]] * vec4(position, 1.0) * weights[i];
+gl_Position = ubo.viewProj * model * skinnedPos;
+```
+
+**Data path:**
+
+```text
+AnimatorComponent.jointPalette (CPU)
+  → SceneSubmit copies to draw item
+  → VulkanSceneOpaquePass uploads SSBO binding 2
+  → scene.vert reads jointPalette
+```
+
+**Debug silhouettes:**
+
+| Look | Meaning |
+|------|---------|
+| T-pose, correct | Bind pose, skinning off or identity palette |
+| Exploded spaghetti | Wrong weights or inverse binds |
+| Slides on floor, stiff legs | Animation not updating or wrong clip |
+| Correct motion | Full path working |
+
+**Shadows:** skinned characters use same palette in `shadow_depth.vert` so shadow matches deformed mesh.
+
+## 1b. Concept Deep Dive — Full GPU Skinning Path in Spark
+
+### Why joints are packed as floats in the vertex buffer
+
+Vulkan vertex formats on some platforms (notably MoltenVK) are picky about integer attribute formats. Spark stores joint indices as `uint32` in `SkinnedMesh::Vertex` but **bitcasts to float** when interleaving for the GPU pool:
+
+```cpp
+// src/spark/render/gpu/VulkanGpuMeshInterleaved.cpp
+interleaved.PushBack(std::bit_cast<float>(v.joints[0]));
+// ...
+interleaved.PushBack(v.weights[0]);
+```
+
+The vertex shader reverses this with `floatBitsToUint`:
+
+```glsl
+// shaders/scene.vert (lines 38–42)
+uvec4 inJoints = uvec4(
+        floatBitsToUint(inJointsPacked.x),
+        floatBitsToUint(inJointsPacked.y),
+        floatBitsToUint(inJointsPacked.z),
+        floatBitsToUint(inJointsPacked.w));
+```
+
+### Complete skinning branch in scene.vert
+
+Spark uses one vertex shader for rigid and skinned draws — `push.useSkinning` selects the path:
+
+```glsl
+// shaders/scene.vert (lines 44–78)
+    if (push.useSkinning != 0) {
+        vec4 sp = vec4(0.0);
+        mat3 acc = mat3(0.0);
+        for (int k = 0; k < 4; k++) {
+            float w = inWeights[k];
+            if (w <= 0.0) continue;
+            uint ji = inJoints[k];
+            if (int(ji) >= push.jointCount) continue;
+            mat4 BM = skin.bones[ji];
+            sp += w * BM * vec4(inPosition, 1.0);
+            acc += w * mat3(BM);
+        }
+        vec3 nLin = acc * inNormal;
+        worldNrm = length(nLin) > 1e-5 ? normalize(nLin) : normalize(inNormal);
+        // ... tangent skinning ...
+        vec4 wp = push.model * vec4(sp.xyz, 1.0);
+        worldPos = wp.xyz;
+        // ... normal matrix from push.model ...
+    } else {
+        vec4 wp = push.model * vec4(inPosition, 1.0);
+        // ... rigid path ...
+    }
+```
+
+**Order matters:** skin matrix `BM` transforms bind-space position; `push.model` applies entity world transform **after** skinning.
+
+### Per-draw SSBO upload in VulkanSceneOpaquePass
+
+The skin SSBO is **per frame slot**, overwritten each skinned draw (sequential draws, not instanced palettes):
+
+```cpp
+// src/spark/render/scene/VulkanSceneOpaquePass.cpp (concept)
+if (!d.jointPalette.IsEmpty() && d.skinnedMesh) {
+    const std::uint32_t jc = static_cast<std::uint32_t>(d.jointPalette.GetSize());
+    push.useSkinning = 1;
+    push.jointCount = static_cast<std::int32_t>(jc);
+    std::memcpy(skinSsboMapped[frameIndex], d.jointPalette.GetData(),
+                jc * sizeof(Matrix4));
+}
+```
+
+### SSBO sizing
+
+```cpp
+// include/spark/render/scene/VulkanSceneDescriptors.hpp
+static constexpr std::uint32_t kMaxSkinJoints = 128;
+static constexpr VkDeviceSize kSkinSsboBytes = 8192;  // 128 × 64 bytes per mat4
+```
+
 ## 2. Core Concepts
 
 ### Linear blend skinning math
@@ -86,8 +199,8 @@ layout(std430, set = 0, binding = 2) readonly buffer SkinSSBO {
 C++ allocation:
 
 ```cpp
-static constexpr std::uint32_t kMaxSkinJoints = 64;
-static constexpr VkDeviceSize kSkinSsboBytes = 4096;  // 64 × 64 bytes
+static constexpr std::uint32_t kMaxSkinJoints = 128;
+static constexpr VkDeviceSize kSkinSsboBytes = 8192;  // 128 × 64 bytes
 ```
 
 One mapped SSBO per frame-in-flight; **each skinned draw** overwrites the buffer before `vkCmdDrawIndexed` (not persistent across draws).

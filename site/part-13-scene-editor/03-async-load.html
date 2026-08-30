@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,48 @@
 <p>Chapter 1–2 save and load scenes synchronously — fine for ten entities, unacceptable for production levels with hundreds of meshes, skinned characters, and texture arrays. A single <code>LoadSceneFromFile</code> that blocks until every <code>TryRestore</code> succeeds will hitch the same thread responsible for input, physics (Part XIV), UI panel ticks, and <code>PresentFrame</code>.</p>
 <p>Spark's <strong>async loading</strong> model separates three concerns: (1) parsing bytes into <code>SceneDocument</code>, (2) applying entity graph and synchronous components on the main thread, and (3) completing deferred restores as <code>GameWorldAssetLoader</code> finishes IO. <code>SceneManager</code> owns this lifecycle — you hold a <code>SceneInstanceId</code>, call <code>Pump()</code> each engine tick, and poll <code>IsSceneReady</code> before rebinding editor selection.</p>
 <p>Milestone: load a scene with glTF references async; status line shows "Loading scene (async assets)…" then "Loaded N entities" without multi-frame stall.</p>
+<h2 id="b.concept-deep-dive-scenemanager-pump-lifecycle">1b. Concept Deep Dive — SceneManager Pump Lifecycle</h2>
+<h3 id="three-phase-load-parse-apply-finalize">Three-phase load: parse, apply, finalize</h3>
+<p>Large scenes split work so <code>PresentFrame</code> never blocks on disk:</p>
+<pre><code class="language-text">BeginLoadScene(path)
+  → parse file into SceneDocument (can be async)
+  → ApplyDocumentInstance on main thread (entities + sync components)
+  → defer mesh/gltf_scene restores until assets ready
+
+Each frame: SceneManager::Pump()
+  → GameWorldAssetLoader::Pump (worker → main register)
+  → RetryPendingComponents for each in-flight instance
+  → IsSceneReady(id) when pending queue empty
+</code></pre>
+<h3 id="deferred-restore-callback">Deferred restore callback</h3>
+<p>When <code>TryRestore</code> needs a glTF not yet cached, the handler returns false and the record lands in <code>pendingComponents</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/core/SceneManager.cpp
+void SceneManager::RetryPendingComponents(LoadedSceneInstance&amp; instance) {
+    for (each pending record) {
+        const IComponentSnapshotHandler* handler =
+                ComponentSnapshotRegistry::Default().FindByTag(pending.record.kind.CStr());
+        if (handler-&gt;TryRestore(*pending.object, pending.record, world, ctx)) {
+            continue;  // succeeded — drop from queue
+        }
+        stillPending.PushBack(pending);  // retry next Pump
+    }
+}
+</code></pre>
+<p><code>Apply</code> registers <code>onDeferredComponent</code> so async handlers queue work instead of blocking.</p>
+<h3 id="pump-ties-asset-loader-to-scene-readiness">Pump ties asset loader to scene readiness</h3>
+<pre><code class="language-cpp">void SceneManager::Pump() {
+    world.GetAssetLoader().Pump(world);
+    for (each LoadedSceneInstance not ready) {
+        RetryPendingComponents(instance);
+        FinalizeInstanceReadyState(instance);
+    }
+}
+
+bool SceneManager::IsSceneReady(const SceneInstanceId id) const noexcept {
+    return instance-&gt;ready &amp;&amp; !instance-&gt;failed;
+}
+</code></pre>
+<p>Editor and demos call <code>Pump()</code> every Update tick — same hook Part XVI async-assets chapter extends with progress UI.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-async-loading-matters">Why async loading matters</h3>
 <p>Large scenes parse thousands of lines and trigger mesh/texture IO. Doing that synchronously inside <code>LoadSceneFromFile</code> stalls the thread that also calls <code>PresentFrame</code> — visible hitches, input lag, and swapchain timeouts on macOS MoltenVK.</p>
@@ -1282,6 +1330,22 @@ if (sceneManager-&gt;IsSceneReady(loadedSceneId)) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenemanager-pump-lifecycle">1b. Concept Deep Dive — SceneManager Pump Lifecycle</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#three-phase-load-parse-apply-finalize">Three-phase load: parse, apply, finalize</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#deferred-restore-callback">Deferred restore callback</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#pump-ties-asset-loader-to-scene-readiness">Pump ties asset loader to scene readiness</a>
                         </li>
                         
                         <li class="toc-h2">

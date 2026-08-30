@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,146 @@
 <p>Uniform buffer objects (UBOs) carry <strong>per-frame</strong> data shared by many draws: camera matrices, light direction, shadow matrices, cluster grid metadata. Unlike push constants (small, per-draw), UBOs can hold hundreds of bytes but must obey strict <strong>memory layout</strong> rules.</p>
 <p>If C++ struct packing disagrees with GLSL <code>std140</code>, the GPU reads garbage — lights drift, shadows shear, cluster indices point at wrong lights. Symptoms are subtle: "shadows almost work" or "ambient color tints wrong channel."</p>
 <p>Spark's scene UBO is <strong>656 bytes</strong> with nested <code>mat4</code> arrays for cascaded shadows. This chapter teaches std140 mechanics on that real layout, not a toy <code>vec4 color</code> example.</p>
+<h3 id="uniform-buffers-for-beginners">Uniform buffers for beginners</h3>
+<p>A <strong>uniform buffer</strong> is a chunk of GPU memory the shader reads as <code>layout(binding = 0) uniform SceneUBO { ... } ubo;</code>. It is ideal for data <strong>shared by many draws in one frame</strong>:</p>
+<ul>
+<li>Camera <code>viewProj</code> matrix</li>
+<li>Sun direction and color</li>
+<li>Shadow cascade matrices</li>
+<li>Exposure, ambient, fog parameters</li>
+</ul>
+<p>You update it on the CPU once per frame (<code>WriteUniformBuffer</code>), bind descriptor set 0 once, and every draw in that frame sees the same camera and lights.</p>
+<p><strong>Contrast with push constants:</strong> push constants change <strong>per draw</strong> (model matrix, texture layer). UBO changes <strong>per frame</strong> (camera). Using a UBO for every object's transform would waste memory and descriptor updates.</p>
+<h3 id="why-layout-must-match-exactly-std140">Why layout must match exactly (std140)</h3>
+<p>The GPU reads raw bytes — it does not know your C++ struct names. GLSL and C++ must agree on:</p>
+<ul>
+<li><strong>Order</strong> of fields</li>
+<li><strong>Size</strong> of each field</li>
+<li><strong>Padding</strong> between fields</li>
+</ul>
+<p>Example pitfall:</p>
+<pre><code class="language-cpp">// WRONG — vec3 followed by float may pad differently than you expect
+struct Bad { Vector3 a; float b; };
+</code></pre>
+<p>std140 rules require <code>vec3</code> to align to 16 bytes. Spark uses <code>static_assert(sizeof(SceneUniformGpu) == 656)</code> and matching GLSL in <code>scene_ubo.glsl</code> — when you add a field, update <strong>both</strong> sides and re-run the assert.</p>
+<p><strong>Symptom cheat sheet:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely UBO mismatch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Whole scene tinted wrong color</td>
+<td><code>vec4</code> offset wrong — reading wrong bytes as color</td>
+</tr>
+<tr>
+<td>Shadows shear / slide</td>
+<td><code>mat4</code> array alignment wrong</td>
+</tr>
+<tr>
+<td>Lights flicker randomly</td>
+<td>Writing UBO while GPU still reads last frame (sync issue, not layout)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="b.concept-deep-dive-scene_ubo.glsl-and-sceneuniformgpu-field-map">1b. Concept Deep Dive — scene_ubo.glsl and SceneUniformGpu Field Map</h2>
+<h3 id="the-glsl-block-both-stages-include">The GLSL block both stages include</h3>
+<p><code>scene.vert</code> and <code>scene.frag</code> share one std140 uniform at set 0 binding 0:</p>
+<pre><code class="language-glsl">// shaders/scene_ubo.glsl
+layout(std140, set = 0, binding = 0) uniform SceneUBO {
+    mat4 viewProj;
+    vec4 lightDir;
+    vec4 cameraPos;
+    vec4 lightColor;
+    vec4 ambientColor;
+    vec4 ambientSky;
+    vec4 ambientProbe;
+    mat4 invViewProj;
+    vec4 viewportSize;
+    vec4 timeGlobal;
+    mat4 worldToShadowClip[4];
+    vec4 cascadeSplits;
+    vec4 cascadeAtlas[4];
+    vec4 shadowParams;
+    vec4 clusterGrid;
+    vec4 clusterDepth;
+    vec4 iblParams;
+} ubo;
+</code></pre>
+<p>Every field is accessed as <code>ubo.viewProj</code>, <code>ubo.lightDir.xyz</code>, etc. — the include guard <code>SPARK_SCENE_UBO_GLSL</code> prevents double definition when multiple headers pull the same layout.</p>
+<h3 id="c-mirror-with-size-proof">C++ mirror with size proof</h3>
+<p>Spark's CPU writer struct matches byte-for-byte:</p>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};
+    float cameraPos[4]{};
+    float lightColor[4]{};
+    float ambientColor[4]{};
+    float ambientSky[4]{};
+    float ambientProbe[4]{};
+    float invViewProj[16]{};
+    float viewportSize[4]{};
+    float timeGlobal[4]{};
+    float worldToShadowClip[4][16]{};
+    float cascadeSplits[4]{};
+    float cascadeAtlas[4][4]{};
+    float shadowParams[4]{};
+    float clusterGrid[4]{};
+    float clusterDepth[4]{};
+    float iblParams[4]{};
+};
+static_assert(sizeof(SceneUniformGpu) == 656);
+</code></pre>
+<p>When you add a field, update <strong>both</strong> files and re-run the assert. A single misaligned <code>vec4</code> shifts every field after it — shadows shear while camera matrices still look correct.</p>
+<h3 id="where-each-field-group-is-consumed">Where each field group is consumed</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Field group</th>
+<th>Primary consumer</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>viewProj</code>, <code>cameraPos</code></td>
+<td><code>scene.vert</code></td>
+<td>Clip transform; <code>V</code> vector in fragment lighting</td>
+</tr>
+<tr>
+<td><code>invViewProj</code>, <code>viewportSize</code></td>
+<td><code>scene.frag</code> sky branch</td>
+<td>Per-pixel view-ray reconstruction</td>
+</tr>
+<tr>
+<td><code>lightDir</code>, <code>lightColor</code>, <code>ambient*</code></td>
+<td><code>scene.frag</code></td>
+<td>Directional sun + hemispheric fill</td>
+</tr>
+<tr>
+<td><code>worldToShadowClip</code>, <code>cascadeSplits</code>, <code>shadowParams</code></td>
+<td><code>scene.frag</code></td>
+<td>CSM PCF shadow sampling</td>
+</tr>
+<tr>
+<td><code>clusterGrid</code>, <code>clusterDepth</code></td>
+<td><code>clustered_lights.glsl</code></td>
+<td>Punctual light iteration guard</td>
+</tr>
+<tr>
+<td><code>iblParams</code></td>
+<td><code>ibl.glsl</code></td>
+<td>Environment probe enable + layer</td>
+</tr>
+</tbody>
+</table>
+<p>Large punctual light <strong>arrays</strong> live in SSBOs (bindings 3+), not the UBO — std140 would pad each array element to 16-byte boundaries and waste kilobytes per frame.</p>
+<h3 id="vertex-vs-fragment-ubo-reads">Vertex vs fragment UBO reads</h3>
+<p>The vertex shader uses <code>ubo.viewProj</code> (and sky-related clip output). The fragment shader reads most remaining fields — sun direction, shadow matrices, cluster metadata, IBL params. Because both stages declare the same include, pipeline layout exposes binding 0 to <code>VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT</code> once; no duplicate UBO slots.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="ubo-vs-push-constants-vs-ssbo">UBO vs push constants vs SSBO</h3>
 <table class="table">
@@ -1353,6 +1499,34 @@ vkCmdBindDescriptorSets(..., dynamicOffset = offset)  // if using dynamic unifor
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#uniform-buffers-for-beginners">Uniform buffers for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-layout-must-match-exactly-std140">Why layout must match exactly (std140)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sceneuboglsl-and-sceneuniformgpu-field-map">1b. Concept Deep Dive — scene_ubo.glsl and SceneUniformGpu Field Map</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-glsl-block-both-stages-include">The GLSL block both stages include</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#c-mirror-with-size-proof">C++ mirror with size proof</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#where-each-field-group-is-consumed">Where each field group is consumed</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vertex-vs-fragment-ubo-reads">Vertex vs fragment UBO reads</a>
                         </li>
                         
                         <li class="toc-h2">

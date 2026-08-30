@@ -14,6 +14,46 @@ Hard shadow compares produce **stairstepped** edges. With CSM, PCF must sample w
 
 You will implement PCF in the lit fragment shader using the same depth convention as the shadow pass.
 
+## 1b. Concept Deep Dive — PCF and Cascade Selection in scene.frag
+
+### Cascade pick by camera-space depth
+
+```glsl
+// shaders/scene.frag (lines 88–108, concept)
+float shadowCascadeViewDepth(vec3 worldPos) { /* view-space Z */ }
+int selectShadowCascade(float viewDepth) {
+    if (viewDepth <= ubo.cascadeSplits.x) return 0;
+    if (viewDepth <= ubo.cascadeSplits.y) return 1;
+    if (viewDepth <= ubo.cascadeSplits.z) return 2;
+    return 3;
+}
+```
+
+Splits come from the same `ComputeSplitDistance` values packed into the scene UBO. Atlas UV remapping (`cascadeAtlasUv`) maps normalized UV into the correct tile within the combined shadow atlas.
+
+### 5×5 rotated PCF kernel
+
+```glsl
+// sampleSunShadowAtCascade (lines 147–168)
+float depthBias = max(ubo.shadowParams.x, 1e-5) * (1.0 + 6.25 * g);
+depthBias += ubo.shadowParams.y * 0.22 * g;
+float refZ = clamp(proj.z - depthBias, 0.0, 1.0);
+float rot01 = shadowPcfRotation01(gl_FragCoord.xy);
+float sh = sampleSunShadowPcf(shadowMap, uv, refZ, texel, penumbraScale, rot01);
+```
+
+`g` is a grazing-light factor (low N·L → wider kernel). Per-pixel rotation breaks axis-aligned blockiness from the shadow map grid. Spark uses `sampler2D` with manual compare (not `sampler2DShadow`) for MoltenVK compatibility.
+
+### Cascade blend at split boundaries
+
+```glsl
+// blendSunShadowCascades (lines 172–197)
+float wPrev = 1.0 - smoothstep(splitLow - blendLen, splitLow, viewDepth);
+sh = mix(sh, shPrev, wPrev);
+```
+
+Adjacent cascades are mixed near split distances to hide resolution pops. `blendFrac` from `ubo.timeGlobal.w` controls blend width — tunable via shadow tuning UI.
+
 ## 2. Core Concepts
 
 ### Hard compare vs PCF

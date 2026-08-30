@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,18 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Terrain is not a separate rendering subsystem — it is <strong>big opaque geometry</strong> submitted like any mesh with materials and shadow flags. Outdoor demos combine terrain with Part IX CSM, Part X fog/SSAO/tonemap, and Part VII materials.</p>
 <p>Milestone: TerrainDemo screenshot with shadows on hills, fog horizon, and tonemapped HDR sun on slopes.</p>
+<h2 id="b.concept-deep-dive-big-opaque-mesh-full-post-stack">1b. Concept Deep Dive — Big Opaque Mesh, Full Post Stack</h2>
+<h3 id="no-terrainrenderer-standard-lit-opaque-path">No TerrainRenderer — standard lit opaque path</h3>
+<p>Terrain is not a separate rendering subsystem. Submit packs it as <code>SceneDrawItem</code> with <code>mesh = Custom</code>, material push constants, and shadow flags enabled — same <code>VulkanSceneOpaquePass</code> + lit pipeline as glTF props:</p>
+<pre><code class="language-text">shadow passes (CSM) → HDR begin → opaque lit draws (terrain here)
+→ transparent → 2D composite → particles → HDR end
+→ SSAO? → tonemap → screenUi
+</code></pre>
+<p>Capture TerrainDemo in RenderDoc — terrain draws target RGBA16F with depth write ON. Judge outdoor look only after full post chain, not raw HDR in isolation.</p>
+<h3 id="csm-fog-ssao-and-tonemap-all-apply-without-terrain-variants">CSM, fog, SSAO, and tonemap all apply without terrain variants</h3>
+<p>Part IX cascade shadows modulate sun on slopes. Part X fog (forward in <code>scene.frag</code>) dissolves distant hills toward horizon color matching Part VII sky. SSAO darkens ground contact. Sun-facing slopes exceed 1.0 linear — tonemap compresses for display.</p>
+<h3 id="tiled-materialcomponent-on-heightfield-uvs">Tiled MaterialComponent on heightfield UVs</h3>
+<p>Generator sets <code>v.texCoord = { x / uvRepeat, z / uvRepeat }</code>. Assign grass ORM through <code>MaterialComponent</code> — normal maps show tangent detail on hillsides. Steep cliffs may stretch UVs; triplanar is a production extension outside Spark baseline.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="no-special-case-terrain-renderer">No special-case terrain renderer</h3>
 <p>Terrain is a <strong>large custom opaque mesh</strong> — it uses <code>VulkanSceneOpaquePass</code> with the lit pipeline, scene UBO, material push constants, and texture array like any <code>MeshComponent</code> draw. There is no <code>TerrainRenderer</code> singleton. Submit packs terrain into <code>SceneDrawItem</code> with <code>mesh = Custom</code> and shadow flags enabled.</p>
@@ -1215,6 +1233,22 @@ if (frameIndex &lt; sceneDescriptors.DescriptorSetCount()) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-big-opaque-mesh-full-post-stack">1b. Concept Deep Dive — Big Opaque Mesh, Full Post Stack</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#no-terrainrenderer-standard-lit-opaque-path">No TerrainRenderer — standard lit opaque path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#csm-fog-ssao-and-tonemap-all-apply-without-terrain-variants">CSM, fog, SSAO, and tonemap all apply without terrain variants</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#tiled-materialcomponent-on-heightfield-uvs">Tiled MaterialComponent on heightfield UVs</a>
                         </li>
                         
                         <li class="toc-h2">

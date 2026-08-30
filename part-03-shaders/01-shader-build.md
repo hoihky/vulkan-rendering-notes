@@ -20,6 +20,92 @@ Edit GLSL → glslangValidator (-V) → .spv in build tree → VkShaderModule �
 
 This chapter makes every step explicit. Open `CMakeLists.txt` near line 294 and `shaders/scene.vert` side by side. Your goal is a reliable **edit-compile-run** cycle measured in seconds, not minutes.
 
+### What is a shader? (complete beginner)
+
+A **shader** is a small program that runs on the **GPU**, not the CPU. Spark uses two kinds for 3D meshes:
+
+| Shader | Runs how many times | Job |
+|--------|---------------------|-----|
+| **Vertex** | Once per vertex | Move corner to screen; pass UV/normal to next stage |
+| **Fragment** | Once per pixel (approx.) | Pick final color; lighting, textures, shadows |
+
+You write shaders in **GLSL** (OpenGL Shading Language) with Vulkan-specific rules. The CPU never executes this code directly — it is compiled to **SPIR-V** bytecode, loaded into `VkShaderModule`, and bound to a `VkPipeline`.
+
+```text
+You edit scene.frag (GLSL text)
+  → CMake runs glslangValidator
+  → scene.frag.spv (binary SPIR-V)
+  → vkCreateShaderModule at startup / pipeline create
+  → GPU executes during vkCmdDrawIndexed
+```
+
+### Why not compile GLSL at runtime?
+
+OpenGL compiled shaders when you called `glCompileShader`. Vulkan **requires** offline SPIR-V because:
+
+1. **Faster startup** — no driver compiler in the hot path.
+2. **Deterministic errors** — compile fails at build time, not when player launches.
+3. **Cross-vendor consistency** — SPIR-V is the contract; drivers optimize from there.
+
+If `scene.vert.spv` is missing, Spark throws at pipeline creation — check your CMake build ran `SparkShaders` target.
+
+### Your first shader edit workflow
+
+1. Open `shaders/triangle.frag` (or `scene.frag`).
+2. Change `outColor = vec4(1, 0, 0, 1)` to green.
+3. Rebuild project (`cmake --build` — triggers SPIR-V regen).
+4. Run SparkDemo — confirm color change.
+5. If unchanged, you are loading stale `.spv` from wrong build directory.
+
+## 1b. Concept Deep Dive — SparkShaders CMake Graph and Entry Points
+
+### The compile loop in production
+
+Spark's root `CMakeLists.txt` locates `glslangValidator`, emits `.spv` files into `${CMAKE_BINARY_DIR}/shaders/`, and wires the aggregate target `SparkShaders` so `SparkEngine` always builds shaders first:
+
+```cmake
+# CMakeLists.txt (lines 404–443)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+set(SPV_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+
+set(SHADER_SOURCES
+        ${SHADER_DIR}/scene.vert
+        ${SHADER_DIR}/scene.frag
+        ${SHADER_DIR}/shadow_depth.vert
+        ${SHADER_DIR}/particle.vert
+        ${SHADER_DIR}/particle.frag
+        # sprite, text, UI, tonemap, post_process ...
+)
+foreach (SHADER ${SHADER_SOURCES})
+    add_custom_command(
+            OUTPUT ${SPV}
+            COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.0 -I${SHADER_DIR} ${SHADER} -o ${SPV}
+            DEPENDS ${SHADER} ${SHADER_DIR}/scene_ubo.glsl ${SHADER_DIR}/scene_push.glsl ...
+    )
+endforeach ()
+add_custom_target(SparkShaders DEPENDS ${SPV_FILES})
+```
+
+The `-I${SHADER_DIR}` flag is what makes `#include "scene_ubo.glsl"` resolve — without it, even a valid `scene.vert` fails offline compile.
+
+### scene.vert and scene.frag — the primary SPIR-V pair
+
+Both entry shaders enable the Google include extension and pull shared layouts before stage-specific code:
+
+```glsl
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+```
+
+`scene.vert` declares eight vertex locations (position through vertex color), the skin SSBO at binding 2, and eleven varyings. `scene.frag` mirrors those inputs, adds `sampler2DArray` at binding 1, and includes lighting headers (`clustered_lights.glsl`, `ibl.glsl`, …). `VulkanScenePipeline` loads the resulting `scene.vert.spv` and `scene.frag.spv` at runtime — every other file in `SHADER_SOURCES` follows the same offline compile path for its pass.
+
+### Shared headers must appear in DEPENDS
+
+Editing `scene_ubo.glsl` or `scene_push.glsl` without listing them in the custom command `DEPENDS` line leaves stale SPIR-V on disk. Ninja only rebuilds outputs whose listed dependencies changed. When a visual change does not appear after a GLSL edit, check whether the modified file is in the DEPENDS list before suspecting runtime logic.
+
 ## 2. Core Concepts
 
 ### GLSL 450 and Vulkan semantics

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,55 @@
 fifty props referencing one <code>.glb</code> parse the file fifty times and fragment the heap.</p>
 <p>Build along: load one glTF twice through <code>GameWorld</code>, confirm pointer equality, spawn many instances with
 distinct transforms.</p>
+<h3 id="asset-cache-for-beginners">Asset cache for beginners</h3>
+<p>Without a cache, spawning 50 trees each calling <code>LoadGltf("tree.glb")</code> would:</p>
+<ul>
+<li>Read the file from disk 50 times</li>
+<li>Parse JSON/binary 50 times</li>
+<li>Allocate 50 copies of the same vertex data in RAM</li>
+</ul>
+<p><strong>Cache = dictionary from path → loaded asset:</strong></p>
+<pre><code class="language-text">LoadMesh("props/rock.glb")
+  if map contains path → return existing Mesh*
+  else parse file, store in map, return pointer
+
+Instance 1, 2, 3... all share same Mesh* — only Transform differs per entity
+</code></pre>
+<p><strong>Pointer equality test:</strong> <code>LoadMesh(path) == LoadMesh(path)</code> should be <strong>true</strong> — same address means cache hit.</p>
+<p><strong>Thread safety:</strong> Spark's <code>GameWorldAssetCache</code> is used from main thread during load; async preload uses <code>Register*</code> APIs to warm cache before spawn.</p>
+<p><strong>When to invalidate:</strong> editor re-export of <code>.glb</code> changes file on disk — dev builds may need hot-reload or cache clear; shipping builds load once at level start.</p>
+<h2 id="b.concept-deep-dive-cache-architecture-in-spark">1b. Concept Deep Dive — Cache Architecture in Spark</h2>
+<h3 id="five-parallel-hash-maps-one-path-key">Five parallel hash maps, one path key</h3>
+<p><code>GameWorldAssetCache</code> owns separate maps per asset type — all keyed by <code>Utf8String</code> path:</p>
+<pre><code class="language-cpp">// include/spark/scene/assets/GameWorldAssetCache.hpp (lines 132–144)
+HashMap&lt;Utf8String, SharedPtr&lt;Mesh&gt;, ...&gt; meshCache;
+HashMap&lt;Utf8String, GltfAsset, ...&gt; gltfCache;
+HashMap&lt;Utf8String, GltfSceneDocument, ...&gt; gltfSceneCache;
+HashMap&lt;Utf8String, SkinnedGltfAsset, ...&gt; skinnedGltfCache;
+HashMap&lt;Utf8String, SharedPtr&lt;Texture2D&gt;, ...&gt; textureCache;
+</code></pre>
+<p><code>LoadGltf("chair.glb")</code> and <code>LoadMesh("chair.glb")</code> hit <strong>different</strong> maps — the rigid glTF path stores a full <code>GltfAsset</code> with materials; <code>LoadMesh</code> on a <code>.glb</code> delegates to <code>LoadGltf(path).mesh</code>.</p>
+<h3 id="skinnedgltfasset-shared-skeleton-mesh-locomotion-hints">SkinnedGltfAsset — shared skeleton + mesh + locomotion hints</h3>
+<pre><code class="language-cpp">// include/spark/scene/assets/GameWorldAssetCache.hpp
+struct SkinnedGltfAsset {
+    SharedPtr&lt;SkinnedMesh&gt; mesh;
+    SharedPtr&lt;Skeleton&gt; skeleton;
+    Array&lt;GltfMaterialDesc&gt; materials;
+    std::uint32_t walkClipIndex = 0;
+    Quaternion bindUpAlignment{Quaternion::Identity};
+    float bindFacingYawOffset = 0.0F;
+};
+</code></pre>
+<p><code>LoadSkinnedGltf</code> parses once, auto-detects walk clip by name (<code>"walk"</code> substring), and caches the whole struct. Ten NPCs share one <code>SkinnedGltfAsset</code> pointer; each entity gets its own <code>AnimatorComponent</code> with independent time.</p>
+<h3 id="register-apis-for-async-loading">Register* APIs for async loading</h3>
+<p><code>GameWorldAssetLoader</code> decodes on a worker thread, then calls <code>RegisterGltf</code> / <code>RegisterSkinnedGltf</code> on the main thread:</p>
+<pre><code class="language-text">RequestGltf(path)  →  worker: parse file  →  main: RegisterGltf(asset, path)
+        ↓
+gltfCache[path] = asset
+</code></pre>
+<p>Gameplay code polling <code>IsGltfReady(path)</code> can spawn entities only after registration — avoids half-loaded meshes on frame 1.</p>
+<h3 id="retainrelease-for-streaming">Retain/release for streaming</h3>
+<p><code>RetainAsset</code> / <code>ReleaseAsset</code> refcount cache entries by <code>CachedAssetKind</code>. When count hits zero, the entry can be evicted — editor streaming and level unload use this without leaking <code>SharedPtr</code> cycles.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="path-keyed-caches">Path-keyed caches</h3>
 <p><code>GameWorldAssetCache</code> owns separate maps for meshes, glTF bundles, skinned glTF, and textures — keyed by <code>Utf8String</code> path. First load hits disk; subsequent loads return the same <code>SharedPtr</code>.</p>
@@ -1244,6 +1299,30 @@ automatically reduces unique custom meshes in the scene snapshot. Part VII textu
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#asset-cache-for-beginners">Asset cache for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cache-architecture-in-spark">1b. Concept Deep Dive — Cache Architecture in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#five-parallel-hash-maps-one-path-key">Five parallel hash maps, one path key</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skinnedgltfasset-shared-skeleton-mesh-locomotion-hints">SkinnedGltfAsset — shared skeleton + mesh + locomotion hints</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#register-apis-for-async-loading">Register* APIs for async loading</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#retainrelease-for-streaming">Retain/release for streaming</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -19,6 +19,168 @@ Shader bugs are painful because the GPU is a black box. Symptoms are vague: "bla
 
 Professional debugging uses **layered tools** — each layer falsifies hypotheses. This chapter builds a checklist around Spark's `scene.vert` / `scene.frag` so you spend minutes, not afternoons, on each class of bug.
 
+### The four layers of shader debugging (beginner)
+
+When the screen is wrong, work **top to bottom** — never jump to rewriting BRDF math first.
+
+| Layer | Tool | Question answered |
+|-------|------|-------------------|
+| **1. Compile** | `glslangValidator`, CMake build | Does GLSL compile to SPIR-V? |
+| **2. Pipeline** | Vulkan validation layers | Does pipeline match vertex layout, render pass, push size? |
+| **3. Bindings** | Validation + RenderDoc | Are descriptors, push constants, buffers bound correctly? |
+| **4. Math** | RenderDoc pixel history, debug colors | Is the shader logic wrong? |
+
+```text
+Black screen workflow:
+  1. Did CMake build .spv? (layer 1)
+  2. Any validation error on vkCmdDraw? (layer 2–3)
+  3. RenderDoc: is draw call present? Pipeline bound? (layer 3)
+  4. Replace outColor = vec4(1,0,0,1) in frag (layer 4)
+```
+
+**Debug visualization trick:** output a solid color or `vTexCoord` as RGB temporarily. If solid red appears, pipeline and bindings work — bug is in lighting math. If still black, problem is earlier.
+
+**RenderDoc for beginners:** capture one frame, find `vkCmdDrawIndexed` for your mesh, inspect bound vertex buffer, push constants, and fragment shader output at a pixel.
+
+## 1b. Concept Deep Dive — Debugging scene.vert / scene.frag End-to-End
+
+### Layer 1 — compile the exact translation unit
+
+Scene shaders pull multiple includes — always compile with the same flags CMake uses:
+
+```bash
+glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.vert -o /tmp/scene.vert.spv
+glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.frag -o /tmp/scene.frag.spv
+```
+
+Common failures: missing `-Ishaders` (cannot open `scene_ubo.glsl`), undefined `ubo` (include order wrong), duplicate binding (forgot include guard). Fix at compile time before launching SparkDemo.
+
+### Layer 2 — validate layout contracts
+
+Three size proofs must pass before draw debugging:
+
+| Contract | Proof | Symptom if wrong |
+|----------|-------|------------------|
+| UBO | `sizeof(SceneUniformGpu) == 656` | Sheared shadows, wrong sun color |
+| Push | `sizeof(ModelPushConstants) == 348` | Scrambled transforms / map layers |
+| Vertex | 80-byte stride, locations 0–7 | Exploded mesh, swimming UVs |
+
+Validation layers flag push size mismatches (`VUID-vkCmdPushConstants-*`) and vertex location gaps (`VUID-VkGraphicsPipelineCreateInfo-pVertexInput-*`).
+
+### Layer 3 — RenderDoc scene-pass checklist
+
+For one `vkCmdDrawIndexed` in the opaque pass, verify in order:
+
+1. **Pipeline** — `pipelineLit` vs `pipelineSky` vs `pipelineLitTransparent`
+2. **Descriptor set 0** — UBO binding 0, `sceneTextures` binding 1, skin SSBO binding 2 (skinned only)
+3. **Push constants** — first 64 bytes = `model` matrix; `textureLayer` at offset 68; `shadingModel` at offset 104
+4. **Vertex inputs** — six or eight attributes depending on mesh type
+
+### Layer 4 — surgical debug outputs in scene.frag
+
+Replace `main()` body temporarily — rebuild SPIR-V after each change:
+
+```glsl
+// Normal visualization
+outColor = vec4(normalize(vNormal) * 0.5 + 0.5, 1.0);
+
+// UV visualization
+outColor = vec4(vTexCoord0, 0.0, 1.0);
+
+// Push constant reach test
+if (push.shadingModel == 99) outColor = vec4(1.0, 0.0, 1.0, 1.0);
+```
+
+If solid magenta appears but PBR is black, bindings and pipeline are fine — isolate lighting by commenting out `#include "clustered_lights.glsl"` and testing directional-only sun from `ubo.lightDir`.
+
+### Stale SPIR-V — the silent layer zero
+
+If debug color changes never appear despite successful compile, compare `.spv` timestamps in `${CMAKE_BINARY_DIR}/shaders/` against your edited `.glsl`. Missing CMake DEPENDS on an include file is the most common cause — touch `scene.frag` or run `cmake --build . --target SparkShaders` clean.
+
+### Step-by-step RenderDoc capture guide (Spark)
+
+**RenderDoc** is a free GPU debugger. It records one frame of Vulkan commands and lets you inspect every draw call, bound buffer, shader, and pixel output — like a time machine for the GPU.
+
+**What a "capture guide" means:** numbered steps to go from "something looks wrong" to "I can see exactly which `vkCmdDrawIndexed` failed and what data the shader received."
+
+#### One-time setup (macOS / Linux)
+
+1. Install [RenderDoc](https://renderdoc.org/) (1.29+ supports Vulkan on Apple Silicon via MoltenVK).
+2. Build Spark in **Debug** or **RelWithDebInfo** so validation layers and symbols are available.
+3. Launch RenderDoc → **File → Launch Application**.
+4. **Executable:** path to your demo binary (e.g. `build/bin/ThreeDDemo`).
+5. **Working directory:** Spark repo root (so relative asset paths resolve).
+6. **Environment:** optional `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` if not enabled in-engine.
+
+#### Capture one frame
+
+1. Click **Launch** — demo window opens inside RenderDoc's hook.
+2. Reproduce the bug (black mesh, wrong texture, etc.).
+3. Press **F12** (default) or click **Capture Frame** in the RenderDoc overlay — saves a `.rdc` file.
+4. The capture opens automatically in the Event Browser.
+
+#### Navigate to your draw call
+
+```text
+Event Browser (left)
+  └── Queue 0
+        └── vkQueueSubmit
+              └── Command Buffer N
+                    ├── vkCmdBeginRenderPass  (HDR scene pass)
+                    ├── vkCmdBindPipeline     (pipelineLit)
+                    ├── vkCmdBindDescriptorSets (set 0)
+                    ├── vkCmdPushConstants
+                    └── vkCmdDrawIndexed      ← select this
+```
+
+**Tips for Spark:**
+
+- Filter events by typing `DrawIndexed` in the search box.
+- Sky draws use `pipelineSky`; opaque meshes use `pipelineLit`; particles use a separate pipeline.
+- Multiple draws per frame — pick the draw whose **Pipeline** name matches the pass you care about.
+
+#### Inspect pipeline state (Layer 3)
+
+With a `vkCmdDrawIndexed` selected, open the **Pipeline State** tab:
+
+| Tab | What to verify for Spark scene pass |
+|-----|-------------------------------------|
+| **Vertex Input** | Locations 0–2 (rigid) or 0–7 (skinned); stride 80 bytes for custom pool |
+| **Shader Stages** | `scene.vert` + `scene.frag` SPIR-V; click **Edit** to see disassembly |
+| **Descriptor Sets** | Set 0: UBO (binding 0), `sceneTextures` (1), Skin SSBO (2 if skinned) |
+| **Push Constants** | `model` matrix at offset 0; `textureLayer` at byte 68; `shadingModel` at 104 |
+
+Red highlights mean bound resource is null or incompatible — common when descriptor not updated.
+
+#### Inspect mesh data
+
+1. **Mesh Output** tab → click a vertex on the preview.
+2. Check **VS Input** attributes: position, normal, UV, joint indices (skinned).
+3. **VS Output** / **PS Input**: interpolated varyings reaching the fragment shader.
+
+If VS Input positions look correct but VS Output `gl_Position` is off-screen, suspect `ubo.viewProj` or `push.model`.
+
+#### Pixel debugging (Layer 4)
+
+1. **Texture Viewer** tab → click a pixel on the mesh.
+2. **History** shows which draw wrote that pixel (useful when something is occluded).
+3. **Debug** picker → choose **PS Output** to see final fragment color before blend.
+4. Enable **Highlight Drawcall** to see only geometry from the selected draw.
+
+**Workflow for "black mesh":**
+
+```text
+1. Is there a DrawIndexed for your mesh?  → No: submit/cull bug (CPU)
+2. Pipeline bound?                        → No: record order bug
+3. Push model matrix sane?                → No: SceneSubmit transform
+4. textureLayer = -1 but expecting map?   → Material submit / upload
+5. PS output black but VS OK?             → lighting math — try debug color in frag
+```
+
+#### Export and share
+
+**File → Export** saves `.rdc` for sharing with teammates. Captures include shaders and buffers — no need to reproduce locally if you attach the file to a bug report.
+
 ## 2. Core Concepts
 
 ### Layer 1: Offline compile (glslangValidator)

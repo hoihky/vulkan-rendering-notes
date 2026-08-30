@@ -15,6 +15,41 @@ Global exposure works for uniform outdoor scenes; **interiors, caves, and cinema
 
 **Post-process volumes** solve this on the CPU: test camera position against authored bounds, pick the winning volume, write `SceneRenderParams.exposure`, and pass the resolved value into `RecordTonemap`. Spark uses `PostProcessVolumeComponent` and `ApplyRegionalRenderVolumes` — no extra render pass required.
 
+## 1b. Concept Deep Dive — CPU Volume Resolve, GPU Tonemap Multiply
+
+### Volumes mutate SceneRenderParams, not Vulkan objects
+
+Gameplay never calls Vulkan for exposure tweaks. Each frame `ApplyRegionalRenderVolumes` walks ECS, tests camera position against oriented box/sphere bounds, and writes overrides into the render snapshot before uniform upload:
+
+```cpp
+// src/spark/scene/volume/RenderVolumes.cpp (lines 88–114)
+    world.ForEachActiveGameObject([&](GameObject* o) {
+        const PostProcessVolumeComponent* post = o->GetComponent<PostProcessVolumeComponent>();
+        if (post == nullptr || !post->IsEnabled()) return;
+        if (!PointInsideVolume(cameraPositionWorld, *o, post->GetShape(), post->GetHalfExtents())) return;
+        if (!postFound || post->GetPriority() > postPriority) {
+            postFound = true;
+            postPriority = post->GetPriority();
+            if (post->HasExposureOverride()) {
+                params.exposure = post->GetExposure();
+            }
+            if (post->HasSsaoOverride()) {
+                params.ssaoEnabled = post->GetSsaoEnabled();
+            }
+        }
+    });
+```
+
+Strict **priority winner** — highest number beats lower on overlap, not distance-weighted blend.
+
+### Exposure scales tonemap input, not sun intensity
+
+`PostProcessVolumeComponent` can also override `ambientScale` — that affects scene UBO ambient terms. Exposure alone multiplies HDR radiance in `tonemap.frag` via `resolvedLighting.exposure` passed to `RecordTonemap`. Artists darken cave **display** without rebalancing every directional light entity.
+
+### Shared volume math with fog
+
+`PointInsideVolume` in `VolumeRegions.cpp` serves both post and fog volume components — same transform-to-local-space test, independent priority counters per volume type. Camera position must be final for the frame (after physics, before submit) when resolve runs.
+
 ## 2. Core Concepts
 
 ### Post volume data model

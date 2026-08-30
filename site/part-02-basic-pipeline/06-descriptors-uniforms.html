@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1077,6 +1083,113 @@
 </tbody>
 </table>
 <p><strong>Descriptor sets</strong> bind UBOs, texture arrays, and SSBOs to shader slots. This chapter covers the UBO path — without it, shaders read uninitialized memory and everything renders black or magenta validation errors.</p>
+<h2 id="b.concept-deep-dive-scene-descriptor-set-0">1b. Concept Deep Dive — Scene Descriptor Set 0</h2>
+<h3 id="layout-mirrors-glsl-bindings-binding-0-is-sceneubo">Layout mirrors GLSL bindings — binding 0 is SceneUBO</h3>
+<p>Spark's <code>VulkanSceneDescriptors::CreateSetLayout</code> declares 14 bindings matching <code>scene.vert</code> / <code>scene.frag</code>. Part II focuses on binding 0 — the per-frame uniform buffer both stages read:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneDescriptors.cpp (lines 20–35)
+void VulkanSceneDescriptors::CreateSetLayout(VkDevice device) {
+    VkDescriptorSetLayoutBinding bindings[14]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Binding</th>
+<th>Type</th>
+<th>Part II role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>UBO</td>
+<td><code>viewProj</code>, lights, camera, time</td>
+</tr>
+<tr>
+<td>1</td>
+<td>combined image sampler</td>
+<td>Scene texture array (Part IV)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>SSBO</td>
+<td>Skin joint palette (Part VI)</td>
+</tr>
+<tr>
+<td>3–13</td>
+<td>mixed</td>
+<td>Lights, shadows, IBL — later parts</td>
+</tr>
+</tbody>
+</table>
+<p>The layout handle is passed to <code>vkCreatePipelineLayout</code> before any graphics pipeline exists.</p>
+<h3 id="per-flight-uniform-buffers-cpu-writes-while-gpu-reads-prior-frame">Per-flight uniform buffers — CPU writes while GPU reads prior frame</h3>
+<p>With two frames in flight, Spark allocates one host-visible UBO per flight index. Each buffer is mapped once at creation and <code>memcpy</code>'d every frame after the fence wait:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneDescriptors.cpp (lines 101–123)
+void VulkanSceneDescriptors::CreateUniformBuffers(
+        VkPhysicalDevice physicalDevice, VkDevice device, std::uint32_t framesInFlight) {
+    constexpr VkDeviceSize bufferSize = kSceneUniformGpuBytes;
+    for (std::size_t i = 0; i &lt; framesInFlight; ++i) {
+        VulkanRendererGpu::CreateBuffer(
+                physicalDevice, device, bufferSize,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                uniformBuffers[i], uniformBuffersMemory[i]);
+        vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &amp;uniformBuffersMapped[i]);
+    }
+}
+</code></pre>
+<pre><code class="language-text">Frame 0: CPU writes uniformBuffersMapped[0]  →  GPU reads descriptor set 0 (flight 0)
+Frame 1: CPU writes uniformBuffersMapped[1]  →  GPU still reading flight 0 UBO — safe
+</code></pre>
+<h3 id="vulkansceneuniformwriter-cpu-struct-must-match-std140">VulkanSceneUniformWriter — CPU struct must match std140</h3>
+<p><code>WriteUniformBuffer</code> calls <code>VulkanSceneUniformWriter::Write</code>, which packs <code>SceneRenderParams</code> and resolved lighting into the GPU layout with static asserts on every field offset:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneUniformWriter.cpp (lines 15–42)
+void VulkanSceneUniformWriter::Write(
+        void* mappedUbo,
+        const SceneRenderParams&amp; scene,
+        const ResolvedSceneLighting&amp; lighting,
+        const VkExtent2D swapchainExtent,
+        /* ... */) const {
+    using Ubo = SceneUniformGpu;
+    static_assert(offsetof(Ubo, ambientSky) == 128);
+    static_assert(sizeof(Ubo) == 656);
+    std::memset(mappedUbo, 0, static_cast&lt;std::size_t&gt;(kSceneUniformGpuBytes));
+
+    SceneUniformGpu u{};
+    std::memcpy(u.viewProj, scene.viewProjection.m, sizeof(u.viewProj));
+    u.lightDir[0] = lightDir.x;
+    // ... shadow matrices, cluster grid, IBL — zeroed in Part II
+}
+</code></pre>
+<p>Misaligned CPU packing causes subtle bugs — wrong light direction but no validation error.</p>
+<h3 id="bind-descriptor-set-before-draw">Bind descriptor set before draw</h3>
+<p><code>VulkanSceneOpaquePass::Record</code> binds set 0 once per pass, then loops draws with push constants for per-object data:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 99–107)
+vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        ctx.pipelineLayout,
+        0,
+        1,
+        &amp;ctx.descriptorSet,
+        0,
+        nullptr);
+</code></pre>
+<p>Push constants (<code>model</code> matrix, albedo) update per draw without touching the descriptor set.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="descriptor-set-layout">Descriptor set layout</h3>
 <p>Shader declares:</p>
@@ -1246,6 +1359,26 @@ vkCmdBindDescriptorSets(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scene-descriptor-set-0">1b. Concept Deep Dive — Scene Descriptor Set 0</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layout-mirrors-glsl-bindings-binding-0-is-sceneubo">Layout mirrors GLSL bindings — binding 0 is SceneUBO</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-flight-uniform-buffers-cpu-writes-while-gpu-reads-prior-frame">Per-flight uniform buffers — CPU writes while GPU reads prior frame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vulkansceneuniformwriter-cpu-struct-must-match-std140">VulkanSceneUniformWriter — CPU struct must match std140</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#bind-descriptor-set-before-draw">Bind descriptor set before draw</a>
                         </li>
                         
                         <li class="toc-h2">

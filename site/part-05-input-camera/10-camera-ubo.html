@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1059,6 +1065,119 @@
 <pre><code class="language-text">Camera rig / resolver  →  SceneRenderParams  →  VulkanSceneUniformWriter  →  SceneUBO  →  shaders
 </code></pre>
 <p>This chapter closes Part V by documenting every field, who writes it, and how shaders consume it — connecting input and camera work to Part III–IV shader code.</p>
+<h3 id="from-camera-on-cpu-to-ubo-on-gpu-beginner">From camera on CPU to <code>ubo</code> on GPU (beginner)</h3>
+<p>Shaders cannot read your <code>FlyCamera</code> struct. Every frame you <strong>copy</strong> matrices into GPU memory:</p>
+<pre><code class="language-text">FlyCamera / CameraComponent
+→ view, proj matrices multiplied → viewProj
+→ SceneRenderParams.viewProjection
+→ VulkanSceneUniformWriter::Write
+→ VkBuffer (UBO binding 0)
+→ scene.vert: gl_Position = ubo.viewProj * model * vec4(position, 1)
+</code></pre>
+<p><strong>Critical fields:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Field</th>
+<th>Shader use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>viewProj</code></td>
+<td>Transform vertices to clip space</td>
+</tr>
+<tr>
+<td><code>cameraPos</code></td>
+<td>Specular, fog, rim lighting in <code>scene.frag</code></td>
+</tr>
+<tr>
+<td><code>invViewProj</code></td>
+<td>Reconstruct world position from depth (sky, debug)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Common bugs:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mesh off-center</td>
+<td>View matrix inverted (eye vs target swapped)</td>
+</tr>
+<tr>
+<td>Specular wrong direction</td>
+<td><code>cameraPos</code> not updated when using manual view matrix</td>
+</tr>
+<tr>
+<td>Sky doesn't match scene</td>
+<td><code>invViewProj</code> stale or wrong column-major upload</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Column-major:</strong> GLM and GLSL expect column vectors — <code>viewProj * vec4(pos,1)</code>, not <code>vec4 * viewProj</code>.</p>
+<p>Part V ends here: input → camera matrices → UBO → Part III shaders draw the frame.</p>
+<h2 id="b.concept-deep-dive-sceneuniformgpu-camera-fields">1b. Concept Deep Dive — SceneUniformGpu Camera Fields</h2>
+<h3 id="std140-layout-656-bytes">std140 layout (656 bytes)</h3>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};
+    float cameraPos[4]{};
+    float lightColor[4]{};
+    float ambientColor[4]{};
+    float invViewProj[16]{};
+    float viewportSize[4]{};
+    // shadow cascades, cluster grid, IBL params follow...
+};
+static_assert(sizeof(SceneUniformGpu) == 656);
+</code></pre>
+<p>Binding 0 in scene descriptor set 0 — updated every frame per swapchain image via host-visible or persistently mapped memory.</p>
+<h3 id="writer-copies-from-scenerenderparams">Writer copies from SceneRenderParams</h3>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneUniformWriter.cpp (excerpt)
+std::memcpy(u.viewProj, scene.viewProjection.m, sizeof(u.viewProj));
+u.cameraPos[0] = scene.cameraPositionWorld.x;
+u.cameraPos[1] = scene.cameraPositionWorld.y;
+u.cameraPos[2] = scene.cameraPositionWorld.z;
+Matrix4 invVp;
+if (scene.viewProjection.TryInvert(invVp)) {
+    std::memcpy(u.invViewProj, invVp.m, sizeof(u.invViewProj));
+}
+</code></pre>
+<p><code>cameraPositionWorld</code> must match the eye used to build <code>viewProj</code> — specular, fog, and rim in <code>scene.frag</code> read <code>ubo.cameraPos</code>, not a recomputed inverse view translation.</p>
+<h3 id="shader-consumption-map">Shader consumption map</h3>
+<table class="table">
+<thead>
+<tr>
+<th>UBO field</th>
+<th>Consumer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>viewProj</code></td>
+<td><code>scene.vert</code> clip transform</td>
+</tr>
+<tr>
+<td><code>cameraPos</code></td>
+<td><code>scene.frag</code> view vector V for specular</td>
+</tr>
+<tr>
+<td><code>invViewProj</code></td>
+<td>Sky, SSR-style debug, world reconstruction</td>
+</tr>
+<tr>
+<td><code>viewportSize</code></td>
+<td>Screen-space effects, cluster indexing</td>
+</tr>
+</tbody>
+</table>
+<p>Any camera rig — <code>FlyCamera</code>, <code>CharacterCameraRig</code>, ECS <code>CameraComponent</code>, <code>Camera2D</code> — ends at the same two CPU fields: <code>SceneRenderParams::viewProjection</code> and <code>cameraPositionWorld</code>. Part V input work is complete once those fields are correct before <code>PresentFrame</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="scenerenderparams-camera-fields">SceneRenderParams camera fields</h3>
 <pre><code class="language-cpp">struct SceneRenderParams {
@@ -1247,6 +1366,26 @@ vec3 dir = normalize(farW - cam);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#from-camera-on-cpu-to-on-gpu-beginner">From camera on CPU to  on GPU (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sceneuniformgpu-camera-fields">1b. Concept Deep Dive — SceneUniformGpu Camera Fields</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#std140-layout-656-bytes">std140 layout (656 bytes)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#writer-copies-from-scenerenderparams">Writer copies from SceneRenderParams</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shader-consumption-map">Shader consumption map</a>
                         </li>
                         
                         <li class="toc-h2">

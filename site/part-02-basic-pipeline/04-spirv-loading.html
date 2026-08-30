@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,68 @@
 <pre><code class="language-text">Author GLSL → compile offline (glslangValidator) → load bytes → vkCreateShaderModule
 </code></pre>
 <p>If this pipeline is slow or manual, you will avoid shader iteration. Spark automates compilation via CMake and loads from <code>SPARK_SHADER_SPV_DIR</code>. This chapter makes that path explicit so shader edits reliably show up in SparkDemo.</p>
+<h2 id="b.concept-deep-dive-from-glsl-to-vkshadermodule">1b. Concept Deep Dive — From GLSL to VkShaderModule</h2>
+<h3 id="offline-compile-runtime-load-why-spark-ships.spv-files">Offline compile, runtime load — why Spark ships .spv files</h3>
+<p>Vulkan drivers consume SPIR-V, not GLSL source. Spark's CMake <code>SparkShaders</code> target runs <code>glslangValidator -V</code> on every shader at build time; the engine reads binary bytes at startup. This keeps runtime fast and lets CI fail on shader syntax errors before any draw:</p>
+<pre><code class="language-text">shaders/scene.vert  ──glslangValidator──►  cmake-build/shaders/scene.vert.spv
+shaders/scene.frag ──glslangValidator──►  cmake-build/shaders/scene.frag.spv
+                                              │
+                                              ▼
+                              VulkanSpvShaderLoader::ReadSpvFile
+                                              │
+                                              ▼
+                                    vkCreateShaderModule
+                                              │
+                                              ▼
+                              VkPipelineShaderStageCreateInfo (stage + "main")
+</code></pre>
+<p>The <code>SparkEngine</code> target depends on <code>SparkShaders</code> — a clean build always produces fresh SPIR-V before linking.</p>
+<h3 id="readspvfile-absolute-path-from-compile-definition">ReadSpvFile — absolute path from compile definition</h3>
+<p><code>SPARK_SHADER_SPV_DIR</code> is baked in at compile time so the loader finds <code>.spv</code> regardless of working directory:</p>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 12–41)
+Array&lt;char&gt; VulkanSpvShaderLoader::ReadSpvFile(const char* filename) const {
+    Utf8String pathUtf(SPARK_SHADER_SPV_DIR);
+    pathUtf.AppendUtf8("/");
+    pathUtf.AppendUtf8(filename);
+    FILE* file = std::fopen(pathUtf.CStr(), "rb");
+    if (file == nullptr) {
+        throw std::runtime_error(std::string("failed to open shader: ") + pathUtf.CStr());
+    }
+    // seek, read full file into Array&lt;char&gt;, fclose
+    return buffer;
+}
+</code></pre>
+<p>A <code>failed to open shader</code> exception almost always means <code>cmake --build</code> was not run after editing GLSL.</p>
+<h3 id="createshadermodule-spir-v-as-uint32-word-stream">CreateShaderModule — SPIR-V as uint32 word stream</h3>
+<p>Vulkan expects <code>codeSize</code> divisible by 4 and <code>pCode</code> pointing at the SPIR-V magic header (<code>0x07230203</code>):</p>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 44–53)
+VkShaderModule VulkanSpvShaderLoader::CreateShaderModule(const Array&lt;char&gt;&amp; code) const {
+    VkShaderModuleCreateInfo shaderModuleCreateInfo{};
+    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderModuleCreateInfo.codeSize = code.GetSize();
+    shaderModuleCreateInfo.pCode = reinterpret_cast&lt;const std::uint32_t*&gt;(code.GetData());
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(device, &amp;shaderModuleCreateInfo, nullptr, &amp;shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("vkCreateShaderModule failed");
+    }
+    return shaderModule;
+}
+</code></pre>
+<p>Invalid SPIR-V from a corrupted file fails here; valid GLSL that fails glslang never reaches runtime.</p>
+<h3 id="modules-wired-into-pipeline-creation">Modules wired into pipeline creation</h3>
+<p><code>VulkanScenePipeline::CreateGraphicsPipeline</code> loads both stages, creates modules, then passes them to <code>vkCreateGraphicsPipelines</code>. Destroy order is pipelines first, then modules — encoded in <code>DestroyGraphicsPipeline</code>:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 52–67)
+const Array&lt;char&gt; vertCode = shaders.ReadSpvFile("scene.vert.spv");
+const Array&lt;char&gt; fragCode = shaders.ReadSpvFile("scene.frag.spv");
+vertModule = shaders.CreateShaderModule(vertCode);
+fragModule = shaders.CreateShaderModule(fragCode);
+
+VkPipelineShaderStageCreateInfo vertShaderStage{};
+vertShaderStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+vertShaderStage.module = vertModule;
+vertShaderStage.pName = "main";
+</code></pre>
+<p>Chapter 7's <code>triangle.vert.spv</code> / <code>triangle.frag.spv</code> follow the identical loader path with empty vertex input state.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-offline-spir-v">Why offline SPIR-V</h3>
 <table class="table">
@@ -1236,6 +1304,26 @@ fragModule = shaders.CreateShaderModule(fragCode);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-from-glsl-to-vkshadermodule">1b. Concept Deep Dive — From GLSL to VkShaderModule</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#offline-compile-runtime-load-why-spark-ships-spv-files">Offline compile, runtime load — why Spark ships .spv files</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#readspvfile-absolute-path-from-compile-definition">ReadSpvFile — absolute path from compile definition</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#createshadermodule-spir-v-as-uint32-word-stream">CreateShaderModule — SPIR-V as uint32 word stream</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#modules-wired-into-pipeline-creation">Modules wired into pipeline creation</a>
                         </li>
                         
                         <li class="toc-h2">

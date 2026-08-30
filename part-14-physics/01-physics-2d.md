@@ -17,6 +17,82 @@ Spark's `PhysicsWorld2D::Simulate` is deliberately **renderer-agnostic**: no Vul
 
 Milestone: run Platformer2DDemo — player falls, lands on tilemap, sprite Y matches physics body same frame.
 
+### Physics vs rendering (beginner)
+
+**Physics** answers: where should objects be next frame given forces and collisions?  
+**Rendering** answers: what picture do we draw given those positions?
+
+They must run in order:
+
+```text
+OnUpdate:
+  1. Read input
+  2. Apply gameplay logic
+  3. PhysicsWorld2D::Simulate(dt)   ← moves TransformComponents
+  4. (other systems)
+
+OnRender:
+  5. SceneSubmit reads transforms   ← builds draw list from NEW positions
+  6. PresentFrame                   ← GPU draws
+```
+
+If physics runs **after** submit, sprites render one frame behind collisions — classic "tunneling through floor" feel even when physics is correct.
+
+Spark keeps physics **free of Vulkan** — `PhysicsWorld2D` never touches `SceneRenderParams`. It only updates `TransformComponent` and collision state. Rendering stays unaware of solver iterations or contact manifolds.
+
+### What 2D physics simulates
+
+| Concept | Platformer example |
+|---------|-------------------|
+| Rigid body | Player capsule with velocity |
+| Collider | Box matching sprite feet |
+| Static geometry | Tilemap solid tiles |
+| Gravity | Negative Y acceleration each step |
+| Contact resolution | Stop falling when feet touch floor |
+
+Part XIV sync chapter connects 3D physics to meshes; this chapter is the 2D foundation.
+
+## 1b. Concept Deep Dive — PhysicsWorld2D Simulate Stages
+
+### Five-stage pipeline, zero Vulkan types
+
+`PhysicsWorld2D::Simulate` runs a fixed sequence each frame — rebuild colliders, integrate, resolve contacts, solve joints:
+
+```cpp
+// src/spark/physics/PhysicsWorld2D.cpp
+void PhysicsWorld2D::Simulate(GameWorld& world, const FrameTiming& timing) {
+    const float dt = std::min(timing.deltaTimeSeconds, kMaxPhysicsStepSeconds2D);
+
+    Array<Collider2D> colliders;
+    SpatialHashGrid2D broadPhase;
+    ColliderBakePipeline2D::GetDefault().Rebuild(world, broadPhaseCellSize, colliders, broadPhase);
+
+    RigidbodyIntegrator2D::Integrate(world, dt, settings);
+    ContactResolver2D::ResolveAllDynamicsAgainstStatics(world, colliders, broadPhase);
+    ContactResolver2D::ResolveDynamicDynamicPairs(dynamics, settings, ...);
+    JointSolver2D::Solve(world, settings);
+}
+```
+
+No `SceneRenderParams`, no command buffers — only ECS mutation. Rendering reads updated `TransformComponent` values later in the frame.
+
+### Platformer2DDemo ordering: input → physics → combat
+
+Spark applies gameplay velocity **before** simulate, then reads post-physics position for bullets and animation:
+
+```cpp
+// src/spark/demo/Platformer2DDemo.cpp
+playerRb->SetVelocity(v);          // gameplay sets intent
+physics.Simulate2D(world, timing); // physics writes Transform
+playerCombat.TryFireOnAttackPressed(..., playerTr->GetLocalTransform().translation, ...);
+```
+
+If `Simulate2D` ran after `SceneSubmit`, sprites would render one frame behind collisions.
+
+### PhysicsSubsystem as the gameplay entry point
+
+Demos hold one `PhysicsSubsystem` member and call `Simulate2D` from Update — same facade pattern as Part XIV's 3D chapter uses for `Simulate3D` / `SimulateAll3D`.
+
 ## 2. Core Concepts
 
 ### PhysicsWorld2D role in the engine

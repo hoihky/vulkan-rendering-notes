@@ -16,6 +16,30 @@ Spark builds the frustum once from the same column-major view-projection matrix 
 
 Milestone: log visible draw count on TerrainDemo — count drops when camera faces sky away from terrain; tilemap visible tile count drops when panning map off-screen.
 
+## 1b. Concept Deep Dive — Frustum Tests at Submit, Not on GPU
+
+### One frustum from the same viewProj used for rendering
+
+Spark builds `Frustum::FromColumnMajorViewProjection(viewProjection)` once per submit, then tests axis-aligned bounds before filling `SceneRenderParams`. Off-screen meshes never reach `vkCmdDraw`:
+
+```cpp
+// src/spark/scene/submit/SceneSpatialCull.cpp (concept)
+const Frustum fr = Frustum::FromColumnMajorViewProjection(viewProjection);
+if (frustum.IntersectsAxisAlignedBox(r.aabbMin, r.aabbMax)) {
+    sink.OnDrawable(r.object, *r.mesh, r.material, r.world);
+}
+```
+
+Brute-force O(n) loop is the teaching baseline — BVH/grid acceleration in `SceneSpatialPolicyComponent` is optional when object count grows.
+
+### Shared frustum for 3D meshes and 2D tile chunks
+
+`SceneSpriteTileCull` constructs the same frustum for sprite bounds and 16×16 tilemap chunks. Mesh cull and 2D visibility stay consistent at screen edges — pan a tilemap off-screen and visible tile count drops without a separate cull pass.
+
+### Terrain AABB is conservative
+
+Terrain draw record carries world AABB spanning the full heightfield extent — looking at sky may cull the entire patch when the conservative box falls outside frustum, saving opaque pass work. Partially visible hills still submit when any corner intersects a frustum plane.
+
 ## 2. Core Concepts
 
 ### View frustum from view-projection

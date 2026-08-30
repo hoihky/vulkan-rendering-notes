@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,129 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Vulkan does not create windows — it renders <strong>to surfaces</strong> provided by the OS. GLFW is Spark's cross-platform bridge: it opens a native window, forwards input, and exposes <code>glfwCreateWindowSurface</code> after you create a <code>VkInstance</code>.</p>
 <p>This chapter covers the <strong>platform layer</strong> only. No <code>VkDevice</code> yet. The milestone is a window that can later host a swapchain, with correct hints and extension queries so Chapter 6's instance creation succeeds.</p>
+<h3 id="what-is-a-surface-beginner">What is a surface? (beginner)</h3>
+<p>Vulkan cannot draw to "the window" directly. It draws to a <strong>VkSurfaceKHR</strong> — an OS-specific object that represents the drawable region of a native window (Cocoa view on macOS, HWND on Windows, Wayland/X11 on Linux).</p>
+<pre><code class="language-text">GLFW window  →  native window handle  →  VkSurfaceKHR  →  swapchain images
+</code></pre>
+<p>GLFW hides platform differences. You call:</p>
+<pre><code class="language-cpp">glfwCreateWindowSurface(instance, window, nullptr, &amp;surface);
+</code></pre>
+<p>after creating <code>VkInstance</code> with the extensions GLFW requires.</p>
+<h3 id="why-glfw_no_api-matters">Why GLFW_NO_API matters</h3>
+<p>By default GLFW creates an <strong>OpenGL</strong> context. Vulkan is a separate API — you do not want OpenGL and Vulkan fighting over the same window. The hint:</p>
+<pre><code class="language-cpp">glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+</code></pre>
+<p>tells GLFW: "give me a native window only; I will attach Vulkan myself."</p>
+<p><strong>Beginner checklist for a Vulkan window:</strong></p>
+<ol>
+<li><code>glfwInit()</code></li>
+<li><code>GLFW_NO_API</code> hint</li>
+<li><code>glfwCreateWindow(width, height, title, ...)</code></li>
+<li>Query <code>glfwGetRequiredInstanceExtensions</code> before <code>vkCreateInstance</code></li>
+<li>After instance exists, <code>glfwCreateWindowSurface</code></li>
+<li>Handle <code>glfwSetFramebufferSizeCallback</code> for resize (swapchain recreate later)</li>
+</ol>
+<h2 id="b.concept-deep-dive-from-native-window-to-vksurfacekhr">1b. Concept Deep Dive — From Native Window to <code>VkSurfaceKHR</code></h2>
+<h3 id="glfw-as-a-thin-platform-adapter">GLFW as a thin platform adapter</h3>
+<p>Vulkan is OS-agnostic at the API level but not at the window level — each platform exposes surfaces through different extensions (<code>VK_KHR_win32_surface</code>, <code>VK_MVK_macos_surface</code>, <code>VK_KHR_wayland_surface</code>, etc.). GLFW hides that matrix: it creates a native window, returns the required instance extension list via <code>glfwGetRequiredInstanceExtensions</code>, and builds <code>VkSurfaceKHR</code> with <code>glfwCreateWindowSurface</code> once you have a <code>VkInstance</code>.</p>
+<p>Spark's <code>Window</code> class owns GLFW lifetime (<code>glfwInit</code> in constructor, <code>glfwTerminate</code> in destructor) and enforces <code>GLFW_NO_API</code> so GLFW does not allocate an OpenGL context you never use. On macOS, <code>GLFW_COCOA_RETINA_FRAMEBUFFER</code> ensures framebuffer size matches physical pixels — swapchain extent must use <code>glfwGetFramebufferSize</code>, not logical window size, or rendering looks soft on Retina displays.</p>
+<p>The user-pointer pattern stores <code>this</code> on the GLFW window handle so static C callbacks dispatch to member functions (<code>HandleFramebufferResize</code>, cursor forwarding). <code>Engine</code> registers a <code>std::function</code> resize callback that calls <code>NotifySwapchainResize</code> without pulling GLFW types into <code>Engine.hpp</code>.</p>
+<h3 id="platform-chain-spark-uses">Platform chain Spark uses</h3>
+<pre><code class="language-text">glfwInit + GLFW_NO_API
+       │
+       ▼
+glfwCreateWindow ──► native handle (HWND / NSView / wl_surface)
+       │
+       ├─ glfwGetRequiredInstanceExtensions ──► merged into vkCreateInstance
+       │
+       └─ glfwCreateWindowSurface(instance, window) ──► VkSurfaceKHR
+              │
+              ▼
+         vkCreateSwapchainKHR (Chapter 8)
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Responsibility</th>
+<th>Spark API</th>
+<th>GLFW call</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No GL context</td>
+<td>constructor hint</td>
+<td><code>GLFW_CLIENT_API, GLFW_NO_API</code></td>
+</tr>
+<tr>
+<td>Pixel size</td>
+<td><code>GetFramebufferSize</code></td>
+<td><code>glfwGetFramebufferSize</code></td>
+</tr>
+<tr>
+<td>Instance extensions</td>
+<td><code>RequiredVulkanInstanceExtensions</code></td>
+<td><code>glfwGetRequiredInstanceExtensions</code></td>
+</tr>
+<tr>
+<td>Surface</td>
+<td><code>CreateVulkanSurface</code></td>
+<td><code>glfwCreateWindowSurface</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="constructor-hints-window-resize-trampoline">Constructor — hints, window, resize trampoline</h3>
+<pre><code class="language-cpp">// src/spark/render/platform/Window.cpp (lines 11–34)
+Window::Window() {
+    if (!glfwInit()) {
+        throw std::runtime_error("glfwInit failed");
+    }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+#if defined(__APPLE__)
+    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+#endif
+
+    glfwWindow = glfwCreateWindow(DefaultWidth, DefaultHeight, "Spark", nullptr, nullptr);
+    // ...
+    glfwSetWindowUserPointer(glfwWindow, this);
+    glfwSetFramebufferSizeCallback(
+            glfwWindow,
+            +[](GLFWwindow* w, int width, int height) {
+                auto* self = static_cast&lt;Window*&gt;(glfwGetWindowUserPointer(w));
+                if (self != nullptr) {
+                    self-&gt;HandleFramebufferResize(width, height);
+                }
+            });
+}
+</code></pre>
+<h3 id="extension-query-fed-into-instance-creation-chapter-6">Extension query — fed into instance creation (Chapter 6)</h3>
+<pre><code class="language-cpp">// src/spark/render/platform/Window.cpp (lines 95–107)
+Array&lt;const char*&gt; Window::RequiredVulkanInstanceExtensions() const {
+    std::uint32_t count = 0;
+    const char** names = glfwGetRequiredInstanceExtensions(&amp;count);
+    if (names == nullptr || count == 0) {
+        throw std::runtime_error("glfwGetRequiredInstanceExtensions returned no extensions");
+    }
+    Array&lt;const char*&gt; out;
+    out.Reserve(static_cast&lt;std::size_t&gt;(count));
+    for (std::uint32_t i = 0; i &lt; count; ++i) {
+        out.PushBack(names[i]);
+    }
+    return out;
+}
+</code></pre>
+<h3 id="surface-creation-after-instance-exists">Surface creation after instance exists</h3>
+<pre><code class="language-cpp">// src/spark/render/platform/Window.cpp (lines 109–115)
+void Window::CreateVulkanSurface(void* instancePtr, void* outSurface) const {
+    const auto vkInstance = static_cast&lt;VkInstance&gt;(instancePtr);
+    auto* surfaceOut = static_cast&lt;VkSurfaceKHR*&gt;(outSurface);
+    if (glfwCreateWindowSurface(vkInstance, glfwWindow, nullptr, surfaceOut) != VK_SUCCESS) {
+        throw std::runtime_error("glfwCreateWindowSurface failed");
+    }
+}
+</code></pre>
+<p>Destroy order: surface before instance, window before <code>glfwTerminate</code> — every downstream Vulkan object assumes this file got the platform bridge right.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="glfw_no_api">GLFW_NO_API</h3>
 <p>OpenGL and Vulkan compete for the same window unless you opt out of GLFW's default OpenGL context:</p>
@@ -1217,6 +1346,38 @@ void Window::CreateVulkanSurface(void* instancePtr, void* outSurface) const {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-is-a-surface-beginner">What is a surface? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-glfwnoapi-matters">Why GLFW_NO_API matters</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-from-native-window-to">1b. Concept Deep Dive — From Native Window to </a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#glfw-as-a-thin-platform-adapter">GLFW as a thin platform adapter</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#platform-chain-spark-uses">Platform chain Spark uses</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#constructor-hints-window-resize-trampoline">Constructor — hints, window, resize trampoline</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#extension-query-fed-into-instance-creation-chapter-6">Extension query — fed into instance creation (Chapter 6)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#surface-creation-after-instance-exists">Surface creation after instance exists</a>
                         </li>
                         
                         <li class="toc-h2">

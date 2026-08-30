@@ -13,6 +13,33 @@
 Large 2D worlds are stored as **tile ID grids**, not as giant preauthored meshes. Drawing every cell every frame destroys CPU budget. Production engines **batch visible tiles** into instance pools, cull off-screen chunks, and draw with few instanced calls.
 
 Spark's `SceneTilemapSubmitter` and `VulkanTilemapPass` implement this inside the HDR composite path alongside sprites. Milestone: render a multi-layer map in `TilemapShowcase2DDemo` with chunk culling — visible tile count drops when panning away, draw calls do not explode.
+
+## 1b. Concept Deep Dive — Grid Logic on CPU, Instanced Quads on GPU
+
+### Logical grid vs visible instance pool
+
+A tilemap stores 2D tile IDs per layer — not pre-built meshes. Submit converts **visible** cells into `SceneTilemapTileInstance` records batched under `SceneTilemapDraw` headers with `[tileBegin, tileBegin + tileCount)` into a shared pool:
+
+```cpp
+// src/spark/scene/submit/SceneSpriteTileCull.cpp (lines 10–14)
+SceneSpriteTileCull::SceneSpriteTileCull(const Matrix4& viewProjection) noexcept
+    : frustum(Frustum::FromColumnMajorViewProjection(viewProjection)) {}
+
+bool SceneSpriteTileCull::IsAxisAlignedBoxVisible(const Vector3& boxMin, const Vector3& boxMax) const noexcept {
+    return frustum.IntersectsAxisAlignedBox(boxMin, boxMax);
+}
+```
+
+`CollectVisibleTiles` iterates 16×16 chunks, tests chunk AABB against frustum, then emits only in-chunk non-empty cells — CPU cost scales with visible area, not map dimensions.
+
+### Same unit quad as sprites
+
+`VulkanTilemapPass` expands each tile instance into the shared sprite quad index range (`spriteQuadFirstIndex`). One layer with 200 visible cells becomes one instanced draw, not 200 pipeline binds. Tile ID → atlas UV resolves from tileset margin/spacing at submit.
+
+### HDR composite pass ordering
+
+Tilemaps record inside `composite2DPass` after opaque 3D geometry in the HDR subpass — they depth-test against terrain and write linear HDR color like world sprites. Pan TilemapShowcase2DDemo off-screen and log visible tile count dropping while draw call count stays flat.
+
 ## 2. Core Concepts
 
 ### Tile grid vs draw instances

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,145 @@
 <p>The <strong>engine loop</strong> is the heartbeat of every real-time application. Games are not callback-driven like web pages — they run a <code>while</code> loop that advances simulation time and submits frames until the user closes the window.</p>
 <p>Get the order wrong and you get subtle bugs: input one frame late, GPU reading scene data before it is written, or swapchain images recreated mid-record. Spark's <code>Engine::Run</code> is the canonical reference. This chapter walks through it so your mini-engine matches the same shape before Part I adds more Vulkan objects.</p>
 <p>Open <code>src/Engine.cpp</code> and keep it visible.</p>
+<h3 id="the-game-loop-in-plain-english">The game loop in plain English</h3>
+<p>Every video game is a <code>while</code> loop:</p>
+<pre><code class="language-cpp">while (window is open) {
+    float dt = time since last frame;
+    read keyboard/mouse;
+    update game world using dt;
+    build what to draw this frame;
+    tell GPU to draw it;
+    show result on screen;
+}
+</code></pre>
+<p>That is <strong>all</strong> real-time rendering is at the application level. Vulkan code lives inside "tell GPU to draw it." Spark splits responsibilities:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Loop phase</th>
+<th>Spark function</th>
+<th>Layer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Poll events</td>
+<td><code>glfwPollEvents</code></td>
+<td>Platform</td>
+</tr>
+<tr>
+<td>Update</td>
+<td><code>game-&gt;OnUpdate(dt)</code></td>
+<td>Gameplay / ECS</td>
+</tr>
+<tr>
+<td>Build draw list</td>
+<td><code>game-&gt;OnRender</code> → <code>SceneSubmit</code></td>
+<td>Rendering prep (CPU)</td>
+</tr>
+<tr>
+<td>GPU + present</td>
+<td><code>renderer-&gt;PresentFrame()</code></td>
+<td>Vulkan</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why <code>OnRender</code> before <code>PresentFrame</code>:</strong> the renderer needs a finished <code>SceneRenderParams</code> snapshot before it records command buffers. If you called <code>PresentFrame</code> first, the GPU would redraw last frame's scene.</p>
+<p><strong>Why <code>OnUpdate</code> before <code>OnRender</code>:</strong> the camera and object positions for frame N must reflect input processed this frame, not the previous one.</p>
+<h3 id="delta-time-dt-for-beginners">Delta time (<code>dt</code>) for beginners</h3>
+<p><code>dt</code> is seconds elapsed since the last frame. At 60 FPS, <code>dt ≈ 0.0167</code>. Use it to move objects at consistent speed regardless of frame rate:</p>
+<pre><code class="language-text">position += velocity * dt;   // meters per second, not per frame
+</code></pre>
+<p>Spark passes <code>FrameTiming</code> to <code>OnUpdate</code> so demos and gameplay systems share one clock.</p>
+<h2 id="b.concept-deep-dive-phase-ordering-inside-enginerun">1b. Concept Deep Dive — Phase Ordering Inside <code>Engine::Run</code></h2>
+<h3 id="why-the-loop-order-is-a-contract-not-a-suggestion">Why the loop order is a contract, not a suggestion</h3>
+<p>The engine loop is deceptively simple: a <code>while</code> with half a dozen calls. Each call's position is load-bearing. <code>PollEvents</code> must run first so input reflects OS state before <code>BeginFrame</code> computes edge-triggered keys. <code>OnUpdate</code> must precede <code>OnRender</code> because the snapshot describes frame <em>N</em> after simulation for frame <em>N</em> has applied input. <code>PresentFrame</code> must be last because command recording reads the <code>SceneRenderParams</code> written during <code>OnRender</code> — calling present first would display stale geometry.</p>
+<p>Spark uses <code>std::chrono::steady_clock</code> for delta time because <code>system_clock</code> can jump when NTP adjusts wall time, exploding physics integrators. <code>FrameTiming</code> bundles <code>deltaTimeSeconds</code>, <code>totalTimeSeconds</code>, and <code>frameIndex</code> so every subsystem shares one clock instead of calling <code>glfwGetTime()</code> ad hoc.</p>
+<p>Resize is the subtle exception: GLFW may fire framebuffer callbacks off the main thread on some platforms, so Spark sets <code>framebufferResized = true</code> and recreates the swapchain at the <strong>start</strong> of the next <code>DrawFrame</code>, after fence waits — never inside the callback itself.</p>
+<h3 id="single-frame-timeline-spark">Single-frame timeline (Spark)</h3>
+<pre><code class="language-text">time ─────────────────────────────────────────────────────────────►
+
+PollEvents   BeginFrame   OnUpdate      OnRender       PresentFrame
+    │             │           │             │                 │
+    │             │      physics/input  SceneSubmit      acquire/submit/present
+    │             │           │             │                 │
+    └─ OS events  └─ edges    └─ dt ────────┴─ snapshot ──────┘
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Hook</th>
+<th>Runs before</th>
+<th>Must not</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OnUpdate</code></td>
+<td><code>OnRender</code></td>
+<td>Call <code>SetSceneRenderParams</code></td>
+</tr>
+<tr>
+<td><code>OnRender</code></td>
+<td><code>PresentFrame</code></td>
+<td>Run heavy unrelated physics</td>
+</tr>
+<tr>
+<td><code>PresentFrame</code></td>
+<td>next poll</td>
+<td>Assume swapchain valid mid-resize</td>
+</tr>
+</tbody>
+</table>
+<h3 id="frametiming-one-clock-for-the-whole-frame"><code>FrameTiming</code> — one clock for the whole frame</h3>
+<pre><code class="language-cpp">// include/spark/engine/FrameTiming.hpp (lines 7–11)
+struct FrameTiming {
+    float deltaTimeSeconds = 0.0F;
+    float totalTimeSeconds = 0.0F;
+    std::uint64_t frameIndex = 0;
+};
+</code></pre>
+<p>Demos multiply velocities by <code>timing.deltaTimeSeconds</code>; overlay code uses <code>frameIndex</code> for profiling hooks.</p>
+<h3 id="core-iteration-trimmed-to-essentials">Core iteration — trimmed to essentials</h3>
+<pre><code class="language-cpp">// src/Engine.cpp (lines 132–200, abbreviated)
+while (!window.ShouldClose()) {
+    window.PollEvents();
+    input-&gt;BeginFrame();
+
+    const auto now = Clock::now();
+    const float deltaSeconds = std::chrono::duration&lt;float&gt;(now - previous).count();
+    previous = now;
+    totalSeconds += deltaSeconds;
+
+    const FrameTiming timing{deltaSeconds, totalSeconds, frameIndex};
+
+    game-&gt;OnUpdate(timing, *engineContext);
+    audio.PumpFrame(timing.deltaTimeSeconds);
+
+    Ui::UiSystem::Get().OnEnginePreRender(window, *input, timing.deltaTimeSeconds);
+
+    game-&gt;OnRender(renderFrame, *engineContext);
+
+    Ui::UiSystem::Get().OnEnginePostRender();
+
+    renderer-&gt;PresentFrame();
+    ++frameIndex;
+}
+</code></pre>
+<h3 id="deferred-resize-flag-in-callback-recreate-in-drawframe">Deferred resize — flag in callback, recreate in <code>DrawFrame</code></h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 429–437)
+void VulkanRenderer::NotifySwapchainResize() {
+    framebufferResized = true;
+}
+
+void VulkanRenderer::DrawFrame() {
+    if (framebufferResized) {
+        framebufferResized = false;
+        RecreateSwapchain();
+        return;
+    }
+</code></pre>
+<p>The early <code>return</code> skips recording into swapchain images that were just destroyed — a common beginner crash when recreate runs mid-frame.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="canonical-loop-shape">Canonical loop shape</h3>
 <p>Every engine shares the same skeleton:</p>
@@ -1292,6 +1437,38 @@ while (!window.ShouldClose()) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-game-loop-in-plain-english">The game loop in plain English</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#delta-time-for-beginners">Delta time () for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-phase-ordering-inside">1b. Concept Deep Dive — Phase Ordering Inside </a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-the-loop-order-is-a-contract-not-a-suggestion">Why the loop order is a contract, not a suggestion</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#single-frame-timeline-spark">Single-frame timeline (Spark)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-clock-for-the-whole-frame"> — one clock for the whole frame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#core-iteration-trimmed-to-essentials">Core iteration — trimmed to essentials</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#deferred-resize-flag-in-callback-recreate-in">Deferred resize — flag in callback, recreate in </a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1088,6 +1094,147 @@
 </table>
 <p>Spark pushes <strong>192 bytes</strong> per draw: model matrix, albedo tint, texture layer, PBR factors, shading flags, shadow flags. That fits comfortably within Vulkan minimum push constant range (128 bytes minimum guaranteed, Spark targets 256).</p>
 <p>This chapter is about the <strong>contract</strong>: identical struct layout in C++ and both shader stages, pipeline layout range declaration, and command buffer updates.</p>
+<h3 id="push-constants-for-beginners">Push constants for beginners</h3>
+<p><strong>Push constants</strong> are a small block of data (up to ~128–256 bytes) you upload <strong>immediately before each draw</strong> without binding a separate buffer:</p>
+<pre><code class="language-cpp">vkCmdPushConstants(cmd, layout, stages, offset, size, &amp;push);
+vkCmdDrawIndexed(cmd, ...);
+</code></pre>
+<p>Spark's <code>ModelPushConstants</code> holds per-object data that changes every draw:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Field group</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Transform</td>
+<td><code>model</code> mat4</td>
+</tr>
+<tr>
+<td>Material</td>
+<td><code>albedo</code>, <code>metallic</code>, <code>roughness</code>, <code>textureLayer</code></td>
+</tr>
+<tr>
+<td>Maps</td>
+<td><code>normalMapLayer</code>, <code>metallicRoughnessMapLayer</code></td>
+</tr>
+<tr>
+<td>Flags</td>
+<td><code>shadingModel</code>, <code>shadowFlags</code>, glTF extensions</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why not put model matrix in the UBO?</strong> You would need either thousands of UBOs or dynamic offsets with strict alignment. Push constants are designed for "small, frequent, per-draw" updates.</p>
+<h3 id="cpu-struct-must-match-glsl-exactly">CPU struct must match GLSL exactly</h3>
+<p>C++ (<code>VulkanSceneOpaquePass.hpp</code>):</p>
+<pre><code class="language-cpp">struct ModelPushConstants {
+    float model[16];
+    float albedo[4];
+    int textureLayer;
+    // ...
+};
+</code></pre>
+<p>GLSL (<code>scene.vert</code> / <code>scene.frag</code>):</p>
+<pre><code class="language-glsl">layout(push_constant) uniform Push {
+    mat4 model;
+    vec4 albedo;
+    int textureLayer;
+    // ...
+} push;
+</code></pre>
+<p>Same order, same sizes, same padding rules. Spark uses <code>static_assert</code> on sizeof. If you add a field on one side only, colors and transforms scramble silently.</p>
+<h2 id="b.concept-deep-dive-scene_push.glsl-and-modelpushconstants">1b. Concept Deep Dive — scene_push.glsl and ModelPushConstants</h2>
+<h3 id="the-shared-push-block-in-both-shader-stages">The shared push block in both shader stages</h3>
+<p><code>scene_push.glsl</code> defines the per-draw uniform both stages include:</p>
+<pre><code class="language-glsl">// shaders/scene_push.glsl
+layout(push_constant) uniform Push {
+    mat4 model;
+    vec4 albedoTint;
+    int textureLayer;
+    int skyMode;
+    float metallic;
+    float roughness;
+    vec4 emissive;
+    int useSkinning;
+    int jointCount;
+    int shadingModel;
+    int toonDiffuseBands;
+    float toonRimIntensity;
+    float toonRimPower;
+    int normalMapLayer;
+    int metallicRoughnessMapLayer;
+    int emissiveMapLayer;
+    // glTF map UV transforms, clearcoat, transmission, iridescence ...
+} push;
+</code></pre>
+<p>Vertex code reads <code>push.model</code>, <code>push.useSkinning</code>, <code>push.jointCount</code>, and material varyings. Fragment code reads map layers, <code>push.shadingModel</code>, <code>push.shadowFlags</code>, and <code>push.alphaCutoff</code>. Identical layout in both stages is required — Vulkan links push ranges across the pipeline, not per stage.</p>
+<h3 id="c-struct-with-offset-proofs">C++ struct with offset proofs</h3>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneOpaquePass.hpp (excerpt)
+struct ModelPushConstants {
+    float model[16]{};
+    float albedo[4]{1, 1, 1, 1};
+    std::int32_t textureLayer = -1;
+    std::int32_t skyMode = 0;
+    float metallic = 0.0F;
+    float roughness = 0.45F;
+    float emissive[4]{};
+    std::int32_t useSkinning = 0;
+    std::int32_t jointCount = 0;
+    std::int32_t shadingModel = 0;
+    // normalMapLayer, mapUvScale[5], clearcoat, transmission ...
+};
+</code></pre>
+<p>Spark proves layout in <code>VulkanSceneOpaquePass.cpp</code>:</p>
+<pre><code class="language-cpp">static_assert(sizeof(ModelPushConstants) == 348);
+static_assert(offsetof(ModelPushConstants, mapUvScale) == 176);
+static_assert(offsetof(ModelPushConstants, clearcoatFactor) == 296);
+</code></pre>
+<p>The 4-byte <code>padMapUvAlign</code> before <code>mapUvScale</code> mirrors GLSL <code>vec2[]</code> 8-byte alignment — a common push-constant footgun when adding <code>int</code> fields before UV arrays.</p>
+<h3 id="typical-per-draw-usage-in-scene.vert-scene.frag">Typical per-draw usage in scene.vert / scene.frag</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Push field</th>
+<th>Set from C++</th>
+<th>Shader use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td>Entity world matrix</td>
+<td>Vertex transform; normal transport</td>
+</tr>
+<tr>
+<td><code>textureLayer</code></td>
+<td>Material atlas slot</td>
+<td><code>flat vTextureLayer</code> → <code>texture()</code> layer</td>
+</tr>
+<tr>
+<td><code>skyMode</code></td>
+<td>Sky draw flag</td>
+<td>Vertex clip Z hack; fragment early-out</td>
+</tr>
+<tr>
+<td><code>shadingModel</code></td>
+<td>Material enum</td>
+<td>PBR / toon / unlit dispatch</td>
+</tr>
+<tr>
+<td><code>shadowFlags</code></td>
+<td>Material flags</td>
+<td><code>(push.shadowFlags &amp; 2)</code> receive shadows</td>
+</tr>
+<tr>
+<td><code>mapUvScale</code>, <code>mapTexCoordSet</code></td>
+<td>glTF extensions</td>
+<td><code>sparkMapUv()</code> in fragment</td>
+</tr>
+</tbody>
+</table>
+<p>Recording order in the opaque pass: memcpy skin SSBO (if needed) → <code>vkCmdPushConstants</code> with full 348 bytes → <code>vkCmdDrawIndexed</code>. RenderDoc's push constant viewer is the fastest way to verify C++ and GLSL agree after adding a field.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="push-constant-memory-model">Push constant memory model</h3>
 <p>Push constants are a small, <strong>command-buffer-scoped</strong> memory window. The driver copies your <code>vkCmdPushConstants</code> payload into GPU-accessible storage visible to shader stages you specify in <code>VkPushConstantRange</code>.</p>
@@ -1284,6 +1431,30 @@ vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, vertexOffset, 0);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constants-for-beginners">Push constants for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cpu-struct-must-match-glsl-exactly">CPU struct must match GLSL exactly</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenepushglsl-and-modelpushconstants">1b. Concept Deep Dive — scene_push.glsl and ModelPushConstants</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-shared-push-block-in-both-shader-stages">The shared push block in both shader stages</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#c-struct-with-offset-proofs">C++ struct with offset proofs</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#typical-per-draw-usage-in-scenevert-scenefrag">Typical per-draw usage in scene.vert / scene.frag</a>
                         </li>
                         
                         <li class="toc-h2">

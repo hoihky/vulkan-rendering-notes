@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,104 @@
 needs a <strong>CPU mesh type</strong> — vertices, indices, optional bounds — shared across entities and independent of Vulkan.</p>
 <p>Your build-along milestone: represent a colored cube and ground plane through <code>Mesh</code> + <code>MeshComponent</code>, understanding
 which slots hit static GPU packs vs the dynamic custom path.</p>
+<h3 id="what-is-a-mesh-complete-beginner">What is a mesh? (complete beginner)</h3>
+<p>A <strong>3D model</strong> in a game is made of <strong>triangles</strong>. GPUs only rasterize triangles (or lines/points in special modes). A <strong>mesh</strong> is the engine's CPU-side container for:</p>
+<ul>
+<li><strong>Vertices</strong> — corners of triangles, each with data (position, normal, UV, …)</li>
+<li><strong>Indices</strong> — which three vertices form each triangle</li>
+</ul>
+<p>Example: a quad (four corners) is drawn as <strong>two</strong> triangles → six indices, but you might store four unique vertices and reuse corners via indices.</p>
+<pre><code class="language-text">Vertices:  A B C D  (positions in 3D space)
+Indices:   0,1,2  and  0,2,3  → two triangles ABC and ACD
+</code></pre>
+<p><code>vkCmdDrawIndexed</code> says: "For each triangle, look up three indices, fetch three vertices, run shaders."</p>
+<h3 id="why-separate-mesh-from-gameobject">Why separate mesh from GameObject</h3>
+<p>A <strong>GameObject</strong> is an entity in your world (a tree, the player, a bullet). A <strong>Mesh</strong> is shared geometry — one oak tree mesh can instantiate 500 trees with different transforms. Spark uses:</p>
+<pre><code class="language-text">SharedPtr&lt;Mesh&gt;  ← loaded once, read-only geometry
+MeshComponent    ← per-entity: which mesh + which render slot + fallback color
+TransformComponent ← per-entity: position, rotation, scale
+</code></pre>
+<p>Without this split, duplicating a forest would duplicate megabytes of vertex data.</p>
+<h3 id="static-slot-vs-custom-upload-the-two-gpu-paths">Static slot vs custom upload (the two GPU paths)</h3>
+<p>Spark optimizes the two most common cases:</p>
+<table class="table">
+<thead>
+<tr>
+<th><code>SceneMeshSlot</code></th>
+<th>Geometry</th>
+<th>GPU path</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UnitCube</code></td>
+<td>Engine built-in cube</td>
+<td>Pre-uploaded static <code>VkBuffer</code></td>
+<td>Debug, placeholders</td>
+</tr>
+<tr>
+<td><code>GroundPlane</code></td>
+<td>Engine built-in plane</td>
+<td>Pre-uploaded static <code>VkBuffer</code></td>
+<td>Ground in demos</td>
+</tr>
+<tr>
+<td><code>Custom</code></td>
+<td>Any <code>SharedPtr&lt;Mesh&gt;</code></td>
+<td><code>VulkanCustomMeshPool</code> uploads each frame or caches</td>
+<td>glTF imports, procedural</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Beginner rule:</strong> If you loaded a file from disk, you almost always use <code>SceneMeshSlot::Custom</code>. Built-in slots exist so Part II can draw cubes before importers exist.</p>
+<h3 id="walkthrough-one-vertexs-journey-to-the-screen">Walkthrough: one vertex's journey to the screen</h3>
+<ol>
+<li><strong>Authoring</strong> — Blender exports position <code>(0.5, 1.0, 0.2)</code>, normal <code>(0,1,0)</code>, UV <code>(0.3, 0.7)</code>.</li>
+<li><strong>Import</strong> — glTF loader writes <code>Mesh::Vertex</code> into <code>Array&lt;Vertex&gt;</code>.</li>
+<li><strong>Gameplay</strong> — <code>MeshComponent</code> references the mesh; <code>TransformComponent</code> places the object at <code>(10, 0, 5)</code>.</li>
+<li><strong>Submit</strong> — <code>SceneDrawItem</code> gets world matrix + mesh slot + material layers.</li>
+<li><strong>Upload</strong> — Custom pool copies vertex array to GPU buffer (or reuses cached upload).</li>
+<li><strong>Record</strong> — <code>vkCmdBindVertexBuffers</code>, <code>vkCmdBindIndexBuffer</code>, <code>vkCmdDrawIndexed</code>.</li>
+<li><strong>Vertex shader</strong> — Multiplies position by <code>model * viewProj</code> matrices.</li>
+<li><strong>Fragment shader</strong> — Samples texture at interpolated UV, applies lighting.</li>
+<li><strong>HDR framebuffer</strong> — Stores linear color (Part X).</li>
+<li><strong>Tonemap</strong> — Compresses to monitor range, present.</li>
+</ol>
+<p>Every later chapter replaces one step with production detail. Part VI focuses on steps 1–3; Part II on 5–6; Part IV on 8; Part X on 9–10.</p>
+<h2 id="b.concept-deep-dive-full-vertex-layout-and-meshcomponent">1b. Concept Deep Dive — Full Vertex Layout and MeshComponent</h2>
+<h3 id="production-vertex-record-beyond-positionnormaluv">Production Vertex record (beyond position/normal/UV)</h3>
+<p>Spark's rigid <code>Mesh::Vertex</code> carries fields glTF importers populate:</p>
+<pre><code class="language-cpp">// include/spark/scene/mesh/Mesh.hpp (lines 25–33)
+struct Vertex {
+    Vector3 position{Vector3::Zero};
+    Vector3 normal{Vector3::UnitZ};
+    Vector2 texCoord{Vector2::Zero};
+    Vector2 texCoord1{Vector2::Zero};   // second UV set (lightmaps, etc.)
+    Vector4 color{1, 1, 1, 1};          // vertex color multiplier
+    Vector4 tangent{};                  // xyz = tangent, w = bitangent handedness
+};
+</code></pre>
+<p><code>MeshComponent</code> pairs a <code>SharedPtr&lt;Mesh&gt;</code> with render slot and fallback tint:</p>
+<pre><code class="language-cpp">// include/spark/ecs/components/rendering/MeshComponent.hpp (concept)
+class MeshComponent {
+    SharedPtr&lt;Mesh&gt; mesh;
+    SceneMeshSlot slot = SceneMeshSlot::UnitCube;
+    Vector3 albedo{1, 1, 1};  // used when no MaterialComponent
+};
+</code></pre>
+<h3 id="interleaved-gpu-stride-matches-vulkanscenevertexlayout">Interleaved GPU stride matches VulkanSceneVertexLayout</h3>
+<p>When <code>VulkanCustomMeshPool</code> packs a rigid mesh, <code>VulkanGpuMeshInterleaved::AppendRigidVertexToInterleaved</code> writes floats in shader location order — positions 0–2 in <code>scene.vert</code> align with this packing. Skinned meshes append joint indices (bitcast float) and weights after color.</p>
+<h3 id="trycomputeaxisalignedbounds-used-everywhere">TryComputeAxisAlignedBounds — used everywhere</h3>
+<pre><code class="language-cpp">// Demos scale imported glTF to target height:
+Vector3 bmin, bmax;
+if (mesh-&gt;TryComputeAxisAlignedBounds(bmin, bmax)) {
+    const float h = bmax.y - bmin.y;
+    const float scale = targetHeight / h;
+    transform-&gt;SetScale({scale, scale, scale});
+}
+</code></pre>
+<p>CharacterCameraDemo and ThreeDDemo use bounds for camera framing and tree scaling — cheap O(n) after load.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cpu-mesh-as-shared-asset">CPU mesh as shared asset</h3>
 <p>A <strong>mesh</strong> is geometry on CPU: an array of vertices (position, normal, UV) plus an index buffer describing triangle corners. Spark keeps meshes <strong>renderer-agnostic</strong> — no <code>VkBuffer</code> inside <code>Mesh</code>. Multiple <code>MeshComponent</code> instances share one <code>SharedPtr&lt;Mesh&gt;</code> while transforms differ per entity.</p>
@@ -1069,6 +1173,42 @@ which slots hit static GPU packs vs the dynamic custom path.</p>
 <p>Spark procedural helpers (<code>CreateUnitCube</code>, <code>CreateGroundPlane</code>, …) duplicate vertices at face corners when UVs must differ — a cube uses <strong>24 vertices / 36 indices</strong>, not 8/36. Winding and normals are chosen for Vulkan back-face culling with Spark's perspective camera.</p>
 <h3 id="axis-aligned-bounds">Axis-aligned bounds</h3>
 <p><code>TryComputeAxisAlignedBounds</code> scans positions for min/max — used by demos to scale trees to target height and frame debug cameras. Bounds live on CPU; culling chapters consume them later.</p>
+<h3 id="meshsubmesh-one-buffer-many-materials">MeshSubmesh: one buffer, many materials</h3>
+<p>glTF files often ship <strong>one mesh with multiple primitives</strong>, each referencing a different material. Spark does not split these into separate <code>Mesh</code> objects. Instead, a single <code>Mesh</code> holds one shared vertex/index buffer and an array of <code>MeshSubmesh</code> slices:</p>
+<pre><code class="language-cpp">// include/spark/scene/mesh/MeshSubmesh.hpp (lines 15–31)
+/** Index range + glTF material index for one primitive within a shared vertex buffer. */
+struct MeshSubmesh {
+    std::uint32_t indexOffset = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t materialIndex = 0;
+    Array&lt;MeshSubmeshVariantMapping&gt; variantMappings;
+
+    [[nodiscard]] std::uint32_t ResolveMaterialIndex(const std::uint32_t activeVariant) const noexcept {
+        for (std::size_t i = 0; i &lt; variantMappings.GetSize(); ++i) {
+            if (variantMappings[i].variantIndex == activeVariant) {
+                return variantMappings[i].materialIndex;
+            }
+        }
+        return materialIndex;
+    }
+};
+</code></pre>
+<p>Each glTF <strong>primitive</strong> appends vertices/indices, then records a submesh entry with <code>indexOffset</code>, <code>indexCount</code>, and <code>materialIndex</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/gltf/GltfMeshBuilder.cpp (lines 127–137)
+MeshSubmesh submesh{};
+submesh.indexOffset = indexOffset;
+submesh.indexCount = indexCount;
+submesh.materialIndex = MaterialIndex(data, prim-&gt;material);
+for (cgltf_size mi = 0; mi &lt; prim-&gt;mappings_count; ++mi) {
+    MeshSubmeshVariantMapping mapping{};
+    mapping.variantIndex = static_cast&lt;std::uint32_t&gt;(prim-&gt;mappings[mi].variant);
+    mapping.materialIndex = MaterialIndex(data, prim-&gt;mappings[mi].material);
+    submesh.variantMappings.PushBack(mapping);
+}
+outMesh.GetSubmeshes().PushBack(submesh);
+</code></pre>
+<p>At submit time, each submesh becomes a separate <code>SceneDrawItem</code> with <code>submeshIndex = si</code>. The GPU issues one <code>vkCmdDrawIndexed</code> per submesh, slicing the shared index buffer with <code>firstIndex</code> and <code>indexCount</code> from the packed custom mesh pool. This is how a single imported <code>.glb</code> chair with wood/metal/fabric materials renders without duplicating vertex data.</p>
+<p><strong>Design rule:</strong> if <code>GetSubmeshes().GetSize() &gt; 1</code>, pair the mesh with <code>MultiMaterialComponent</code> (Part VI Chapter 3, Part VII Chapter 5). A lone <code>MaterialComponent</code> only affects the first submesh or the full buffer when no submesh table exists.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="mesh-class-with-vertex-indices">Mesh class with Vertex + indices</h3>
@@ -1245,6 +1385,38 @@ while keeping the same index buffer pattern.</p>
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#what-is-a-mesh-complete-beginner">What is a mesh? (complete beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-separate-mesh-from-gameobject">Why separate mesh from GameObject</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#static-slot-vs-custom-upload-the-two-gpu-paths">Static slot vs custom upload (the two GPU paths)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#walkthrough-one-vertexs-journey-to-the-screen">Walkthrough: one vertex's journey to the screen</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-full-vertex-layout-and-meshcomponent">1b. Concept Deep Dive — Full Vertex Layout and MeshComponent</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#production-vertex-record-beyond-positionnormaluv">Production Vertex record (beyond position/normal/UV)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#interleaved-gpu-stride-matches-vulkanscenevertexlayout">Interleaved GPU stride matches VulkanSceneVertexLayout</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#trycomputeaxisalignedbounds-used-everywhere">TryComputeAxisAlignedBounds — used everywhere</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1267,6 +1439,10 @@ while keeping the same index buffer pattern.</p>
                         
                         <li class="toc-h3">
                           <a href="#axis-aligned-bounds">Axis-aligned bounds</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#meshsubmesh-one-buffer-many-materials">MeshSubmesh: one buffer, many materials</a>
                         </li>
                         
                         <li class="toc-h2">

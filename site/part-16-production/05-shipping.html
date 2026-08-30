@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,50 @@
 <p>The book built a <strong>capability stack</strong> — production needs a <strong>shipping-shaped</strong> project: one game entry, quality presets, developer tools optional, smoke-tested resize/load/shutdown.</p>
 <p>Spark's demo shell proves subsystems work; this chapter compresses that into <strong>MyGame.exe</strong> — same renderer, fewer menus, packaged assets, retail CMake flags.</p>
 <p>Milestone: build <code>MyGame</code> target, launch from install directory (not source tree), play 60 s with validation off.</p>
+<h2 id="b.concept-deep-dive-demo-shell-vs-mygame">1b. Concept Deep Dive — Demo Shell vs MyGame</h2>
+<h3 id="sparkdemo-shell-vs-single-entry-shipping">SparkDemo shell vs single-entry shipping</h3>
+<p>The book built capability through <strong>20 demo modes</strong> — each validates one part. Shipping compresses that into one <code>IGame</code> entry:</p>
+<pre><code class="language-text">SparkDemo shell:
+  menu → ThreeDDemo | Platformer2DDemo | SceneEditor3DDemo | ...
+
+MyGame (shipping):
+  main() → MyGameApp → fixed default scene → no mode selector
+</code></pre>
+<p>Same renderer, same asset loader — fewer menus, packaged assets under install dir, not source tree.</p>
+<h3 id="cmake-flags-strip-dev-tooling-for-retail">CMake flags strip dev tooling for retail</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Dev build</th>
+<th>Retail build</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Validation layers on</td>
+<td>Validation off</td>
+</tr>
+<tr>
+<td>ImGui overlay + F3 FPS</td>
+<td>Optional or stripped</td>
+</tr>
+<tr>
+<td>20-mode demo shell</td>
+<td>Single game target</td>
+</tr>
+<tr>
+<td>Source-relative assets</td>
+<td><code>SPARK_BUILD_ASSETS_DIR</code> install copy</td>
+</tr>
+<tr>
+<td>Script host enabled</td>
+<td>Optional <code>spark_script_host_run</code></td>
+</tr>
+</tbody>
+</table>
+<p>Launch from the <strong>install directory</strong> to verify relative asset paths match what players receive — running from the build tree hides path bugs.</p>
+<h3 id="smoke-test-before-ship">Smoke test before ship</h3>
+<p>Play 60 s with validation off: resize window twice, async-load one scene, exit cleanly. Zero leaked <code>VkDeviceMemory</code> with object tracking enabled in dev builds proves shutdown order is correct before you strip validation for retail.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="demo-vs-shipping-shape">Demo vs shipping shape</h3>
 <p>SparkDemo shell launches <strong>20 modes</strong> — each validates a book part. Shipping game replaces selector with <strong>one</strong> <code>IGame</code> entry, fixed default scene, packaged assets.</p>
@@ -1291,6 +1341,22 @@ target_compile_definitions(MyGame PRIVATE SPARK_DEVELOPER_TOOLS=0 NDEBUG)
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-demo-shell-vs-mygame">1b. Concept Deep Dive — Demo Shell vs MyGame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#sparkdemo-shell-vs-single-entry-shipping">SparkDemo shell vs single-entry shipping</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cmake-flags-strip-dev-tooling-for-retail">CMake flags strip dev tooling for retail</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#smoke-test-before-ship">Smoke test before ship</a>
                         </li>
                         
                         <li class="toc-h2">

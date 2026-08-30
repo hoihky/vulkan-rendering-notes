@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,40 @@
 <p>An emitter without tunable parameters produces identical dots forever. Artists need <strong>rate, lifetime, color fade,
 size shrink, gravity, and cone spread</strong> — all adjustable without recompiling shaders.</p>
 <p>Build along: spawn a fire-style emitter with upward direction, warm start color, and transparent end color.</p>
+<h2 id="b.concept-deep-dive-simparticle-fields-and-spawndebt">1b. Concept Deep Dive — SimParticle Fields and spawnDebt</h2>
+<h3 id="per-slot-state-vs-exported-instance">Per-slot state vs exported instance</h3>
+<p>Each alive slot stores simulation-only fields the renderer never sees:</p>
+<pre><code class="language-cpp">// include/spark/ecs/components/rendering/ParticleEmitterComponent.hpp (lines 60–70)
+struct SimParticle {
+    bool alive = false;
+    Vector3 position{};
+    Vector3 velocity{};
+    float age = 0.0F;
+    float maxAge = 1.0F;
+    float size0 = 0.1F;
+    float size1 = 0.05F;
+    Vector4 color0{1, 1, 1, 1};
+    Vector4 color1{1, 1, 1, 0};
+};
+</code></pre>
+<p>At spawn, <code>size0</code>/<code>size1</code> and <code>color0</code>/<code>color1</code> are copied from emitter parameters (<code>sizeStart</code>, <code>colorStart</code>, etc.). <code>CollectInstances</code> lerps by <code>age / maxAge</code> before export — the GPU receives final size and color, not endpoints.</p>
+<h3 id="spawndebt-fractional-emission-at-any-frame-rate">spawnDebt — fractional emission at any frame rate</h3>
+<pre><code class="language-cpp">// src/spark/ecs/components/rendering/ParticleEmitterComponent.cpp (lines 108–112)
+spawnDebt += emissionRate * dt;
+while (spawnDebt &gt;= 1.0F) {
+    spawnDebt -= 1.0F;
+    SpawnOne(origin);
+}
+</code></pre>
+<p>At 30 FPS with <code>emissionRate = 48</code>, each frame accrues ~1.6 debt → one spawn most frames, two every third frame. At 144 FPS debt accrues ~0.33 per frame → still ~48 spawns/sec without floating-point drift. <code>SpawnOne</code> walks the slot pool for the first dead index — no heap allocation.</p>
+<h3 id="cone-spread-via-randomunitsphere-jitter">Cone spread via RandomUnitSphere jitter</h3>
+<pre><code class="language-cpp">// SpawnOne (lines 80–89)
+const Vector3 basis = emissionDir;
+const Vector3 jitter = RandomUnitSphere() * spreadRadians;
+Vector3 dir = basis + jitter;
+// ... normalize, then velocity = dir * (speedMin + Random01() * (speedMax - speedMin))
+</code></pre>
+<p><code>spreadRadians</code> scales a random unit-sphere offset added to the emission direction. Fire presets use <code>0.55F</code> (~31° half-angle); snow uses <code>1.25F</code> for wide drift.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="slot-pool-simulation">Slot pool simulation</h3>
 <p>Each emitter owns a fixed <code>Array&lt;SimParticle&gt;</code> sized to <code>maxParticles</code>. Spawn finds the first dead slot; no heap allocation per frame.</p>
@@ -1256,6 +1296,22 @@ inline void ApplyParticlePreset(const int presetIndex, ParticleEmitterComponent&
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-simparticle-fields-and-spawndebt">1b. Concept Deep Dive — SimParticle Fields and spawnDebt</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-slot-state-vs-exported-instance">Per-slot state vs exported instance</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spawndebt-fractional-emission-at-any-frame-rate">spawnDebt — fractional emission at any frame rate</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cone-spread-via-randomunitsphere-jitter">Cone spread via RandomUnitSphere jitter</a>
                         </li>
                         
                         <li class="toc-h2">

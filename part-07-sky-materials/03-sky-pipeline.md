@@ -15,6 +15,58 @@ You need a **pipeline variant** (or dynamic state) with depth test/write off and
 
 Build along: diff `pipelineSky` vs `pipelineLit` create info and verify sort order puts sky draws first.
 
+## 1b. Concept Deep Dive — Two Pipelines, One SPIR-V
+
+### Same shaders, different fixed-function state
+
+Spark compiles `scene.vert` / `scene.frag` once but creates **two** `VkPipeline` objects differing only in rasterizer and depth stencil:
+
+```cpp
+// src/spark/render/scene/VulkanScenePipeline.cpp (lines 128–160)
+VkPipelineRasterizationStateCreateInfo rasterizer{};
+rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;           // lit meshes
+
+VkPipelineRasterizationStateCreateInfo rasterizerSky{};
+rasterizerSky.cullMode = VK_CULL_MODE_NONE;            // sky — see inside of sphere
+
+VkPipelineDepthStencilStateCreateInfo depthStencil{};
+depthStencil.depthTestEnable = VK_TRUE;
+depthStencil.depthWriteEnable = VK_TRUE;               // lit writes depth
+
+VkPipelineDepthStencilStateCreateInfo depthStencilSky{};
+depthStencilSky.depthTestEnable = VK_FALSE;            // sky never occludes
+depthStencilSky.depthWriteEnable = VK_FALSE;
+```
+
+**Why no depth on sky?** Sky should render behind everything without fighting depth precision at the far plane. Lit geometry writes depth; sky fills remaining pixels.
+
+### Per-draw pipeline bind in opaque pass
+
+```cpp
+// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 109–126)
+for (each SceneDrawItem d) {
+    const bool isSky = (d.skyMode != SceneSkyMode::None);
+    if (isSky) {
+        if (!skyPipelineBound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineSky);
+            skyPipelineBound = true;
+        }
+    } else {
+        if (skyPipelineBound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLit);
+            skyPipelineBound = false;
+        }
+    }
+    // ... bind descriptors, push constants, draw ...
+}
+```
+
+Submit sorts sky draws **first** in the draw list so they establish background color before opaque props overwrite foreground pixels (sky still at far depth via vertex shader trick).
+
+### Push constants carry skyMode to both stages
+
+`push.skyMode` is set from `SceneDrawItem.skyMode` for every draw — vertex shader uses it for far-plane projection; fragment shader for early-out radiance path. Same push block layout as lit draws; unused PBR fields are ignored.
+
 ## 2. Core Concepts
 
 ### Shared shaders, different pipeline

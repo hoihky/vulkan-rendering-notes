@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,88 @@
 <li>A <strong>sampler</strong> + <strong>image view</strong> for shader binding</li>
 </ol>
 <p>Spark wraps this in <code>VulkanSceneTextureUploader</code> — one 2D array atlas, 16 layers, 512×512 texels each, single mip level. This chapter walks creation, per-frame dirty tracking, and command buffer recording.</p>
+<h3 id="getting-pixels-onto-the-gpu-beginner">Getting pixels onto the GPU (beginner)</h3>
+<p>The CPU has <code>Texture2D</code> bytes in RAM. The GPU texture unit reads from <strong>VRAM</strong> on the graphics card. You cannot <code>memcpy</code> directly — Vulkan requires an explicit upload path:</p>
+<pre><code class="language-text">1. Create VkImage (GPU memory, device-local)
+2. Create staging VkBuffer (CPU-visible)
+3. memcpy CPU pixels → staging buffer
+4. vkCmdCopyBufferToImage (recorded in command buffer)
+5. Image layout barrier: TRANSFER_DST → SHADER_READ_ONLY
+6. Create VkImageView + VkSampler
+7. vkUpdateDescriptorSets (binding 1)
+</code></pre>
+<p><strong>Image layouts</strong> confuse beginners — they are Vulkan's way of saying "how will this memory be accessed next?"</p>
+<table class="table">
+<thead>
+<tr>
+<th>Layout</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UNDEFINED</code></td>
+<td>Don't care about old contents (first upload)</td>
+</tr>
+<tr>
+<td><code>TRANSFER_DST_OPTIMAL</code></td>
+<td>Copy destination</td>
+</tr>
+<tr>
+<td><code>SHADER_READ_ONLY_OPTIMAL</code></td>
+<td>Fragment shader sampling</td>
+</tr>
+</tbody>
+</table>
+<p>A <strong>barrier</strong> (<code>vkCmdPipelineBarrier</code>) tells the driver to finish copies before shaders sample — skipping it causes validation errors or garbage texels.</p>
+<p>Spark batches uploads in <code>deferredUploadBatch.Record</code> <strong>before</strong> scene draws each frame — only <strong>dirty</strong> layers (content fingerprint changed) copy again.</p>
+<h2 id="b.concept-deep-dive-vulkanscenetextureuploader-lifecycle">1b. Concept Deep Dive — VulkanSceneTextureUploader Lifecycle</h2>
+<h3 id="fixed-atlas-dimensions">Fixed atlas dimensions</h3>
+<p>Spark packs all scene materials into one device-local 2D array:</p>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneTextureUploader.hpp
+class VulkanSceneTextureUploader {
+public:
+    static constexpr std::uint32_t kLayerSize = 1024;
+    static constexpr std::uint32_t kLayerCount = SceneRenderParams::MaxSceneTextures;
+    void PrepareUploads(const SceneRenderParams&amp; scene, bool sceneParamsValid);
+    void RecordUploads(VkCommandBuffer commandBuffer);
+    [[nodiscard]] VkImageView ArrayView() const noexcept;
+    [[nodiscard]] VkSampler Sampler() const noexcept;
+};
+</code></pre>
+<p>Each layer is resampled to <code>kLayerSize</code> on the CPU during <code>PrepareUploads</code>, then copied through a mapped staging buffer in <code>RecordUploads</code>. Layout transitions (UNDEFINED → TRANSFER_DST → SHADER_READ_ONLY) happen inside the recorded command buffer.</p>
+<h3 id="two-phase-upload-avoids-gpu-stalls">Two-phase upload avoids GPU stalls</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Phase</th>
+<th>When</th>
+<th>Work</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PrepareUploads</code></td>
+<td>Before command buffer record</td>
+<td>CPU resample, fingerprint compare, staging <code>memcpy</code></td>
+</tr>
+<tr>
+<td><code>RecordUploads</code></td>
+<td>Inside command buffer</td>
+<td><code>vkCmdCopyBufferToImage</code>, mip blits, barriers</td>
+</tr>
+</tbody>
+</table>
+<p><code>NeedsUpload</code> returns false when every layer fingerprint matches cache — the renderer skips both phases for that frame.</p>
+<h3 id="per-layer-dirty-cache">Per-layer dirty cache</h3>
+<p>Private arrays track what was last uploaded:</p>
+<pre><code class="language-cpp">const Texture2D* lastUploadedTextures[kLayerCount]{};
+std::uint64_t lastFingerprints[kLayerCount]{};
+bool pendingLayerDirty[kLayerCount]{};
+</code></pre>
+<p>A layer re-uploads when the <code>Texture2D*</code> pointer changes <strong>or</strong> <code>GetContentFingerprint()</code> differs. Nearest-filtered pixel art sets <code>SetSceneUploadNearest(true)</code> — uploader skips mip generation for that layer.</p>
+<h3 id="dual-samplers">Dual samplers</h3>
+<p><code>Sampler()</code> is trilinear for PBR materials; <code>SpriteSampler()</code> is nearest for crisp 2D/UI layers bound through the same array view. Descriptor binding 1 uses the PBR sampler; sprite passes may override per draw.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-a-2d-texture-array">Why a 2D texture array</h3>
 <p>Instead of 16 separate <code>VkImage</code> objects and 16 descriptor bindings, Spark packs materials into <strong>one array image</strong>:</p>
@@ -1262,6 +1350,30 @@ Draw:
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#getting-pixels-onto-the-gpu-beginner">Getting pixels onto the GPU (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vulkanscenetextureuploader-lifecycle">1b. Concept Deep Dive — VulkanSceneTextureUploader Lifecycle</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fixed-atlas-dimensions">Fixed atlas dimensions</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#two-phase-upload-avoids-gpu-stalls">Two-phase upload avoids GPU stalls</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-layer-dirty-cache">Per-layer dirty cache</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#dual-samplers">Dual samplers</a>
                         </li>
                         
                         <li class="toc-h2">

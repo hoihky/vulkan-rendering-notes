@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,100 @@
 <li>Wrong tint when blending lights</li>
 </ul>
 <p>Spark stores textures as <strong>UNORM</strong> (linear 0–1 bytes) but treats albedo art as sRGB-encoded, decoding in the fragment shader via <code>color_space.glsl</code>. This chapter explains that contract and where it applies.</p>
+<h3 id="srgb-vs-linear-for-beginners">sRGB vs linear for beginners</h3>
+<p>Your eyes are <strong>not linear light meters</strong>. A gray value of 0.5 on screen looks like "middle gray" but contains less than half the physical photons of white. Monitors and PNG files use <strong>sRGB encoding</strong> to store perceptual brightness in 8 bits efficiently.</p>
+<p><strong>Lighting math must run in linear space</strong> — adding two lights should double radiance, not double perceived brightness incorrectly.</p>
+<pre><code class="language-text">Wrong pipeline (common beginner bug):
+  sample albedo (sRGB bytes treated as linear)
+  × light intensity
+  → muddy shadows, wrong highlights
+
+Correct pipeline (Spark):
+  sample albedo
+  → sparkSrgbToLinear(albedo)   // decode to linear
+  × BRDF lighting in linear
+  → HDR outColor
+  → tonemap → gamma encode for monitor
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Texture type</th>
+<th>Encoding</th>
+<th>Decode in shader?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Albedo / base color</td>
+<td>sRGB file</td>
+<td><strong>Yes</strong> — <code>sparkSrgbToLinear</code></td>
+</tr>
+<tr>
+<td>Normal map</td>
+<td>Linear</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Metallic-roughness (ORM)</td>
+<td>Linear</td>
+<td>No</td>
+</tr>
+<tr>
+<td>HDR emissive (RGBA32F)</td>
+<td>Linear HDR</td>
+<td>No sRGB decode</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Double gamma bug:</strong> applying <code>pow(color, 2.2)</code> after already decoding sRGB washes out contrast. Decode <strong>once</strong> at albedo sample.</p>
+<h2 id="b.concept-deep-dive-sparksrgbtolinear-contract">1b. Concept Deep Dive — sparkSrgbToLinear Contract</h2>
+<h3 id="storage-vs-interpretation">Storage vs interpretation</h3>
+<p>GPU images use <code>VK_FORMAT_R8G8B8A8_UNORM</code> — bytes map linearly to 0–1 in the sampler. Art files, however, are <strong>sRGB-encoded</strong>. Spark does not create separate <code>SRGB</code> VkFormats for the scene array; decoding happens in GLSL:</p>
+<pre><code class="language-glsl">// shaders/color_space.glsl
+vec3 sparkSrgbToLinear(vec3 srgb) {
+    vec3 lo = srgb / 12.92;
+    vec3 hi = pow((srgb + vec3(0.055)) / vec3(1.055), vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), srgb));
+}
+</code></pre>
+<p>This is the accurate piecewise sRGB transfer function — not a single <code>pow(x, 2.2)</code> approximation.</p>
+<h3 id="where-decode-applies-in-scene.frag">Where decode applies in scene.frag</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Sample</th>
+<th>Decode?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base color / albedo layer</td>
+<td><strong>Yes</strong> — <code>sparkSrgbToLinear(texture(...).rgb)</code></td>
+</tr>
+<tr>
+<td>Normal map</td>
+<td>No — stored linear</td>
+</tr>
+<tr>
+<td>Metallic-roughness (ORM)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>HDR float emissive (<code>sceneHdrTextures</code>)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Sun / sky tints in UBO</td>
+<td>Written linear on CPU</td>
+</tr>
+</tbody>
+</table>
+<p><code>gltf_pbr_extensions.glsl</code> and <code>ibl.glsl</code> include the same helper — one definition, consistent decode everywhere albedo art is sampled.</p>
+<h3 id="cpu-side-sun-and-ambient-stay-linear">CPU-side sun and ambient stay linear</h3>
+<p><code>SceneRenderParams::lightColor</code> and <code>ambientColor</code> are already linear RGB when <code>ApplyTimeOfDayLighting</code> or manual demos fill them. Do <strong>not</strong> run <code>sparkSrgbToLinear</code> on UBO colors — only on texture samples that originated as PNG/JPEG art.</p>
+<h3 id="tonemap-is-the-encode-step-part-x">Tonemap is the encode step (Part X)</h3>
+<p>Forward shading accumulates linear HDR in <code>outColor</code>. ACES tonemap + gamma encode for the swapchain happen in the post pass — not in the material shader. Keeping decode at sample and encode at display prevents the double-gamma washout this chapter warns about.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="srgb-vs-linear-intuition">sRGB vs linear (intuition)</h3>
 <table class="table">
@@ -1265,6 +1365,30 @@ tonemap (Part VIII) → display sRGB
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#srgb-vs-linear-for-beginners">sRGB vs linear for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparksrgbtolinear-contract">1b. Concept Deep Dive — sparkSrgbToLinear Contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#storage-vs-interpretation">Storage vs interpretation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#where-decode-applies-in-scenefrag">Where decode applies in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cpu-side-sun-and-ambient-stay-linear">CPU-side sun and ambient stay linear</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#tonemap-is-the-encode-step-part-x">Tonemap is the encode step (Part X)</a>
                         </li>
                         
                         <li class="toc-h2">

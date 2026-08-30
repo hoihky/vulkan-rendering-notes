@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,38 @@
 <p>A scene file is a list of entities with <strong>typed component blobs</strong>. Without a registry, every new component bloats a monolithic switch in the loader — unmaintainable by Part XIV. Spark's <code>ComponentSnapshotRegistry</code> is the extension point: handlers own payload format; core code owns entity graph and line I/O.</p>
 <p>You will trace <code>TransformSnapshotHandler</code> as the minimal template, then follow editor save hooks that supply asset path context Capture needs for mesh and material restoration.</p>
 <p>Milestone: round-trip an entity with Transform + MeshComponent through Capture → Apply without WriteToFile; translation matches within epsilon 1e-4.</p>
+<h2 id="b.concept-deep-dive-registry-handlers-in-spark">1b. Concept Deep Dive — Registry Handlers in Spark</h2>
+<h3 id="one-handler-pair-per-component-kind">One handler pair per component kind</h3>
+<p><code>ComponentSnapshotRegistry</code> owns <code>IComponentSnapshotHandler</code> instances registered at startup. Core serializer code never switches on every component type — it asks the registry by kind on capture and by tag on restore:</p>
+<pre><code class="language-cpp">class TransformSnapshotHandler final : public IComponentSnapshotHandler {
+public:
+    [[nodiscard]] ComponentKind GetKind() const noexcept override { return ComponentKind::Transform; }
+    [[nodiscard]] const char* GetKindTag() const noexcept override { return "transform"; }
+
+    [[nodiscard]] bool TryCapture(
+            const GameObject&amp; owner,
+            const SceneCaptureContext&amp; /*ctx*/,
+            ComponentRecord&amp; out) const override {
+        const TransformComponent* tr = owner.GetComponent&lt;TransformComponent&gt;();
+        // ... snprintf scale + translation + rotation into out.payload ...
+        out.kind = Utf8String(GetKindTag());
+        return true;
+    }
+
+    [[nodiscard]] bool TryRestore(
+            GameObject&amp; owner,
+            const ComponentRecord&amp; record,
+            GameWorld&amp; /*world*/,
+            const SceneApplyContext&amp; /*ctx*/) const override {
+        // ... sscanf payload → TransformComponent::SetLocalTransform ...
+    }
+};
+</code></pre>
+<p>The transform handler is the <strong>minimal template</strong>: fixed kind tag, space-separated numeric payload, no asset IO.</p>
+<h3 id="scenecapturecontext-for-editor-path-mapping">SceneCaptureContext for editor path mapping</h3>
+<p>Editor save hooks supply <code>SceneCaptureContext</code> so mesh handlers write <strong>project-relative</strong> paths (<code>models/chair.glb</code>) instead of absolute temp paths from drag-import. Restore uses the same context via <code>SceneApplyContext::assetsRoot</code> + <code>assetLoader</code>.</p>
+<h3 id="extensibility-without-touching-core-io">Extensibility without touching core I/O</h3>
+<p>Adding <code>SoundCueComponent</code> persistence means one new handler class + <code>RegisterHandler</code> call — not edits to line parser loops. Rendering handlers live in <code>ComponentSnapshotHandlersRendering.cpp</code>; gameplay handlers in <code>ComponentSnapshotHandlersGameplay.cpp</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="registry-pattern-for-extensibility">Registry pattern for extensibility</h3>
 <p>Each component kind registers an <code>IComponentSnapshotHandler</code> with <code>{TryCapture, TryRestore}</code> and a stable <strong>kind tag</strong> string. <code>ComponentSnapshotRegistry::Default()</code> owns all handlers at startup. Core serializer code never switches on every component type — it asks the registry by <code>ComponentKind</code> on capture and by tag on restore.</p>
@@ -1278,6 +1316,22 @@ ctx.resolveMeshAssetPath = [](const GameObject&amp; owner, void* userData) -&gt;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-registry-handlers-in-spark">1b. Concept Deep Dive — Registry Handlers in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-handler-pair-per-component-kind">One handler pair per component kind</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenecapturecontext-for-editor-path-mapping">SceneCaptureContext for editor path mapping</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#extensibility-without-touching-core-io">Extensibility without touching core I/O</a>
                         </li>
                         
                         <li class="toc-h2">

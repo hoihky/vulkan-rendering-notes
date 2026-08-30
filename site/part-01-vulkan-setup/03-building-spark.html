@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,84 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>You cannot build along with a book if the reference project does not compile. Before touching Vulkan theory, you need a <strong>reproducible build</strong> of Spark: compiler, Vulkan SDK, CMake, and network access for first-time dependency fetch.</p>
 <p>This chapter is practical. Follow every step on your machine. When SparkDemo shows a window (even a blank or clearing color), Part I's Vulkan chapters have a running target to compare against.</p>
+<h2 id="b.concept-deep-dive-sparks-build-to-runtime-pipeline">1b. Concept Deep Dive — Spark's Build-to-Runtime Pipeline</h2>
+<h3 id="why-shaders-compile-at-build-time-not-ship-time">Why shaders compile at build time, not ship time</h3>
+<p>Spark treats SPIR-V as a <strong>build artifact</strong>, not a source-tree constant. GLSL lives under <code>shaders/</code>; CMake's <code>SparkShaders</code> custom target invokes <code>glslangValidator</code> for every <code>.vert</code> and <code>.frag</code>, writing <code>.spv</code> files into the build tree. The engine target depends on <code>SparkShaders</code>, so a shader edit triggers recompilation before link — you never run with stale bytecode silently.</p>
+<p>Runtime paths are baked in as compile definitions: <code>SPARK_SHADER_SPV_DIR</code> points at the generated SPIR-V folder; <code>SPARK_BUILD_ASSETS_DIR</code> points at copied fonts, textures, and screenshot output. That means <code>./cmake-build-debug/SparkDemo</code> finds everything relative to the binary without environment variables — CI and teammates get identical layout. <code>VulkanSpvShaderLoader</code> concatenates <code>SPARK_SHADER_SPV_DIR</code> + filename when creating <code>VkShaderModule</code> objects in Part II.</p>
+<p>Assets follow the same pattern: CMake <code>file(COPY ...)</code> stages runtime files into <code>spark_runtime_assets/</code> under the build directory. First configure may fetch GLFW via FetchContent and download fonts — network on first run is expected, not a bug.</p>
+<h3 id="build-preset-runtime-layout">Build preset → runtime layout</h3>
+<table class="table">
+<thead>
+<tr>
+<th>CMake preset</th>
+<th>Binary dir</th>
+<th>Key macros</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>debug</code></td>
+<td><code>cmake-build-debug/</code></td>
+<td><code>SPARK_BUILD_ASSETS_DIR</code>, <code>SPARK_SHADER_SPV_DIR</code></td>
+</tr>
+<tr>
+<td><code>editor-debug</code></td>
+<td><code>cmake-build-editor/</code></td>
+<td>Same pattern; slimmer target set</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-text">cmake --preset debug
+cmake --build cmake-build-debug
+        │
+        ├─► SparkShaders  →  cmake-build-debug/.../shaders/*.spv
+        ├─► file(COPY)    →  cmake-build-debug/spark_runtime_assets/
+        └─► SparkDemo     →  links engine + depends on SparkShaders
+</code></pre>
+<h3 id="spir-v-generation-rule-one-shader-file-one.spv">SPIR-V generation rule (one shader file → one <code>.spv</code>)</h3>
+<pre><code class="language-cmake"># CMakeLists.txt (lines 432–443)
+    add_custom_command(
+            OUTPUT ${SPV}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SPV_DIR}
+            COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.0 -I${SHADER_DIR} ${SHADER} -o ${SPV}
+            DEPENDS ${SHADER} ${SHADER_DIR}/clustered_lights.glsl ...
+            COMMENT "SPIR-V: ${NAME_WE}.${EXT_NO_DOT}"
+            VERBATIM
+    )
+    list(APPEND SPV_FILES ${SPV})
+endforeach ()
+
+add_custom_target(SparkShaders DEPENDS ${SPV_FILES})
+</code></pre>
+<p>Shared <code>.glsl</code> includes are listed in <code>DEPENDS</code> so changing <code>scene_ubo.glsl</code> rebuilds every shader that <code>#include</code>s it.</p>
+<h3 id="runtime-loader-reads-from-the-build-tree">Runtime loader reads from the build tree</h3>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanSpvShaderLoader.cpp (lines 12–18)
+Array&lt;char&gt; VulkanSpvShaderLoader::ReadSpvFile(const char* filename) const {
+    Utf8String pathUtf(SPARK_SHADER_SPV_DIR);
+    pathUtf.AppendUtf8("/");
+    pathUtf.AppendUtf8(filename);
+    FILE* file = std::fopen(pathUtf.CStr(), "rb");
+    if (file == nullptr) {
+        throw std::runtime_error(std::string("failed to open shader: ") + pathUtf.CStr());
+    }
+</code></pre>
+<p>If Part II throws "failed to open shader", compare this path with <code>find cmake-build-debug -name '*.spv'</code>.</p>
+<h3 id="preset-pins-the-debug-workflow">Preset pins the debug workflow</h3>
+<pre><code class="language-json">// CMakePresets.json (lines 8–18)
+"configurePresets": [
+  {
+    "name": "debug",
+    "displayName": "Debug (SparkDemo)",
+    "description": "Default CLion profile: SparkDemo",
+    "binaryDir": "${sourceDir}/cmake-build-debug",
+    "cacheVariables": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "SPARK_BUILD_DEMO": "ON",
+      "SPARK_BUILD_INTEROP": "ON"
+    }
+  }
+</code></pre>
+<p>A working build is the foundation for every Vulkan milestone — if configure fails here, fix toolchain before reading instance creation.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="toolchain-requirements">Toolchain requirements</h3>
 <table class="table">
@@ -1231,6 +1315,30 @@ vulkan-notes/
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparks-build-to-runtime-pipeline">1b. Concept Deep Dive — Spark's Build-to-Runtime Pipeline</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-shaders-compile-at-build-time-not-ship-time">Why shaders compile at build time, not ship time</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#build-preset-runtime-layout">Build preset → runtime layout</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spir-v-generation-rule-one-shader-file-one">SPIR-V generation rule (one shader file → one )</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#runtime-loader-reads-from-the-build-tree">Runtime loader reads from the build tree</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#preset-pins-the-debug-workflow">Preset pins the debug workflow</a>
                         </li>
                         
                         <li class="toc-h2">

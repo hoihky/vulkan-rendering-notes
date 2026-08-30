@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,72 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Textured albedo tells you <strong>surface color</strong>; lighting tells you <strong>how much</strong> of each light reaches the camera. The simplest model is <strong>Lambert diffuse</strong>: brightness proportional to <code>max(dot(N, L), 0)</code>.</p>
 <p>Spark's lit path goes further — Cook-Torrance specular, metallic energy split, wrapped diffuse for outdoor sun, cascaded shadow attenuation, hemisphere ambient, then punctual lights (Chapter 9). This chapter focuses on the <strong>directional sun</strong> and the <code>evalBRDF</code> core that punctual lights reuse.</p>
+<h3 id="lighting-for-complete-beginners">Lighting for complete beginners</h3>
+<p>Without lighting, every pixel shows <strong>flat albedo color</strong> — like a sticker under office fluorescent lights with no direction. Real surfaces look brighter where light hits them head-on and darker in grooves facing away.</p>
+<p>The simplest lighting model uses three vectors at each pixel:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Name</th>
+<th>Points toward</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>N</strong></td>
+<td>Surface normal</td>
+<td>"Up" from the surface</td>
+</tr>
+<tr>
+<td><strong>L</strong></td>
+<td>Light direction</td>
+<td>The sun or lamp</td>
+</tr>
+<tr>
+<td><strong>V</strong></td>
+<td>View direction</td>
+<td>The camera</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lambert diffuse</strong> (matte surfaces):</p>
+<pre><code class="language-text">brightness = max(dot(N, L), 0) × lightColor × albedo
+</code></pre>
+<ul>
+<li><code>dot(N, L) = 1</code> when surface faces the light directly (brightest).</li>
+<li><code>dot(N, L) = 0</code> when surface is perpendicular (terminator line).</li>
+<li>Negative dot → surface faces away → clamp to 0 (no back-lighting on opaque).</li>
+</ul>
+<p><strong>Specular</strong> (shiny highlights) adds a second term based on <strong>reflection</strong> toward the camera — Spark uses GGX microfacet model in <code>evalBRDF</code>.</p>
+<pre><code class="language-text">Fragment shader pipeline (simplified):
+sample albedo texture
+build N from normal map
+Lo = evalBRDF(N, V, L, albedo, metallic, roughness)
+Lo *= shadow visibility (Part IX)
+outColor = Lo  (HDR linear)
+</code></pre>
+<p>Start debugging lighting with <strong>no textures</strong> — solid gray albedo and a single directional light. If diffuse works, add textures, then shadows, then PBR maps.</p>
+<h2 id="b.concept-deep-dive-evalbrdf-and-sun-ubo-fields">1b. Concept Deep Dive — evalBRDF and Sun UBO Fields</h2>
+<h3 id="directional-sun-lives-in-sceneuniformgpu">Directional sun lives in SceneUniformGpu</h3>
+<p>The frame UBO packs sun direction and color for every lit draw:</p>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};      // xyz = normalized direction toward sun
+    float cameraPos[4]{};
+    float lightColor[4]{};    // linear RGB
+    float ambientColor[4]{};
+    // ...
+};
+</code></pre>
+<p><code>VulkanSceneUniformWriter::Write</code> copies <code>scene.lightDirectionWorld</code> and <code>scene.lightColor * scene.lightIntensity</code> from <code>SceneRenderParams</code>. Punctual lights are <strong>not</strong> in this struct — they use SSBO binding 4.</p>
+<h3 id="evalbrdf-combines-diffuse-and-specular">evalBRDF combines diffuse and specular</h3>
+<p><code>scene.frag</code> calls <code>evalBRDF(N, V, L, albedo, metallic, roughness, ...)</code> for the sun and reuses the same function inside punctual loops. The GGX specular term shares Fresnel and geometry masking with the Lambert diffuse branch — metallic surfaces zero out diffuse and tint specular with albedo.</p>
+<h3 id="wrapped-diffuse-for-outdoor-sun">Wrapped diffuse for outdoor sun</h3>
+<p>Outdoor profile enables a wrap term on directional diffuse — surfaces facing slightly away from the sun still receive fill, reducing harsh terminator lines on terrain. This is profile-driven through <code>ResolvedSceneLighting</code>, not a per-material toggle.</p>
+<h3 id="shadow-modulation-before-punctual-lights">Shadow modulation before punctual lights</h3>
+<p>Directional contribution multiplies by cascaded shadow visibility (Part IX) <strong>before</strong> point/spot loops accumulate. Debug diffuse-only by disabling shadow flags on the draw item — if shading looks flat gray, fix <code>lightDir</code> and normals first; if shadows are pure black, check cascade matrices in the UBO.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="vectors-for-shading">Vectors for shading</h3>
 <p>At each fragment, build:</p>
@@ -1245,6 +1317,30 @@ vec3 sunDiffuse = base * (1.0 - met * 0.92) * steppedNL * sunRad * sunShadow;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lighting-for-complete-beginners">Lighting for complete beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-evalbrdf-and-sun-ubo-fields">1b. Concept Deep Dive — evalBRDF and Sun UBO Fields</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#directional-sun-lives-in-sceneuniformgpu">Directional sun lives in SceneUniformGpu</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#evalbrdf-combines-diffuse-and-specular">evalBRDF combines diffuse and specular</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#wrapped-diffuse-for-outdoor-sun">Wrapped diffuse for outdoor sun</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shadow-modulation-before-punctual-lights">Shadow modulation before punctual lights</a>
                         </li>
                         
                         <li class="toc-h2">

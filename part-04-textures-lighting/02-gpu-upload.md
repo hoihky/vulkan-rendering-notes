@@ -20,6 +20,78 @@ Chapter 1 left pixels on the CPU. The GPU cannot sample host RAM directly — yo
 
 Spark wraps this in `VulkanSceneTextureUploader` — one 2D array atlas, 16 layers, 512×512 texels each, single mip level. This chapter walks creation, per-frame dirty tracking, and command buffer recording.
 
+### Getting pixels onto the GPU (beginner)
+
+The CPU has `Texture2D` bytes in RAM. The GPU texture unit reads from **VRAM** on the graphics card. You cannot `memcpy` directly — Vulkan requires an explicit upload path:
+
+```text
+1. Create VkImage (GPU memory, device-local)
+2. Create staging VkBuffer (CPU-visible)
+3. memcpy CPU pixels → staging buffer
+4. vkCmdCopyBufferToImage (recorded in command buffer)
+5. Image layout barrier: TRANSFER_DST → SHADER_READ_ONLY
+6. Create VkImageView + VkSampler
+7. vkUpdateDescriptorSets (binding 1)
+```
+
+**Image layouts** confuse beginners — they are Vulkan's way of saying "how will this memory be accessed next?"
+
+| Layout | Meaning |
+|--------|---------|
+| `UNDEFINED` | Don't care about old contents (first upload) |
+| `TRANSFER_DST_OPTIMAL` | Copy destination |
+| `SHADER_READ_ONLY_OPTIMAL` | Fragment shader sampling |
+
+A **barrier** (`vkCmdPipelineBarrier`) tells the driver to finish copies before shaders sample — skipping it causes validation errors or garbage texels.
+
+Spark batches uploads in `deferredUploadBatch.Record` **before** scene draws each frame — only **dirty** layers (content fingerprint changed) copy again.
+
+## 1b. Concept Deep Dive — VulkanSceneTextureUploader Lifecycle
+
+### Fixed atlas dimensions
+
+Spark packs all scene materials into one device-local 2D array:
+
+```cpp
+// include/spark/render/scene/VulkanSceneTextureUploader.hpp
+class VulkanSceneTextureUploader {
+public:
+    static constexpr std::uint32_t kLayerSize = 1024;
+    static constexpr std::uint32_t kLayerCount = SceneRenderParams::MaxSceneTextures;
+    void PrepareUploads(const SceneRenderParams& scene, bool sceneParamsValid);
+    void RecordUploads(VkCommandBuffer commandBuffer);
+    [[nodiscard]] VkImageView ArrayView() const noexcept;
+    [[nodiscard]] VkSampler Sampler() const noexcept;
+};
+```
+
+Each layer is resampled to `kLayerSize` on the CPU during `PrepareUploads`, then copied through a mapped staging buffer in `RecordUploads`. Layout transitions (UNDEFINED → TRANSFER_DST → SHADER_READ_ONLY) happen inside the recorded command buffer.
+
+### Two-phase upload avoids GPU stalls
+
+| Phase | When | Work |
+|-------|------|------|
+| `PrepareUploads` | Before command buffer record | CPU resample, fingerprint compare, staging `memcpy` |
+| `RecordUploads` | Inside command buffer | `vkCmdCopyBufferToImage`, mip blits, barriers |
+
+`NeedsUpload` returns false when every layer fingerprint matches cache — the renderer skips both phases for that frame.
+
+### Per-layer dirty cache
+
+Private arrays track what was last uploaded:
+
+```cpp
+const Texture2D* lastUploadedTextures[kLayerCount]{};
+std::uint64_t lastFingerprints[kLayerCount]{};
+bool pendingLayerDirty[kLayerCount]{};
+```
+
+A layer re-uploads when the `Texture2D*` pointer changes **or** `GetContentFingerprint()` differs. Nearest-filtered pixel art sets `SetSceneUploadNearest(true)` — uploader skips mip generation for that layer.
+
+### Dual samplers
+
+`Sampler()` is trilinear for PBR materials; `SpriteSampler()` is nearest for crisp 2D/UI layers bound through the same array view. Descriptor binding 1 uses the PBR sampler; sprite passes may override per draw.
+
 ## 2. Core Concepts
 
 ### Why a 2D texture array

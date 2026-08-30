@@ -15,6 +15,53 @@ must reconstruct world positions from a center point and corner offset, then fad
 
 Build along: read particle.vert and particle.frag alongside the Record vertex pack loop.
 
+## 1b. Concept Deep Dive — particle.vert and particle.frag
+
+### Billboard reconstruction (vertex shader)
+
+```glsl
+// shaders/particle.vert (lines 18–25)
+void main() {
+    vec3 right = normalize(cameraRight.xyz);
+    vec3 up = normalize(cameraUp.xyz);
+    vec3 worldPos = inPos + right * inCorner.x * inSize * 0.5
+                          + up   * inCorner.y * inSize * 0.5;
+    gl_Position = viewProj * vec4(worldPos, 1.0);
+    vColor = inColor;
+    vDisc = inCorner;
+}
+```
+
+`inPos` is the particle center (same for all six verts). `inCorner` is the quad corner (−1..1) packed by Record. No model matrix — particles live in world space directly.
+
+### Soft disc without a texture (fragment shader)
+
+```glsl
+// shaders/particle.frag (lines 8–15)
+void main() {
+    float d = length(vDisc);
+    float edge = 1.0 - smoothstep(0.82, 1.02, d);
+    if (edge < 0.004) discard;
+    outColor = vec4(vColor.rgb, vColor.a * edge);
+}
+```
+
+Radial fade from center to edge approximates a round sprite. `discard` skips fully transparent fringe pixels — important for additive blend where alpha-zero fragments would still add zero but waste fill rate.
+
+### UBO layout matches ParticleUniformGpu
+
+```cpp
+// VulkanParticlePass.hpp (lines 34–39) ↔ particle.vert ParticleUBO std140
+struct ParticleUniformGpu {
+    float viewProj[16]{};
+    float cameraPos[4]{};
+    float cameraRight[4]{};
+    float cameraUp[4]{};
+};
+```
+
+256-byte UBO allocation per frame slot; Record memcpy's the struct before bind. No push constants — entire pass is one pipeline + one descriptor set.
+
 ## 2. Core Concepts
 
 ### Billboard vertex math

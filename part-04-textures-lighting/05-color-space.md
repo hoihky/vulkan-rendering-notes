@@ -21,6 +21,72 @@ Mix the two and you get:
 
 Spark stores textures as **UNORM** (linear 0–1 bytes) but treats albedo art as sRGB-encoded, decoding in the fragment shader via `color_space.glsl`. This chapter explains that contract and where it applies.
 
+### sRGB vs linear for beginners
+
+Your eyes are **not linear light meters**. A gray value of 0.5 on screen looks like "middle gray" but contains less than half the physical photons of white. Monitors and PNG files use **sRGB encoding** to store perceptual brightness in 8 bits efficiently.
+
+**Lighting math must run in linear space** — adding two lights should double radiance, not double perceived brightness incorrectly.
+
+```text
+Wrong pipeline (common beginner bug):
+  sample albedo (sRGB bytes treated as linear)
+  × light intensity
+  → muddy shadows, wrong highlights
+
+Correct pipeline (Spark):
+  sample albedo
+  → sparkSrgbToLinear(albedo)   // decode to linear
+  × BRDF lighting in linear
+  → HDR outColor
+  → tonemap → gamma encode for monitor
+```
+
+| Texture type | Encoding | Decode in shader? |
+|--------------|----------|-------------------|
+| Albedo / base color | sRGB file | **Yes** — `sparkSrgbToLinear` |
+| Normal map | Linear | No |
+| Metallic-roughness (ORM) | Linear | No |
+| HDR emissive (RGBA32F) | Linear HDR | No sRGB decode |
+
+**Double gamma bug:** applying `pow(color, 2.2)` after already decoding sRGB washes out contrast. Decode **once** at albedo sample.
+
+## 1b. Concept Deep Dive — sparkSrgbToLinear Contract
+
+### Storage vs interpretation
+
+GPU images use `VK_FORMAT_R8G8B8A8_UNORM` — bytes map linearly to 0–1 in the sampler. Art files, however, are **sRGB-encoded**. Spark does not create separate `SRGB` VkFormats for the scene array; decoding happens in GLSL:
+
+```glsl
+// shaders/color_space.glsl
+vec3 sparkSrgbToLinear(vec3 srgb) {
+    vec3 lo = srgb / 12.92;
+    vec3 hi = pow((srgb + vec3(0.055)) / vec3(1.055), vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), srgb));
+}
+```
+
+This is the accurate piecewise sRGB transfer function — not a single `pow(x, 2.2)` approximation.
+
+### Where decode applies in scene.frag
+
+| Sample | Decode? |
+|--------|---------|
+| Base color / albedo layer | **Yes** — `sparkSrgbToLinear(texture(...).rgb)` |
+| Normal map | No — stored linear |
+| Metallic-roughness (ORM) | No |
+| HDR float emissive (`sceneHdrTextures`) | No |
+| Sun / sky tints in UBO | Written linear on CPU |
+
+`gltf_pbr_extensions.glsl` and `ibl.glsl` include the same helper — one definition, consistent decode everywhere albedo art is sampled.
+
+### CPU-side sun and ambient stay linear
+
+`SceneRenderParams::lightColor` and `ambientColor` are already linear RGB when `ApplyTimeOfDayLighting` or manual demos fill them. Do **not** run `sparkSrgbToLinear` on UBO colors — only on texture samples that originated as PNG/JPEG art.
+
+### Tonemap is the encode step (Part X)
+
+Forward shading accumulates linear HDR in `outColor`. ACES tonemap + gamma encode for the swapchain happen in the post pass — not in the material shader. Keeping decode at sample and encode at display prevents the double-gamma washout this chapter warns about.
+
 ## 2. Core Concepts
 
 ### sRGB vs linear (intuition)

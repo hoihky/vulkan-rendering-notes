@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,59 @@
 <li>Hands off to Vulkan writers</li>
 </ol>
 <p>If gathering runs after GPU record, or clears arrays mid-frame, lights pop or lag one frame. Spark centralizes this in <strong>scene submit</strong> — the same pipeline that builds draw lists and texture arrays.</p>
+<h3 id="what-gather-lights-means-beginner">What "gather lights" means (beginner)</h3>
+<p>The GPU does not know about your ECS <code>PointLightComponent</code> objects. <strong>Gather</strong> = translate game objects into flat arrays the shader can loop:</p>
+<pre><code class="language-text">Frame start:
+SceneSubmit::GatherLights(world, params)
+  for each entity with PointLightComponent:
+    if enabled and in range:
+      params.pointLights[count++] = { position, color, radius, ... }
+  same for SpotLightComponent
+  copy DirectionalLightComponent → params.sun
+</code></pre>
+<p><strong>Why gather on CPU?</strong></p>
+<ul>
+<li>Shader cannot traverse your C++ entity graph.</li>
+<li>Culling disabled lights on CPU saves GPU loop iterations.</li>
+<li>One upload per frame (<code>VulkanSceneUniformWriter</code>) instead of per-entity descriptor updates.</li>
+</ul>
+<p><strong>Order matters in Spark:</strong></p>
+<pre><code class="language-text">OnUpdate (gameplay)
+  → Animator updates joint palettes
+SceneSubmit::Gather
+  → lights, draw items, camera UBO fields
+VulkanRenderer::Record
+  → upload SSBO, draw indexed
+</code></pre>
+<p>If lights flicker or are one frame late, check whether gather runs <strong>after</strong> transforms update but <strong>before</strong> command buffer record.</p>
+<p><strong>Debug tip:</strong> log <code>params.pointLightCount</code> each frame — if zero when lamps exist, component is disabled, entity inactive, or gather filter excludes it.</p>
+<h2 id="b.concept-deep-dive-scenesubmit-light-gather-loop">1b. Concept Deep Dive — SceneSubmit Light Gather Loop</h2>
+<h3 id="fillstandardlitscenefromworld-clears-and-rebuilds">FillStandardLitSceneFromWorld clears and rebuilds</h3>
+<p>Each submit pass starts from a clean snapshot — lights do not accumulate across frames:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (excerpt)
+params.pointLights.Clear();
+params.spotLights.Clear();
+const ResolvedSceneLighting resolvedLighting = SceneLightingResolver::Resolve(params);
+SceneSubmitDetail::ApplyEcsDirectionalLight(world, params);
+
+world.ForEachActiveGameObject([&amp;params](GameObject* o) {
+    const PointLightComponent* pl = o-&gt;GetComponent&lt;PointLightComponent&gt;();
+    if (pl == nullptr || !pl-&gt;IsEnabled()) return;
+    ScenePointLight gpu{};
+    gpu.positionWorld = o-&gt;GetWorldMatrix().TranslationVector();
+    gpu.range = pl-&gt;GetRange();
+    gpu.color = pl-&gt;GetColor();
+    gpu.intensity = pl-&gt;GetIntensity();
+    params.pointLights.PushBack(gpu);
+});
+</code></pre>
+<p>World matrix translation picks up animated lamp parents — gather runs <strong>after</strong> transform updates in the same frame.</p>
+<h3 id="lighting-resolver-before-ecs-walk">Lighting resolver before ECS walk</h3>
+<p><code>SceneLightingResolver::Resolve(params)</code> merges <code>lightingProfile</code>, per-scene overrides, and time-of-day into <code>ResolvedSceneLighting</code> (exposure, shadow fade, ambient hemisphere). Directional ECS light then overwrites sun fields when a <code>DirectionalLightComponent</code> exists on an active entity.</p>
+<h3 id="ubo-write-happens-in-vulkanrenderer">UBO write happens in VulkanRenderer</h3>
+<p>Gather only fills <code>SceneRenderParams</code>. <code>VulkanSceneUniformWriter::Write</code> packs sun, ambient, camera, and cluster metadata into <code>SceneUniformGpu</code>; separate SSBO writers copy <code>pointLights</code> and <code>spotLights</code> arrays. If lights look one frame late, the bug is usually record order — not the gather loop itself.</p>
+<h3 id="production-entry-point">Production entry point</h3>
+<p><code>SubmitStandardLitSceneFromWorldWithCamera</code> calls <code>TryFillSceneCameraFromWorld</code>, then <code>FillStandardLitSceneFromWorld</code> with resolved camera matrices — the path <code>Platformer2DDemo</code> and ECS 3D scenes share. Manual demos (<code>ThreeDDemo</code>) fill <code>params</code> directly but use the same light structs.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="scenerenderparams-as-lighting-snapshot">SceneRenderParams as lighting snapshot</h3>
 <p>Key fields beyond draws:</p>
@@ -1283,6 +1342,30 @@ params.pointLights.PushBack(gpu);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-gather-lights-means-beginner">What "gather lights" means (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenesubmit-light-gather-loop">1b. Concept Deep Dive — SceneSubmit Light Gather Loop</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fillstandardlitscenefromworld-clears-and-rebuilds">FillStandardLitSceneFromWorld clears and rebuilds</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lighting-resolver-before-ecs-walk">Lighting resolver before ECS walk</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ubo-write-happens-in-vulkanrenderer">UBO write happens in VulkanRenderer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#production-entry-point">Production entry point</a>
                         </li>
                         
                         <li class="toc-h2">

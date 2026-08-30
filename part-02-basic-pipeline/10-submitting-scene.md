@@ -19,6 +19,163 @@ Spark centralizes ECS → snapshot translation in **`SceneSubmit`** (`FillStanda
 
 Either way, the last line is `context.SetSceneRenderParams(params)` before `PresentFrame`.
 
+### Your first end-to-end frame (beginner checklist)
+
+By the end of Part II, one complete frame looks like this on the CPU:
+
+```text
+1. Engine::Run wakes up for frame N
+2. game->OnUpdate(dt)           — move the camera, animate objects
+3. game->OnRender(frame, ctx):
+     a. Build SceneRenderParams params
+     b. params.camera = ...      — view + projection matrices
+     c. FillStandardLitSceneFromWorld(world, params, ctx)
+        OR manually push SceneDrawItem entries
+     d. ctx.SetSceneRenderParams(params)
+4. renderer->PresentFrame()
+     a. DrawFrame → RecordSceneCommandBuffer
+     b. sceneOpaquePass draws each item in params.draws
+     c. tonemap + present
+5. Monitor shows frame N
+```
+
+If the screen is black, ask **which step failed**:
+
+| Symptom | Likely broken step |
+|---------|-------------------|
+| Game runs, black screen | 3c empty `params.draws`, or 4b pipeline/render pass |
+| Gray clear color only | 4b render pass clears but no draws recorded |
+| Geometry wrong place | 3b camera matrices |
+| White untextured mesh | Material/submit layers (Part IV/VII) |
+| Validation error on submit | Part I sync or Part II pipeline |
+
+### SceneDrawItem: the smallest unit of rendering
+
+Each thing the GPU draws is one **draw item**. At minimum it carries:
+
+| Field | Purpose |
+|-------|---------|
+| `model` | 4×4 world matrix (object → world space) |
+| `mesh` / `customMesh` | Which geometry (unit cube slot or SharedPtr mesh) |
+| `submeshIndex` | Which index range for multi-material meshes |
+| `albedo` | Fallback tint when no texture |
+| `textureLayer` | Index into `sceneTextures` array (-1 = none) |
+| `metallic`, `roughness` | PBR scalars for fragment shader |
+
+```cpp
+// Building one item by hand (learning exercise)
+SceneDrawItem item{};
+item.model = transform.ToMatrix4();
+item.mesh = SceneMeshSlot::UnitCube;
+item.albedo = {0.8f, 0.2f, 0.2f};
+item.metallic = 0.0f;
+item.roughness = 0.5f;
+params.draws.PushBack(item);
+```
+
+Production code never hand-assembles hundreds of these — `FillStandardLitSceneFromWorld` does it from components. Start manual to learn the contract, then switch to the helper.
+
+## 1b. Concept Deep Dive — SceneSubmit ECS Translation
+
+### Two paths, one struct type
+
+Spark demos converge on `SceneRenderParams` whether you fill it by hand or via ECS helpers. The renderer cannot tell which path built the snapshot:
+
+```text
+Manual path:
+  OnRender → build SceneDrawItem[] → SetSceneRenderParams
+
+ECS path:
+  OnRender → FillStandardLitSceneFromWorld(world, params)
+          → SetSceneRenderParams
+          (or SubmitStandardLitSceneFromWorld wraps both)
+```
+
+Both end with the same `VulkanRenderer::pendingScene` copy and the same opaque pass loop.
+
+### SubmitStandardLitSceneFromWorld — fill then submit
+
+The convenience wrapper allocates params, calls the fill helper with camera and lighting arguments, then forwards to the engine context:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 603–633)
+void SubmitStandardLitSceneFromWorld(
+        GameWorld& world,
+        IEngineContext& context,
+        const Matrix4& viewProjection,
+        const Vector3& cameraPositionWorld,
+        /* lighting, particles, time ... */) {
+    SceneRenderParams params{};
+    FillStandardLitSceneFromWorld(world, context, viewProjection, cameraPositionWorld,
+            lightDirectionWorld, lightColor, lightIntensity, ambientColor,
+            enableParticles, particleCameraRight, particleCameraUp,
+            sceneTimeSeconds, params, spriteSortMode);
+    context.SetSceneRenderParams(params);
+}
+```
+
+Demos with a `MainCamera` often call `SubmitStandardLitSceneFromWorldWithCamera`, which derives view/projection from ECS before filling.
+
+### PushRigidMeshDraws — MeshComponent to SceneDrawItem
+
+For each rigid mesh entity, SceneSubmit builds a base draw item from the world matrix and expands submeshes when multi-material slots exist:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 77–98)
+void PushRigidMeshDraws(
+        Array<SceneDrawItem>& drawList,
+        SceneDrawItem baseItem,
+        const Mesh& mesh,
+        const MaterialComponent* mat,
+        const MultiMaterialComponent* multiMat,
+        SceneRenderParams& params,
+        const FindSceneTextureFn& findOrAddTexture) {
+    const Array<MeshSubmesh>& submeshes = mesh.GetSubmeshes();
+    if (submeshes.IsEmpty() || multiMat == nullptr) {
+        SceneDrawItem item = baseItem;
+        item.submeshIndex = kSceneDrawFullSubmesh;
+        if (mat != nullptr) {
+            ApplyMaterialComponentToSceneDrawItem(item, mat, &params);
+            ApplyAlbedoTexture(item, mat->GetBaseColorTexture(), mat->GetTint(), findOrAddTexture);
+        }
+        drawList.PushBack(item);
+        return;
+    }
+    // ... one SceneDrawItem per submesh with material slot ...
+}
+```
+
+Builtin slots (`UnitCube`, `GroundPlane`) set `baseItem.mesh` from `MeshComponent::slot`; custom assets set `mesh = Custom` with `customMesh` shared pointer.
+
+### Partition and sort — opaque vs transparent arrays
+
+After gathering, SceneSubmit stable-sorts by material/state and partitions into `draws` vs `transparentDraws` based on opacity:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 466–467)
+    SceneSubmitDetail::StableSortDrawItems(drawList);
+    PartitionSortedDrawItemsIntoSceneParams(drawList, params, cameraPositionWorld);
+```
+
+Transparent items sort back-to-front by camera distance — the opaque pass reads `params.draws` only; transparent resume uses `params.transparentDraws`.
+
+### Complete Part II frame graph (CPU + GPU)
+
+```text
+Engine::Run
+  game->OnUpdate(dt)
+  game->OnRender:
+    FillStandardLitSceneFromWorld OR manual params
+    context.SetSceneRenderParams(params)
+  PresentFrame → DrawFrame
+    WriteUniformBuffer(resolvedLighting from params)
+    RecordSceneCommandBuffer
+      sceneOpaquePass.Record(params.draws)
+    tonemap → vkQueuePresentKHR
+```
+
+Chapter 1's contract, chapters 2–7's Vulkan objects, and this chapter's ECS glue — together they produce a lit 3D frame in SparkDemo.
+
 ## 2. Core Concepts
 
 ### Manual vs ECS-driven submit

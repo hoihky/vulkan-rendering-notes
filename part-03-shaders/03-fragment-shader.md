@@ -24,6 +24,111 @@ Spark's `scene.frag` is not a tutorial `gl_FragColor = vec4(1,0,0,1)` — it imp
 
 You will not implement all of this in one sitting. This chapter teaches the **structure**: inputs, texture binding, shading dispatch, and HDR output — so each feature in Parts IV–VII slots into a place you already understand.
 
+### What the fragment shader does (beginner)
+
+After the vertex shader places triangle corners on screen, the **rasterizer** fills the triangle with **fragments** (potential pixels). The fragment shader runs for each fragment and answers:
+
+> "What color should this pixel be?"
+
+For a lit mesh in Spark, that involves:
+
+1. **Sample textures** — albedo, normal map, ORM at interpolated UV.
+2. **Build surface frame** — normal, tangent, bitangent for lighting direction.
+3. **Add light** — sun, point lights, spot lights (from UBO + SSBOs).
+4. **Apply shadows** — compare depth against shadow map (Part IX).
+5. **Add environment** — IBL reflection (Part VII).
+6. **Output linear HDR color** — may exceed 1.0 before tonemap.
+
+```text
+One pixel's journey in scene.frag:
+  vTexCoord → sample brick albedo
+  vNormal + normal map → perturbed N
+  N · L → diffuse term
+  specular GGX → highlight
+  shadow map → darken if occluded
+  outColor = linear RGB (HDR)
+```
+
+### Why fragment work is expensive
+
+A mesh with 1,000 vertices might generate **100,000+ fragments** at 1080p when close to the camera. That is why:
+
+- Texture array + push constant layers beat rebinding descriptors per draw.
+- Clustered lights (Part IV) limit how many lights each pixel considers.
+- Early depth pass / culling (Part XII) skip invisible pixels entirely.
+
+As a beginner, start with **unlit textured** output (`outColor = texture(albedo)`) before enabling full PBR.
+
+## 1b. Concept Deep Dive — scene.frag Material Resolve and Shading Dispatch
+
+### Stage inputs mirror scene.vert exactly
+
+The fragment shader re-declares every varying with matching location and `flat` qualification:
+
+```glsl
+// shaders/scene.frag (lines 4–14)
+layout(location = 0) in vec3 vWorldPos;
+layout(location = 1) in vec3 vNormal;
+layout(location = 2) in vec3 vAlbedo;
+layout(location = 3) in vec2 vTexCoord0;
+layout(location = 4) flat in int vTextureLayer;
+// ... vMetallic, vRoughness, vEmissive, vTangent, vTexCoord1, vVertexColor
+```
+
+SPIR-V linking catches type or location mismatches at pipeline creation — but only if you rebuild both stages after editing one.
+
+### Descriptor bindings used in the lit path
+
+```glsl
+// shaders/scene.frag (lines 16–17, 19–21)
+layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+layout(set = 0, binding = 11) uniform sampler2DArray sceneHdrTextures;
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+```
+
+Binding 0 (`SceneUBO`) supplies camera, sun, shadows, and cluster metadata. Binding 1 is the LDR texture array atlas; binding 11 holds HDR environment layers for emissive or sky content. Push constants select array layer, map indices, and shading model without rebinding descriptors per draw.
+
+### Material resolve before lighting
+
+`main()` first handles sky (`push.skyMode != 0`) by reconstructing a per-pixel view ray from `gl_FragCoord` and `ubo.invViewProj` — not from interpolated `vWorldPos`. For meshes, base color and alpha come from varyings, push tint, and optional texture fetch:
+
+```glsl
+// shaders/scene.frag (lines 435–454)
+vec3 base = vAlbedo * vVertexColor.rgb;
+float alpha = push.albedoTint.a * vVertexColor.a;
+if (vTextureLayer >= 0) {
+    vec4 tex = texture(sceneTextures, vec3(sparkMapUv(0), float(layer)));
+    base *= sparkSrgbToLinear(tex.rgb);
+    alpha *= tex.a;
+}
+if (push.alphaCutoff > 0.0 && alpha < push.alphaCutoff) {
+    discard;
+}
+```
+
+ORM and normal-map layers use separate `push.*MapLayer` fields and `sparkMapUv()` helpers from `gltf_map_uv.glsl`.
+
+### Shading model dispatch and HDR output
+
+Three runtime branches share one SPIR-V module:
+
+| `push.shadingModel` | Path in `main()` |
+|---------------------|------------------|
+| 2 | Unlit — base + emissive, early return |
+| 1 | Toon — banded diffuse, rim, punctual toon loops |
+| 0 | PBR — `evalBRDF`, CSM shadows, clustered lights, IBL |
+
+The default PBR path accumulates sun BRDF, punctual lights via `accumulatePunctualPbr`, ambient, and IBL specular/diffuse, then writes linear HDR without clamping:
+
+```glsl
+// shaders/scene.frag (lines 612–614)
+vec3 color = ambient + Lo + iblSpecular + emissive;
+outColor = vec4(color, alpha);
+```
+
+Tonemapping happens later in `tonemap.frag` (Part X) — do not clamp to `[0,1]` here unless debugging.
+
 ## 2. Core Concepts
 
 ### Fragments vs vertices

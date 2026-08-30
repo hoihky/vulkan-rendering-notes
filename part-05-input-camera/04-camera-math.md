@@ -20,6 +20,90 @@ Shaders multiply `viewProj * vec4(worldPos, 1)`. One transposed multiply spins t
 
 Spark centralizes math in `Matrix4` with **Vulkan-specific** `*Vulkan` helpers. This chapter is the numeric foundation for every camera rig in Part V.
 
+### What is a camera in 3D graphics?
+
+A **camera** is not a special engine object on the GPU. It is two matrices that transform 3D world points into 2D screen positions:
+
+```text
+world position  →  [VIEW]  →  camera-relative  →  [PROJECTION]  →  clip space
+```
+
+- **View matrix** — moves the world so the camera sits at origin looking down -Z (Vulkan convention).
+- **Projection matrix** — perspective (3D games) or orthographic (2D UI, shadow maps) — maps to clip cube.
+
+Every vertex shader does:
+
+```glsl
+gl_Position = viewProj * model * vec4(localPosition, 1.0);
+```
+
+If `viewProj` is wrong, the entire world renders incorrectly — not one mesh.
+
+### Perspective vs orthographic (when to use which)
+
+| Projection | Parallel lines | Typical use |
+|------------|----------------|-------------|
+| Perspective | Converge to horizon | 3D gameplay camera |
+| Orthographic | Stay parallel | 2D games, shadow maps, editor top view |
+
+Spark's `Matrix4::PerspectiveVulkan(fovY, aspect, near, far)` uses **Vulkan depth range [0, 1]** — not OpenGL's [-1, 1]. Using the wrong helper inverts or clips depth.
+
+### LookAt intuition
+
+`Matrix4::LookAt(eye, target, up)` builds a view matrix:
+
+- **eye** — camera world position (from `TransformComponent` or fly camera).
+- **target** — point the camera looks at (`eye + forward`).
+- **up** — usually world +Y; avoid parallel up and view direction (gimbal singularity).
+
+```text
+Fly camera:  eye moves with WASD, target = eye + forward vector from yaw/pitch
+Orbit cam:   eye circles target at fixed radius
+Follow cam:  eye behind player offset, target = player position
+```
+
+Part V implements each pattern on top of the same `viewProj` upload to the scene UBO.
+
+## 1b. Concept Deep Dive — Matrix4 Vulkan Helpers
+
+### Column-major storage matches GLSL
+
+Spark stores `Matrix4::m[16]` in **column-major** order — the same layout GLSL `mat4` expects. Vertex shaders multiply:
+
+```glsl
+gl_Position = ubo.viewProj * push.model * vec4(inPosition, 1.0);
+```
+
+Transposing on CPU (common when importing GLM with row-major habits) spins or mirrors the scene.
+
+### Vulkan-specific projection helpers
+
+```cpp
+// Typical 3D demo composition:
+const float aspect = static_cast<float>(fbW) / static_cast<float>(fbH);
+const Matrix4 proj = Matrix4::PerspectiveVulkan(
+        DegreesToRadians(60.0F), aspect, 0.12F, 400.0F);
+const Matrix4 view = flyCamera.ViewMatrix();
+const Matrix4 viewProj = proj * view;
+```
+
+`PerspectiveVulkan` and `OrthographicVulkan` use depth range **[0, 1]** — OpenGL-style `Perspective` helpers exist but must not be mixed into Vulkan render passes.
+
+### LookAt builds view from eye and forward
+
+`Matrix4::LookAt(eye, target, up)` inverts the camera's world transform. `FlyCamera::ViewMatrix` picks an alternate up vector when forward aligns with ±Y (gimbal-safe ground viewing):
+
+```cpp
+if (std::fabs(Vector3::Dot(f, Vector3::UnitY)) > 0.92F) {
+    worldUp = Vector3::UnitZ;
+}
+return Matrix4::LookAt(position, position + f, worldUp);
+```
+
+### invViewProj for reconstruction
+
+`VulkanSceneUniformWriter` inverts `viewProj` on the CPU each frame into `SceneUniformGpu::invViewProj` — sky rays and debug visualizations reconstruct world position from depth using the same matrices the vertex path used.
+
 ## 2. Core Concepts
 
 ### Column-major storage

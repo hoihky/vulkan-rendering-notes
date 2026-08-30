@@ -14,6 +14,130 @@
 
 This chapter covers instance creation only. You still will not draw geometry. The milestone is a valid instance plus (in debug) a debug messenger that prints helpful errors when you make mistakes in later chapters.
 
+### Vulkan boot order: where the instance fits
+
+If you have never used Vulkan, think of it as a stack of handles you create top to bottom:
+
+```text
+1. VkInstance        ← YOU ARE HERE (this chapter)
+2. VkSurfaceKHR      (connection to OS window — next with GLFW)
+3. VkPhysicalDevice  (pick a GPU)
+4. VkDevice          (logical GPU handle)
+5. VkSwapchainKHR    (images for the screen)
+6. Buffers, pipelines, command buffers…
+```
+
+Nothing below step 1 works without a valid instance. The instance loads the Vulkan **loader** function pointers, registers which **extensions** you need (window surface support), and optionally enables **validation layers** that print helpful errors when you forget a barrier or use a destroyed handle.
+
+**Analogy:** `VkInstance` is like installing the graphics driver API and telling it your app name — not yet selecting which GPU or creating textures.
+
+### What you need before writing code
+
+| Prerequisite | Why |
+|--------------|-----|
+| Vulkan SDK installed | Provides loader, validation layers, `glslangValidator` |
+| C++ compiler | Spark is C++23 |
+| GLFW (via Spark) | Creates windows and Vulkan surfaces |
+| Patience | Part I is setup-only — no pretty pictures until Part II |
+
+## 1b. Concept Deep Dive — Bootstrapping the Vulkan Loader
+
+### Instance as API entry, not GPU access
+
+`VkInstance` is often misunderstood as "the GPU handle." It is not — you cannot allocate buffers or submit draws through an instance alone. The instance connects your process to the Vulkan **loader**, registers which **instance extensions** you need (surface support, debug utils), optionally enables **validation layers**, and only then lets you enumerate `VkPhysicalDevice` handles.
+
+Spark centralizes the merge logic in `VulkanGpuInstance::GetRequiredInstanceExtensions`: start with GLFW's platform surface extensions, add `VK_KHR_portability_enumeration` on Apple for MoltenVK, and append `VK_EXT_debug_utils` when validation is on. Debug builds also install a `VkDebugUtilsMessengerEXT` whose callback prints `VUID-...` messages to stderr — those strings are the fastest way to learn Vulkan's implicit contracts before they become black-screen heisenbugs.
+
+Release builds compile validation out entirely via `if constexpr (kEnableValidationLayers)` — zero layer overhead in shipping binaries. The instance still needs surface extensions in all builds; missing `VK_KHR_surface` produces a successful `vkCreateInstance` followed by a failed `glfwCreateWindowSurface`, which is harder to diagnose than an upfront create failure.
+
+### Instance create checklist in Spark
+
+| Step | Spark function | Failure symptom |
+|------|----------------|-----------------|
+| Verify layers (debug) | `CheckValidationLayerSupport` | Throws before create |
+| Merge extensions | `GetRequiredInstanceExtensions` | Surface create fails later |
+| Create instance | `VulkanDeviceContext::CreateInstance` | No Vulkan at all |
+| Debug messenger | `CreateDebugMessenger` | Silent validation |
+| Surface | `Window::CreateVulkanSurface` | No swapchain possible |
+
+```text
+Window.RequiredVulkanInstanceExtensions()
+        │
+        ▼
+GetRequiredInstanceExtensions(window)  ──► + debug_utils (debug)
+        │                                    + portability enum (Apple)
+        ▼
+vkCreateInstance(appInfo, extensions, layers?)
+        │
+        ▼
+CreateDebugUtilsMessenger  →  stderr [Vulkan] VUID-...
+```
+
+### Extension merge — GLFW list plus platform/debug extras
+
+```cpp
+// src/spark/render/gpu/VulkanGpuInstance.cpp (lines 40–48)
+Array<const char*> VulkanGpuInstance::GetRequiredInstanceExtensions(const Window& appWindow) {
+    Array<const char*> extensions = appWindow.RequiredVulkanInstanceExtensions();
+#ifdef SPARK_PLATFORM_APPLE
+    extensions.PushBack(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+    if constexpr (VulkanGpuInstance::kEnableValidationLayers) {
+        extensions.PushBack(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+    return extensions;
+}
+```
+
+### Validation callback — warnings and errors to stderr
+
+```cpp
+// src/spark/render/gpu/VulkanGpuInstance.cpp (lines 12–23)
+VKAPI_ATTR VkBool32 VKAPI_CALL VulkanGpuDefaultDebugMessengerCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+        VkDebugUtilsMessageTypeFlagsEXT messageType,
+        const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+        void* userData) {
+    (void)messageType;
+    (void)userData;
+    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && callbackData != nullptr &&
+        callbackData->pMessage != nullptr) {
+        std::fprintf(stderr, "[Vulkan] %s\n", callbackData->pMessage);
+    }
+    return VK_FALSE;
+}
+```
+
+### `vkCreateInstance` — API 1.3, optional layers
+
+```cpp
+// src/spark/render/core/VulkanDeviceContext.cpp (lines 180–207, abbreviated)
+void VulkanDeviceContext::CreateInstance() {
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Spark";
+    appInfo.apiVersion = VK_API_VERSION_1_3;
+
+    const Array<const char*> extensions = VulkanRendererGpu::GetRequiredInstanceExtensions(*boundWindow);
+
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+    createInfo.enabledExtensionCount = static_cast<std::uint32_t>(extensions.GetSize());
+    createInfo.ppEnabledExtensionNames = extensions.GetData();
+#ifdef SPARK_PLATFORM_APPLE
+    createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
+    if constexpr (VulkanRendererGpu::kEnableValidationLayers) {
+        createInfo.enabledLayerCount = 1;
+        createInfo.ppEnabledLayerNames = validationLayerNames;
+    }
+    vkCreateInstance(&createInfo, nullptr, &instance);
+}
+```
+
+Keep validation enabled through Part III — barrier and lifetime mistakes are cheaper to fix with messenger text than with RenderDoc alone.
+
 ## 2. Core Concepts
 
 ### What VkInstance represents

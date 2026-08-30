@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,40 @@
 <p>A footstep at full volume when the enemy is across the map breaks immersion. <strong>Spatial audio</strong> positions sources in world space, pans stereo by listener orientation, and attenuates by distance.</p>
 <p>Spark keeps Vulkan out of audio entirely. You will wire <code>ProcessAudioListeners</code> before <code>SoundCueComponent::FlushTo</code>, attach listeners to cameras, and place looped cues on world entities.</p>
 <p>Milestone: torch loop fades with distance as you walk away; pickup cue plays centered (mono).</p>
+<h2 id="b.concept-deep-dive-listener-resolution">1b. Concept Deep Dive — Listener Resolution</h2>
+<h3 id="processaudiolisteners-before-flushto">ProcessAudioListeners before FlushTo</h3>
+<p>Spatial pan and attenuation need a frame-local listener pose. Spark resolves it once per tick before cue flush:</p>
+<pre><code class="language-cpp">// src/spark/audio/SoundSubsystem.cpp
+void ProcessSoundCues(GameWorld&amp; world, IEngineContext&amp; context) {
+    ProcessAudioListeners(world);
+    ProcessAmbientZones(world);
+    SoundEngine* audio = context.TryGetSoundEngine();
+    world.ForEachActiveGameObject([audio](GameObject* o) {
+        SoundCueComponent* sc = o-&gt;GetComponent&lt;SoundCueComponent&gt;();
+        if (sc != nullptr) {
+            sc-&gt;FlushTo(audio);  // spatialBlend + distance → pan/volume
+        }
+    });
+}
+</code></pre>
+<p><strong>Order matters:</strong> listener pose must be current before any cue computes relative direction.</p>
+<h3 id="priority-based-audiolistenercomponent">Priority-based AudioListenerComponent</h3>
+<pre><code class="language-cpp">// src/spark/audio/AudioSpatial.cpp
+void ProcessAudioListeners(const GameWorld&amp; world) noexcept {
+    world.ForEachActiveGameObject([&amp;](GameObject* o) {
+        const AudioListenerComponent* listener = o-&gt;GetComponent&lt;AudioListenerComponent&gt;();
+        if (listener == nullptr || !listener-&gt;IsEnabled()) return;
+        if (!found || listener-&gt;GetPriority() &gt; bestPriority) {
+            gFrameListener.position = {worldM.m[12], worldM.m[13], worldM.m[14]};
+            gFrameListener.right/up/forward from world matrix columns;
+        }
+    });
+    // Fallback: main 3D camera pose when no explicit listener
+}
+</code></pre>
+<p>Attach listener to fly camera; split-screen can add a higher-priority listener on the active player camera.</p>
+<h3 id="spatialblend-mixes-2d-and-3d">spatialBlend mixes 2D and 3D</h3>
+<p><code>spatialBlend = 0</code> → centered mono (UI pickup chime). <code>spatialBlend = 1</code> → full world attenuation and stereo pan (torch loop). Vulkan stays out of this path entirely.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="listener-pose-resolution">Listener pose resolution</h3>
 <p>Spatial audio needs a <strong>listener</strong> — position and orthonormal basis (right, up, forward). Spark does <strong>not</strong> expose <code>SoundEngine::SetListener</code>. Instead:</p>
@@ -1287,6 +1327,22 @@ if (v.spatialBlend &gt; 1.0e-4F) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-listener-resolution">1b. Concept Deep Dive — Listener Resolution</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#processaudiolisteners-before-flushto">ProcessAudioListeners before FlushTo</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#priority-based-audiolistenercomponent">Priority-based AudioListenerComponent</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#spatialblend-mixes-2d-and-3d">spatialBlend mixes 2D and 3D</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,57 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Wrong blend mode makes fire look like muddy alpha-cutout cards. Wrong depth settings make particles draw through walls or block the world. Particle VFX needs <strong>additive HDR blend</strong> with <strong>depth test but no depth write</strong>.</p>
 <p>Build along: read <code>CreateGraphicsPipeline</code> blend and depth structs in <code>VulkanParticlePass.cpp</code> and verify behavior in a scene with occluders (ParticleDemo reference cube).</p>
+<h2 id="b.concept-deep-dive-pipeline-state-in-creategraphicspipeline">1b. Concept Deep Dive — Pipeline State in CreateGraphicsPipeline</h2>
+<h3 id="additive-color-blend-exact-spark-values">Additive color blend (exact Spark values)</h3>
+<pre><code class="language-cpp">// src/spark/render/sprites2d/VulkanParticlePass.cpp (lines 271–279)
+blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+blendAtt.blendEnable = VK_TRUE;
+blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+blendAtt.colorBlendOp = VK_BLEND_OP_ADD;
+blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+</code></pre>
+<p>Formula: <code>out.rgb = src.rgb * src.a + dst.rgb</code>. Bright particles accumulate in the HDR buffer — fire sparks glow brighter where they overlap. Alpha channel is not written (no <code>A</code> bit in colorWriteMask).</p>
+<h3 id="depth-test-on-depth-write-off">Depth test ON, depth write OFF</h3>
+<pre><code class="language-cpp">// lines 265–269
+ds.depthTestEnable = VK_TRUE;
+ds.depthWriteEnable = VK_FALSE;
+ds.depthCompareOp = VK_COMPARE_OP_LESS;
+</code></pre>
+<p>Particles respect the scene depth buffer (occluded by walls and the ParticleDemo ref cube) but do not modify depth themselves. Later transparent draws and sprites are unaffected; particles sort implicitly by draw order (single batch, no per-particle sort).</p>
+<h3 id="contrast-with-opaque-scene-lit-pipeline">Contrast with opaque scene lit pipeline</h3>
+<table class="table">
+<thead>
+<tr>
+<th>State</th>
+<th>Opaque lit</th>
+<th>Particle pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Blend</td>
+<td>OFF</td>
+<td>Additive (srcAlpha, ONE)</td>
+</tr>
+<tr>
+<td>Depth write</td>
+<td>ON</td>
+<td>OFF</td>
+</tr>
+<tr>
+<td>Cull mode</td>
+<td>Back-face</td>
+<td>NONE (billboards have no consistent facing)</td>
+</tr>
+<tr>
+<td>Push constants</td>
+<td>model, material, skinning</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="additive-color-blend">Additive color blend</h3>
 <table class="table">
@@ -1240,6 +1297,22 @@ rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-pipeline-state-in-creategraphicspipeline">1b. Concept Deep Dive — Pipeline State in CreateGraphicsPipeline</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#additive-color-blend-exact-spark-values">Additive color blend (exact Spark values)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#depth-test-on-depth-write-off">Depth test ON, depth write OFF</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#contrast-with-opaque-scene-lit-pipeline">Contrast with opaque scene lit pipeline</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,69 @@
 <p>Camera controllers, character movement, and UI all need to know what the player pressed this frame. Calling <code>glfwGetKey</code> directly from every system couples gameplay to GLFW, blocks headless unit tests, and makes console ports painful.</p>
 <p>Spark inverts the dependency with <strong><code>IInput</code></strong> — a small virtual interface games depend on. Desktop builds use <strong><code>GlfwInput</code></strong>; tests can stub keys; future platforms swap implementations without touching <code>FlyCamera</code> or demos.</p>
 <p>This chapter defines the contract: what queries exist, what "this frame" means, and how context exposes input to <code>IGame::OnUpdate</code>.</p>
+<h3 id="input-abstraction-for-beginners">Input abstraction for beginners</h3>
+<p><strong>Problem:</strong> if every system calls GLFW directly, you cannot:</p>
+<ul>
+<li>Run headless tests that fake "W pressed"</li>
+<li>Port to console without rewriting every camera</li>
+<li>Swap input backends (SDL, raw X11) without touching gameplay</li>
+</ul>
+<p><strong>Solution:</strong> <code>IInput</code> is a thin <strong>interface</strong> — gameplay asks questions, platform code answers:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Query</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>IsKeyDown(Key::W)</code></td>
+<td>W is held <strong>right now</strong></td>
+</tr>
+<tr>
+<td><code>WasKeyPressed(Key::Space)</code></td>
+<td>W went down <strong>this frame only</strong> (edge)</td>
+</tr>
+<tr>
+<td><code>GetMouseDelta()</code></td>
+<td>Pixel movement since last frame</td>
+</tr>
+<tr>
+<td><code>GetCursorPosition()</code></td>
+<td>Mouse in framebuffer pixels</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Edge vs held:</strong> jump on <code>WasKeyPressed(Space)</code> — if you use <code>IsKeyDown</code>, holding space triggers jump every frame.</p>
+<pre><code class="language-text">Player code:
+  if (input.WasKeyPressed(Key::Space)) velocity.y = jumpSpeed;
+
+Engine provides:
+  IInput&amp; input = ctx.GetInput();  // GlfwInput on desktop
+</code></pre>
+<p>You never <code>#include &lt;GLFW/glfw3.h&gt;</code> in <code>FlyCamera</code> — only in <code>GlfwInput.cpp</code>.</p>
+<h2 id="b.concept-deep-dive-iinput-virtual-contract">1b. Concept Deep Dive — IInput Virtual Contract</h2>
+<h3 id="minimal-surface-area-for-gameplay">Minimal surface area for gameplay</h3>
+<pre><code class="language-cpp">// include/spark/engine/IInput.hpp
+class IInput {
+public:
+    virtual ~IInput() = default;
+    [[nodiscard]] virtual bool IsKeyDown(int keyCode) const = 0;
+    [[nodiscard]] virtual bool IsKeyPressedThisFrame(int keyCode) const = 0;
+    [[nodiscard]] virtual float GetMouseDeltaX() const { return 0.0F; }
+    [[nodiscard]] virtual float GetMouseDeltaY() const { return 0.0F; }
+    virtual void SetCursorCaptured(bool capture) { (void)capture; }
+    virtual void GetCursorFramebufferPixels(float&amp; outX, float&amp; outY, int w, int h) const;
+};
+</code></pre>
+<p>Key codes are <strong>GLFW values</strong> when using <code>GlfwInput</code> — <code>FlyCamera.cpp</code> includes <code>GLFW/glfw3.h</code> only for <code>GLFW_KEY_W</code> constants, not for polling. A headless test stub can hard-code <code>IsKeyDown</code> return values without linking GLFW.</p>
+<h3 id="edge-queries-require-beginframe">Edge queries require BeginFrame</h3>
+<p><code>IsKeyPressedThisFrame</code> compares current vs previous snapshot — meaningless until the platform backend runs <code>BeginFrame()</code> after <code>PollEvents</code>. Documented order in Chapter 3; violating it produces sticky keys or missed first presses.</p>
+<h3 id="hidpi-cursor-in-drawable-pixels">HiDPI cursor in drawable pixels</h3>
+<p><code>GetCursorFramebufferPixels</code> accepts swapchain width/height so picking and UI align with Vulkan framebuffer pixels on Retina displays — window-point coordinates would miss by 2× on scaled monitors.</p>
+<h3 id="engine-context-injection">Engine context injection</h3>
+<p><code>IEngineContext::GetInput()</code> returns the same <code>IInput&amp;</code> for the frame. Demos take <code>IInput&amp; input = ctx.GetInput()</code> in <code>OnUpdate</code> — no global singleton. UI (<code>UiInputRouter</code>) and gameplay share the reference but UI reads input later in the frame (after game update).</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="adapter-pattern-for-input">Adapter pattern for input</h3>
 <pre><code class="language-text">OS / GLFW  →  GlfwInput (concrete)  →  IInput (interface)  →  FlyCamera, UI, demos
@@ -1240,6 +1309,30 @@ public:
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#input-abstraction-for-beginners">Input abstraction for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-iinput-virtual-contract">1b. Concept Deep Dive — IInput Virtual Contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#minimal-surface-area-for-gameplay">Minimal surface area for gameplay</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#edge-queries-require-beginframe">Edge queries require BeginFrame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hidpi-cursor-in-drawable-pixels">HiDPI cursor in drawable pixels</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#engine-context-injection">Engine context injection</a>
                         </li>
                         
                         <li class="toc-h2">

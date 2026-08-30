@@ -18,6 +18,93 @@ Shaders expect vertex attributes at `location` 0..N. Vulkan delivers them from *
 
 Spark packs cube, ground plane, and sprite quad into **one** static VB/IB pair in `CreateSceneGeometry` — efficient for small built-in geometry and the pattern you will reuse for imported meshes in Part VI.
 
+## 1b. Concept Deep Dive — CreateSceneGeometry Packed Buffer
+
+### One VB/IB, three submeshes — subrange drawing
+
+Spark uploads cube, ground plane, and sprite quad into a **single** device-local vertex buffer and index buffer. Draw items select geometry by index range, not by rebinding buffers:
+
+```text
+Interleaved vertex buffer (device-local):
+  [cube verts 0..7][plane verts 8..11][sprite verts 12..15]
+
+Index buffer:
+  [cube indices 0..35][plane indices 36..41][sprite indices 42..47]
+   ↑ firstIndex=0      ↑ planeFirstIndex=36   ↑ spriteQuadFirstIndex=42
+```
+
+| Submesh | `firstIndex` | `indexCount` | `vertexOffset` |
+|---------|--------------|--------------|----------------|
+| Unit cube | 0 | `cubeIndexCount` | 0 |
+| Ground plane | `planeFirstIndex` | 6 | 0 (absolute indices) |
+| Sprite quad | `spriteQuadFirstIndex` | 6 | 0 |
+
+### Building interleaved CPU data from Mesh::Vertex
+
+`CreateSceneGeometry` converts ergonomic CPU vertices to the float layout `VulkanSceneVertexLayout` expects, then appends plane and sprite corners:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 742–762)
+void VulkanRenderer::CreateSceneGeometry() {
+    Mesh cubeMesh = Mesh::CreateUnitCube();
+    Array<float> interleaved;
+    interleaved.Reserve((cubeMesh.GetVertices().GetSize() + 8) * VulkanSceneVertexLayout::kFloatsPerVertex);
+    for (std::size_t i = 0; i < cubeMesh.GetVertices().GetSize(); ++i) {
+        VulkanRendererGpu::AppendRigidMeshVertexToInterleaved(cubeMesh.GetVertices()[i], interleaved);
+    }
+
+    const std::uint32_t planeVertexBase = static_cast<std::uint32_t>(cubeMesh.GetVertices().GetSize());
+    const float groundExtent = kSceneGroundHalfExtent;
+    // Four XZ corners at y=0 with +Y normals and tiled UVs (see full source)
+    const Mesh::Vertex planeVerts[4] = { /* -groundExtent corners */ };
+```
+
+The same helper path is reused when glTF meshes upload in Part VI — one interleaved format everywhere.
+
+### Index packing — CCW winding for +Y ground normal
+
+Plane triangles use **absolute** vertex indices (`planeVertexBase + corner`). Spark explicitly sets `planeVertexOffset = 0` because adding the base again would double-offset and read past the buffer:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 780–802)
+    planeFirstIndex = static_cast<std::uint32_t>(indices.GetSize());
+    planeIndexCount = 6;
+    indices.PushBack(planeVertexBase);
+    indices.PushBack(planeVertexBase + 1);
+    indices.PushBack(planeVertexBase + 2);
+    indices.PushBack(planeVertexBase);
+    indices.PushBack(planeVertexBase + 3);
+    indices.PushBack(planeVertexBase + 2);
+
+    cubeVertexOffset = 0;
+    // Indices already store absolute vertex indices (planeVertexBase..); vertexOffset must be 0.
+    planeVertexOffset = 0;
+```
+
+Wrong winding here makes back-face culling hide the entire ground plane.
+
+### Staging upload — host-visible → device-local
+
+Final buffers use `TRANSFER_DST | VERTEX_BUFFER_BIT` (or `INDEX_BUFFER_BIT`) with `DEVICE_LOCAL` memory. Spark maps staging, memcpy's, records one copy command, then destroys staging:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 807–848)
+    VulkanRendererGpu::CreateBuffer(
+            physicalDevice(), device(), vbSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingVertex, stagingVertexMemory);
+    std::memcpy(vtxData, interleaved.GetData(), static_cast<std::size_t>(vbSize));
+
+    VulkanRendererGpu::CreateBuffer(
+            physicalDevice(), device(), vbSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            vertexBuffer, vertexBufferMemory);
+```
+
+Static geometry uploads once at init; dynamic custom meshes use `VulkanCustomMeshPool` with the same staging pattern each frame.
+
 ## 2. Core Concepts
 
 ### Buffer usage flags

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,24 @@
 <p>Pass order is not cosmetic — drawing particles <strong>before</strong> opaque meshes ignores depth; drawing <strong>after</strong> tonemap
 misses HDR glow. You must slot <code>particlePass.Record</code> correctly in the frame graph.</p>
 <p>Build along: read RecordSceneCommandBuffer and annotate pass order in your engine diagram.</p>
+<h2 id="b.concept-deep-dive-recordscenecommandbuffer-ordering">1b. Concept Deep Dive — RecordSceneCommandBuffer Ordering</h2>
+<h3 id="particles-are-last-inside-the-hdr-subpass">Particles are last inside the HDR subpass</h3>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 320–365, simplified)
+sceneOpaquePass.Record(commandBuffer, opaqueCtx);       // sky + opaque meshes
+// optional transparent resume pass
+composite2DPass.Record(... tilemapPass, spritePass ...); // 2D layers
+particlePass.Record(commandBuffer, frameIndex, extent, pendingScene, sceneParamsValid);
+vkCmdEndRenderPass(commandBuffer);
+hdrTonemapPass.TransitionColorToShaderRead(...);         // tonemap AFTER particles
+</code></pre>
+<p>Particles contribute to HDR <strong>before</strong> the render pass ends. Tonemap, SSAO, and present run on the combined HDR color that already includes additive glow.</p>
+<h3 id="shared-depth-with-opaque-pass">Shared depth with opaque pass</h3>
+<p>The HDR subpass binds the same depth attachment created for scene opaque draws. Because particles use <code>depthTestEnable = true</code> and <code>depthWriteEnable = false</code>, they read depth written by meshes but leave the buffer unchanged for any later subpass content.</p>
+<h3 id="shadow-passes-are-unrelated-to-particles">Shadow passes are unrelated to particles</h3>
+<pre><code class="language-cpp">// RecordSceneCommandBuffer (line 229) — runs BEFORE HDR begins
+RecordShadowMapPass(commandBuffer, frameIndex);
+</code></pre>
+<p>Particles do not cast or receive shadows (<code>SceneDrawItem::shadowFlags</code> never applies to the particle pass). VFX glow is purely emissive/additive — intentional for fire and magic effects.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="hdr-subpass-ordering">HDR subpass ordering</h3>
 <p>Within one HDR render pass: sky → opaque meshes → transparent meshes → tilemaps/sprites → <strong>particles</strong> → end.</p>
@@ -1228,6 +1252,22 @@ End HDR RP → SSAO? → tonemap → UI → present
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-recordscenecommandbuffer-ordering">1b. Concept Deep Dive — RecordSceneCommandBuffer Ordering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#particles-are-last-inside-the-hdr-subpass">Particles are last inside the HDR subpass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-depth-with-opaque-pass">Shared depth with opaque pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shadow-passes-are-unrelated-to-particles">Shadow passes are unrelated to particles</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -15,6 +15,98 @@ on tiny jitter. A finite-state machine maps gameplay measurements to discrete cl
 
 Finish Part VI: wire Character3DAnimFsm to your skinned hero so WASD selects idle, walk, and run clips.
 
+### Locomotion FSM for beginners
+
+**Animator** plays clips. **FSM** decides **which** clip based on gameplay:
+
+```text
+Measure horizontal speed from velocity
+  speed < 0.1  → Idle clip
+  speed < 4.0  → Walk clip
+  speed >= 4.0 → Run clip (if sprint held)
+```
+
+**Finite state machine** = discrete states + rules to switch:
+
+```text
+        ┌──────┐  speed up   ┌──────┐  sprint   ┌─────┐
+        │ Idle │ ──────────► │ Walk │ ────────► │ Run │
+        └──────┘ ◄────────── └──────┘ ◄──────── └─────┘
+              speed down         speed down
+```
+
+**Crossfade on transition:** FSM calls `SetClipIndexWithCrossfade` — Animator blends poses over ~0.15s so feet don't pop.
+
+**Clip name heuristics:** Spark searches clip names like `"Walk"`, `"Run"`, `"Idle"` on the skeleton — Khronos samples often match; custom rigs may need explicit indices.
+
+**Component order:** `Character3DAnimFsmComponent` updates **before** `AnimatorComponent` on same entity — FSM sets desired clip, Animator advances time.
+
+Part VI complete: mesh → glTF → skeleton → animator → GPU skinning → locomotion FSM.
+
+## 1b. Concept Deep Dive — FSM Logic in Spark
+
+### LocomotionClipSet — resolved from skeleton clip names
+
+```cpp
+// include/spark/animation/LocomotionClipSet.hpp
+constexpr std::uint32_t kInvalidAnimClipIndex = 0xFFFFFFFFu;
+
+struct LocomotionClipSet {
+    std::uint32_t idle = 0;
+    std::uint32_t walk = 0;
+    std::uint32_t run = kInvalidAnimClipIndex;   // disabled when invalid
+    std::uint32_t attack = kInvalidAnimClipIndex;
+};
+```
+
+`ResolveLocomotionClipsFromSkeleton` searches clip names case-insensitively for `"idle"`, `"walk"`, `"run"`, `"attack"` substrings — Khronos sample assets usually match out of the box.
+
+### Full OnUpdate decision tree
+
+```cpp
+// src/spark/ecs/components/animation/Character3DAnimFsmComponent.cpp (lines 123–179)
+    const bool holdingAttack = attackOk && cur == attackClip && !anim->IsClipFinished();
+    if (holdingAttack) {
+        want = attackClip;
+        wantLoop = AnimLoopMode::Once;
+    } else if (pendingAttack && attackOk) {
+        want = attackClip;
+        wantLoop = AnimLoopMode::Once;
+    } else if (manualClipActive && ClipValid_(*anim, manualClip)) {
+        want = manualClip;
+        wantLoop = manualLoop;
+    } else if (!locomotionDrivingEnabled) {
+        return;
+    } else {
+        const float speed = MeasureLocomotionSpeed_(owner, timing);  // XZ velocity or transform delta
+        const bool moving = speed >= walkThresh;
+        const bool wantSprint = runOk && speed >= runThresh;
+        if (!moving)       want = idleClip;
+        else if (wantSprint) want = runClip;
+        else if (walkOk)   want = walkClip;
+    }
+    ApplyClip_(*anim, want, wantLoop);  // crossfade when clip changes
+```
+
+**Speed sources:** `Rigidbody3DComponent::GetVelocity()` XZ magnitude, or world-position delta when no physics body. `SetLocomotionInput(moving, sprint)` overrides for network prediction.
+
+### Default thresholds (tunable per character)
+
+```cpp
+// Character3DAnimFsmComponent.hpp
+float walkThresh = 0.35F;      // m/s — below = idle
+float runThresh = 2.2F;        // m/s — above = run (if run clip valid)
+float crossfadeDuration = 0.18F;
+```
+
+### Configure from imported asset
+
+```cpp
+fsm->ConfigureLocomotionFromSkeleton(*asset.skeleton, asset.walkClipIndex);
+```
+
+Uses `walkClipIndex` from `SkinnedGltfAsset` as fallback when name heuristics fail.
+
 ## 2. Core Concepts
 
 ### FSM vs Animator responsibilities

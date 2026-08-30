@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,36 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Animated characters share <strong>skinned vertices</strong> between lit and shadow passes. If the shadow vertex shader treats them as rigid, you get <strong>floating shadows</strong> that do not follow limbs.</p>
 <p>The fix is the <strong>same skinning math</strong> — same SSBO, same joint indices/weights — in <code>shadow_depth.vert</code>.</p>
+<h2 id="b.concept-deep-dive-skinning-in-the-shadow-pass">1b. Concept Deep Dive — Skinning in the Shadow Pass</h2>
+<h3 id="identical-skinning-branch-to-scene.vert">Identical skinning branch to scene.vert</h3>
+<pre><code class="language-glsl">// shaders/shadow_depth.vert (lines 31–50)
+if (sp.useSkinning != 0) {
+    vec4 spv = vec4(0.0);
+    for (int k = 0; k &lt; 4; k++) {
+        float w = inWeights[k];
+        if (w &lt;= 0.0) continue;
+        uint ji = inJoints[k];
+        if (int(ji) &gt;= sp.jointCount) continue;
+        mat4 BM = skin.bones[ji];
+        spv += w * BM * vec4(inPosition, 1.0);
+    }
+    vec4 wp = sp.model * vec4(spv.xyz, 1.0);
+    worldPos = wp.xyz;
+}
+</code></pre>
+<p>Same four-weight limit, same joint index unpack from <code>inJointsPacked</code>. Only output differs: <code>lightViewProj * worldPos</code> instead of camera <code>viewProj</code>.</p>
+<h3 id="per-draw-ssbo-upload-in-recordshadowcastmeshes">Per-draw SSBO upload in RecordShadowCastMeshes</h3>
+<pre><code class="language-cpp">// VulkanShadowCastDraw.cpp (lines 77–87)
+if (!d.jointPalette.IsEmpty() &amp;&amp; d.skinnedMesh &amp;&amp; ctx.skinSsboMapped != nullptr) {
+    sh.useSkinning = 1;
+    sh.jointCount = static_cast&lt;std::int32_t&gt;(jc);
+    std::memcpy((*ctx.skinSsboMapped)[frameIndex], d.jointPalette.GetData(),
+                jc * sizeof(Matrix4));
+}
+</code></pre>
+<p>The skin SSBO at <code>set=0, binding=2</code> is overwritten per skinned draw — same pattern as <code>VulkanSceneOpaquePass</code>. Joint palette must match the lit pass frame-for-frame or shadow silhouettes drift from visible mesh.</p>
+<h3 id="push-constant-parity">Push constant parity</h3>
+<p>Both lit and shadow passes set <code>useSkinning</code> and <code>jointCount</code> from the same <code>SceneDrawItem</code> fields. If shadow shows a T-pose while lit animates, check that <code>skinnedMesh</code> and <code>jointPalette</code> are populated at submit time for shadow casters.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="skinning-recap">Skinning recap</h3>
 <p>For each vertex, blend bone matrices by joint indices and weights, then apply the object <code>model</code> matrix:</p>
@@ -1358,6 +1394,22 @@ gl_Position = sp.lightViewProj * vec4(worldPos, 1.0);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-skinning-in-the-shadow-pass">1b. Concept Deep Dive — Skinning in the Shadow Pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#identical-skinning-branch-to-scenevert">Identical skinning branch to scene.vert</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-draw-ssbo-upload-in-recordshadowcastmeshes">Per-draw SSBO upload in RecordShadowCastMeshes</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constant-parity">Push constant parity</a>
                         </li>
                         
                         <li class="toc-h2">

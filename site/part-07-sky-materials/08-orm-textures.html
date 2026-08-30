@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,50 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Separate grayscale textures waste array slots and break glTF delivery. <strong>ORM packing</strong> stores three material scalars in one image — your shader must unpack channels, multiply by material factors, and feed PBR + IBL with per-pixel roughness.</p>
 <p>Build along: bind an ORM map on <code>MaterialComponent</code> and tune <strong>Q/E/R/F</strong> keys in <code>MaterialShowcase3DDemo</code> to see metal vs roughness respond independently of albedo.</p>
+<h2 id="b.concept-deep-dive-orm-merge-and-shader-decode">1b. Concept Deep Dive — ORM Merge and Shader Decode</h2>
+<h3 id="gltf-often-ships-occlusion-separately">glTF often ships occlusion separately</h3>
+<p>Spark merges occlusion into metallic-roughness at import when UV layouts match:</p>
+<pre><code class="language-cpp">// src/spark/scene/material/GltfMaterial.cpp — CreateMergedOrmTexture (concept)
+SharedPtr&lt;Texture2D&gt; CreateMergedOrmTexture(
+        const SharedPtr&lt;Texture2D&gt;&amp; metallicRoughness,
+        const SharedPtr&lt;Texture2D&gt;&amp; occlusion, ...) {
+    // Start from MR texture or fill G/B from scalar factors
+    for (each pixel i) {
+        pixels[i].r = occlusionPixel[i];   // R = ambient occlusion
+        // pixels[i].g = roughness (already from MR)
+        // pixels[i].b = metallic (already from MR)
+    }
+    tex-&gt;SetPixels(w, h, pixels);
+    return tex;
+}
+</code></pre>
+<p><code>GetOrCreateMergedOrmTexture</code> caches by source image pointers — shared glTF images dedupe.</p>
+<h3 id="materialcomponent-sentinel-values-when-map-is-bound">MaterialComponent sentinel values when map is bound</h3>
+<pre><code class="language-cpp">// GltfMaterial::ApplyTo
+material.SetMetallicRoughnessTexture(mergedOrm);
+material.SetMetallic(1.0F);    // sentinel &gt;= 0.999 → shader reads map
+material.SetRoughness(1.0F);
+material.SetMetallicFactor(metallicFactor);   // multiplies B channel
+material.SetRoughnessFactor(roughnessFactor); // multiplies G channel
+</code></pre>
+<h3 id="shader-orm-decode">Shader ORM decode</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 459–469, concept)
+if (push.metallicRoughnessMapLayer &gt;= 0) {
+    vec3 orm = texture(sceneTextures, vec3(sparkMapUv(2), float(mrl))).rgb;
+    if (push.metallic &gt;= 0.999 &amp;&amp; push.roughness &gt;= 0.999) {
+        rough = clamp(orm.g * push.roughnessFactor, 0.04, 1.0);
+        met   = clamp(orm.b * push.metallicFactor, 0.0, 1.0);
+    }
+    if (push.occlusionStrength &gt; 0.0) {
+        occlusion = clamp(mix(1.0, orm.r, push.occlusionStrength), 0.08, 1.0);
+    }
+}
+</code></pre>
+<p><strong>AO scope:</strong> occlusion multiplies ambient, hemisphere fill, and IBL — <strong>not</strong> direct sun term in Spark. Caves stay bright in direct sunlight but dark in indirect fill.</p>
+<h3 id="scenedrawitem-layer-field">SceneDrawItem layer field</h3>
+<pre><code class="language-cpp">// include/spark/engine/SceneRenderParams.hpp
+std::int32_t metallicRoughnessMapLayer = -1;  // -1 = scalars only
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="gltf-orm-packing">glTF ORM packing</h3>
 <p>One texture stores <strong>O</strong>cclusion (R), <strong>R</strong>oughness (G), <strong>M</strong>etallic (B) — glTF metallic-roughness workflow. Spark names the layer <code>metallicRoughnessMapLayer</code> on <code>SceneDrawItem</code>.</p>
@@ -1096,6 +1146,35 @@ rough = clamp(orm.g * roughnessFactor, 0.04, 1)
 <p>ORM channels are linear — no sRGB decode, same as normal maps. Author and export as linear PNG or EXR.</p>
 <h3 id="ibl-roughness-coupling">IBL roughness coupling</h3>
 <p><code>sparkPrefilterEnvironment</code> in <code>ibl.glsl</code> uses per-pixel <code>rough</code> from ORM — chrome (low G) gets sharp reflections; rubber (high G) blurs environment specular on metals.</p>
+<h3 id="orm-merge-at-gltf-import-time">ORM merge at glTF import time</h3>
+<p>glTF often ships <strong>separate</strong> occlusion and metallic-roughness textures. Spark merges them into one CPU <code>Texture2D</code> during <code>GltfMaterialLoader::TryLoadTexturesFromMaterial</code> so the GPU still uses a single <code>metallicRoughnessMapLayer</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/material/GltfMaterial.cpp (lines 387–407)
+if (mat.occlusion_texture.texture != nullptr &amp;&amp; out.occlusionStrength &gt; 1.0e-6F) {
+    // decode occlusion into `occlusion` Texture2D ...
+    if (hasMetallicRoughnessTexture) {
+        if (UvMapsMatch(occlusionUv, out.metallicRoughnessUv)) {
+            out.metallicRoughness = GetOrCreateMergedOrmTexture(
+                    caches,
+                    out.metallicRoughness,
+                    occlusion,
+                    mrImage,
+                    occImage,
+                    out.roughnessFactor,
+                    out.metallicFactor,
+                    name);
+        }
+    }
+}
+</code></pre>
+<p><code>GetOrCreateMergedOrmTexture</code> writes occlusion into <strong>R</strong>, roughness into <strong>G</strong>, metallic into <strong>B</strong> of a new RGBA8 image. The merged texture is cached by image pointer identity so multiple materials sharing the same glTF images do not duplicate pixels.</p>
+<p>At submit, <code>ApplyMaterialComponentToSceneDrawItem</code> registers the merged map via <code>FindOrAddSceneTexture</code> → <code>metallicRoughnessMapLayer</code>. The fragment shader samples once:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (concept)
+vec3 orm = texture(sceneTextures, vec3(uv, float(push.metallicRoughnessMapLayer))).rgb;
+float ao = orm.r;
+float rough = clamp(orm.g * push.roughnessFactor, 0.04, 1.0);
+float met = clamp(orm.b * push.metallicFactor, 0.0, 1.0);
+</code></pre>
+<p><strong>Authoring tip:</strong> when exporting from Blender, enable "Pack Occlusion into ORM" or let Spark merge at import — either path ends at one array layer per material.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="one-texture-call-for-three-scalars">One texture() call for three scalars</h3>
@@ -1207,6 +1286,26 @@ if (mat-&gt;GetMetallicRoughnessTexture()) {
                         </li>
                         
                         <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-orm-merge-and-shader-decode">1b. Concept Deep Dive — ORM Merge and Shader Decode</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#gltf-often-ships-occlusion-separately">glTF often ships occlusion separately</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#materialcomponent-sentinel-values-when-map-is-bound">MaterialComponent sentinel values when map is bound</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shader-orm-decode">Shader ORM decode</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenedrawitem-layer-field">SceneDrawItem layer field</a>
+                        </li>
+                        
+                        <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
                         
@@ -1228,6 +1327,10 @@ if (mat-&gt;GetMetallicRoughnessTexture()) {
                         
                         <li class="toc-h3">
                           <a href="#ibl-roughness-coupling">IBL roughness coupling</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#orm-merge-at-gltf-import-time">ORM merge at glTF import time</a>
                         </li>
                         
                         <li class="toc-h2">

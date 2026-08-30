@@ -16,6 +16,63 @@ as a lit mesh with sun **N·L** is wrong — sky radiance is **emitted**, not re
 Your build-along milestone: spawn a `SkyComponent` entity, cycle Box/Dome/Plane in `SkyDemo`, and confirm the HDR
 background stays fixed when you orbit the camera.
 
+## 1b. Concept Deep Dive — Sky as Emissive Background, Not Lit Geometry
+
+### Sky is not a regular mesh draw
+
+A lit mesh multiplies albedo by `N·L` — the sky has no meaningful surface normal toward the camera. Spark treats sky as **emissive radiance**: fragment shader early-outs before BRDF, outputting color directly from view direction or equirect sample.
+
+```glsl
+// shaders/scene.frag (lines 389–431) — sky branch entry
+void main() {
+    if (push.skyMode != 0) {
+        vec3 cam = ubo.cameraPos.xyz;
+        vec2 vp = max(ubo.viewportSize.xy, vec2(1.0));
+        float sx = (gl_FragCoord.x + 0.5) / vp.x;
+        float sy = (gl_FragCoord.y + 0.5) / vp.y;
+        vec2 ndc = vec2(sx * 2.0 - 1.0, sy * 2.0 - 1.0);
+        vec4 farH = ubo.invViewProj * vec4(ndc, 1.0, 1.0);
+        vec3 dir = normalize(farH.xyz / max(farH.w, 1e-5) - cam);
+        // ... sample equirect or procedural gradient ...
+        outColor = vec4(skyCol, 1.0);
+        return;  // skip all PBR lighting below
+    }
+```
+
+### Why per-pixel view rays (not interpolated mesh UV)
+
+If you pass world position from the vertex shader on a large sky sphere, **interpolated** positions lie *inside* the mesh volume — `normalize(interpPos - cam)` shifts as the camera rotates, making HDR equirects **swim**. Reconstructing direction from `invViewProj × NDC` gives a ray through each pixel independent of mesh tessellation.
+
+### SkyDemo mode switching
+
+```cpp
+// src/spark/demo/SkyDemo.cpp (concept)
+void SkyDemo::ApplySkyModeVisuals() {
+    if (skyModeIndex == 0) {
+        sky->SetSkyMode(SceneSkyMode::Box);    // closed env, gradient or equirect
+    } else if (skyModeIndex == 1) {
+        sky->SetSkyMode(SceneSkyMode::Dome);   // hemisphere math in shader
+    } else {
+        sky->SetSkyMode(SceneSkyMode::Plane);  // billboard quad UV gradient
+        skyMesh->SetMesh(skyHasEquirect ? skyBoxMesh : skyPlaneMesh);
+    }
+}
+```
+
+Press **M** in SkyDemo to cycle modes. Box and Dome use `Mesh::CreateSkySphere`; Plane uses `CreateSkyBillboardPlane` when no equirect is loaded.
+
+### ECS sky entity pattern
+
+```text
+GameObject "Sky"
+  ├── SkyComponent(mode=Box, tint, optional skyTexture)
+  ├── MeshComponent(CreateSkySphere, SceneMeshSlot::Custom)
+  ├── MaterialComponent(equirect HDR texture)  // optional
+  └── TransformComponent(follows camera position, large scale)
+```
+
+Submit sets `SceneDrawItem.skyMode != None` → opaque pass binds `pipelineSky` (no depth write).
+
 ## 2. Core Concepts
 
 ### SceneSkyMode taxonomy

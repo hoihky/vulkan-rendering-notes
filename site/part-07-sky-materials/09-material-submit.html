@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,111 @@
 <p>Components live in <code>GameWorld</code>; Vulkan records from <strong>SceneRenderParams</strong>. Submit is the once-per-frame bridge —
 walk active entities, apply materials, register textures, sort draws, resolve IBL layer — immutable before GPU work.</p>
 <p>Build along: switch a demo from manual drawList assembly to <code>FillStandardLitSceneFromWorld</code> and verify counts match.</p>
+<h3 id="what-is-submit-the-bridge-every-beginner-must-understand">What is "submit"? (the bridge every beginner must understand)</h3>
+<p>Your game stores objects in an <strong>Entity Component System</strong> (<code>GameWorld</code>, <code>GameObject</code>, components). Vulkan has never heard of <code>GameObject</code>. Vulkan only understands:</p>
+<ul>
+<li>Command buffers with <code>vkCmdDrawIndexed</code></li>
+<li>Bound pipelines, descriptor sets, vertex buffers</li>
+<li>Push constants with matrices and material indices</li>
+</ul>
+<p><strong>Submit</strong> is the translation layer. Once per frame, Spark walks the ECS and builds a flat, GPU-friendly struct: <code>SceneRenderParams</code>.</p>
+<pre><code class="language-text">GameWorld (ECS)  ──submit──►  SceneRenderParams  ──record──►  Vulkan commands
+OOP, components              plain structs, arrays           vkCmd*
+</code></pre>
+<p>Rules every engine should follow:</p>
+<ol>
+<li><strong>Submit runs on CPU before GPU record</strong> — never call <code>vkCmd*</code> from <code>OnUpdate</code>.</li>
+<li><strong>SceneRenderParams is a snapshot</strong> — copy or build fresh each frame; do not mutate while GPU reads last frame's data.</li>
+<li><strong>No Vulkan types in SceneRenderParams</strong> — only <code>SceneDrawItem</code>, texture layer ints, matrices.</li>
+</ol>
+<p><code>FillStandardLitSceneFromWorld</code> is the main entry point demos call after filling the camera:</p>
+<pre><code class="language-cpp">// Typical demo OnRender pattern (concept)
+SceneRenderParams params{};
+params.camera = mainCamera.BuildSceneCamera(fbW, fbH);
+FillStandardLitSceneFromWorld(world, params, engineContext);
+context.SetSceneRenderParams(params);
+</code></pre>
+<p>After this call, <code>params.draws</code> contains every opaque mesh, <code>params.transparentDraws</code> contains sorted transparent meshes, and <code>params.sceneTextures</code> lists unique textures with assigned layers.</p>
+<h3 id="inside-fillstandardlitscenefromworld-conceptual-steps">Inside FillStandardLitSceneFromWorld (conceptual steps)</h3>
+<ol>
+<li><strong>Clear</strong> last frame's draw arrays and texture registry.</li>
+<li><strong>Resolve lighting</strong> — sun direction, ambient, exposure from components and volumes.</li>
+<li><strong>Frustum cull</strong> (optional) — skip off-screen objects.</li>
+<li><strong>For each visible <code>MeshComponent</code>:</strong>
+<ul>
+<li>Read transform → world matrix.</li>
+<li>Read <code>MaterialComponent</code> or <code>MultiMaterialComponent</code>.</li>
+<li>Call <code>PushRigidMeshDraws</code> (one or many <code>SceneDrawItem</code>s).</li>
+<li>Register textures via <code>FindOrAddSceneTexture</code>.</li>
+</ul>
+</li>
+<li><strong>Repeat</strong> for skinned meshes, sky, sprites, etc.</li>
+<li><strong>Sort</strong> draws (sky first, opaque by material, transparent back-to-front).</li>
+<li><strong>Partition</strong> opaque vs transparent arrays.</li>
+</ol>
+<p>You do not call these steps manually in gameplay code — one function does the walk. Your job when adding a new drawable type is to extend the sink that handles it, not to bypass submit.</p>
+<h2 id="b.concept-deep-dive-findoraddscenetexture-and-sky-submit">1b. Concept Deep Dive — FindOrAddSceneTexture and Sky Submit</h2>
+<h3 id="texture-deduplication-by-pointer-identity">Texture deduplication by pointer identity</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmitMaterial.cpp (lines 68–124)
+std::int32_t FindOrAddSceneTexture(SceneRenderParams&amp; params, const SharedPtr&lt;Texture2D&gt;&amp; tex, ...) {
+    if (!tex) return -1;
+    SharedPtr&lt;Texture2D&gt; resolved = tex-&gt;ResolveAtlasUv(uvScale, uvOffset);
+
+    const bool isHdr = resolved-&gt;IsHdrFloatPixels();
+    Array&lt;SharedPtr&lt;Texture2D&gt;&gt;&amp; targetArray =
+            isHdr ? params.sceneHdrTextures : params.sceneTextures;
+    const uint32_t maxLayers = isHdr ? MaxSceneHdrTextures : MaxSceneTextures;  // 8 / 64
+
+    for (size_t i = 0; i &lt; targetArray.GetSize(); ++i) {
+        if (targetArray[i].Get() == resolved.Get())
+            return static_cast&lt;std::int32_t&gt;(i);  // dedupe hit
+    }
+    if (targetArray.GetSize() &gt;= maxLayers) {
+        std::fprintf(stderr, "Spark: scene texture limit reached\n");
+        return -1;
+    }
+    const std::int32_t layer = static_cast&lt;std::int32_t&gt;(targetArray.GetSize());
+    targetArray.PushBack(resolved);
+    return layer;
+}
+</code></pre>
+<p>Same <code>SharedPtr</code> address → same layer index across all draws that frame. HDR float pixels route to <code>sceneHdrTextures</code> (binding 11); LDR sRGB to <code>sceneTextures</code> (binding 1).</p>
+<h3 id="populateskydrawitem-separate-from-standard-material-path">PopulateSkyDrawItem — separate from standard material path</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmitMaterial.cpp (concept)
+void PopulateSkyDrawItem(SceneDrawItem&amp; item, const SkyComponent&amp; sky,
+        const MaterialComponent* mat, const Matrix4&amp; world, SceneRenderParams&amp; params) {
+    item.skyMode = sky.GetSkyMode();
+    item.albedo = sky.GetTint();
+    item.model = world;
+    item.mesh = SceneMeshSlot::Custom;
+    if (mat &amp;&amp; mat-&gt;GetBaseColorTexture()) {
+        item.textureLayer = FindOrAddSceneTexture(params, mat-&gt;GetBaseColorTexture(), ...);
+        item.textureIsHdrLinear = isHdr;
+    }
+}
+</code></pre>
+<p>Sky tint multiplies equirect sample in fragment shader; no metallic/roughness on sky draws.</p>
+<h3 id="fillstandardlitscenefromworld-orchestration">FillStandardLitSceneFromWorld orchestration</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (concept)
+sceneForCulling-&gt;ForEachSky([&amp;](..., const SkyComponent&amp; sk, ...) {
+    SceneDrawItem item{};
+    PopulateSkyDrawItem(item, sk, mc, mat, world, params);
+    drawList.PushBack(item);
+});
+// ... rigid meshes, skinned meshes ...
+ResolveIblEnvironmentLayer(params);  // after all draws collected
+</code></pre>
+<h3 id="push-constants-map-layers-to-shader">Push constants map layers to shader</h3>
+<pre><code class="language-glsl">// shaders/scene_push.glsl (concept)
+layout(push_constant) uniform Push {
+    int textureLayer;              // base color / sky equirect
+    int normalMapLayer;
+    int metallicRoughnessMapLayer;
+    int emissiveMapLayer;
+    int albedoHdrLinear;           // route sample to sceneHdrTextures
+    // ...
+} push;
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="snapshot-boundary">Snapshot boundary</h3>
 <p><code>FillStandardLitSceneFromWorld</code> clears prior frame data, gathers ECS drawables into <code>SceneDrawItem</code> arrays, registers textures, sorts, partitions opaque/transparent — <strong>before</strong> command recording.</p>
@@ -1066,6 +1177,64 @@ walk active entities, apply materials, register textures, sort draws, resolve IB
 <p>When <code>SkyComponent</code> is present, submit bypasses standard material apply for shadow flags and uses sky tint × material tint for equirect — still registers base color texture layer.</p>
 <h3 id="resolveiblenvironmentlayer-post-gather">ResolveIblEnvironmentLayer post-gather</h3>
 <p>After draws are collected, submit scans for first sky draw with texture to set IBL environment index.</p>
+<h3 id="multi-material-submit-one-entity-many-draws">Multi-material submit: one entity, many draws</h3>
+<p><code>PushRigidMeshDraws</code> is the function that connects <code>MultiMaterialComponent</code> + <code>MeshSubmesh</code> to flat <code>SceneDrawItem</code> arrays:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 77–115)
+void PushRigidMeshDraws(
+        Array&lt;SceneDrawItem&gt;&amp; drawList,
+        SceneDrawItem baseItem,
+        const Mesh&amp; mesh,
+        const MaterialComponent* mat,
+        const MultiMaterialComponent* multiMat,
+        SceneRenderParams&amp; params,
+        const std::function&lt;std::int32_t(...)&gt;&amp; findOrAddTexture) {
+    const Array&lt;MeshSubmesh&gt;&amp; submeshes = mesh.GetSubmeshes();
+    if (submeshes.IsEmpty() || multiMat == nullptr) {
+        // single draw — full index buffer or MaterialComponent only
+        // ...
+        return;
+    }
+
+    for (std::size_t si = 0; si &lt; submeshes.GetSize(); ++si) {
+        SceneDrawItem item = baseItem;
+        item.submeshIndex = static_cast&lt;std::uint32_t&gt;(si);
+        const MeshSubmesh&amp; sm = submeshes[si];
+        const std::uint32_t materialIndex = sm.ResolveMaterialIndex(multiMat-&gt;GetActiveVariantIndex());
+        if (materialIndex &lt; multiMat-&gt;GetSlotCount()) {
+            const MultiMaterialComponent::Slot&amp; slot = multiMat-&gt;GetSlot(materialIndex);
+            ApplyMultiMaterialSlotToSceneDrawItem(item, slot, &amp;params);
+            ApplyAlbedoTexture(item, slot.baseColor, slot.tint, findOrAddTexture);
+        }
+        drawList.PushBack(item);
+    }
+}
+</code></pre>
+<p><code>ApplyMultiMaterialSlotToSceneDrawItem</code> copies metallic, roughness, emissive, shading model, glTF extension factors, and registers normal/ORM/emissive maps into <code>params.sceneTextures</code> via <code>FindOrAddSceneTexture</code>. Each unique <code>SharedPtr&lt;Texture2D&gt;</code> gets a stable <strong>layer index</strong> in the <code>sampler2DArray</code> uploaded before draws.</p>
+<h3 id="gpu-record-push-constants-carry-material-state">GPU record: push constants carry material state</h3>
+<p>The Vulkan pass does not rebind descriptors per material. <code>VulkanSceneOpaquePass::Record</code> writes one <code>ModelPushConstants</code> struct per draw:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 149–183)
+push.textureLayer = d.textureLayer;
+push.metallic = d.metallic;
+push.roughness = d.roughness;
+push.normalMapLayer = d.normalMapLayer;
+push.metallicRoughnessMapLayer = d.metallicRoughnessMapLayer;
+push.emissiveMapLayer = d.emissiveMapLayer;
+FillMaterialExtensionPush(push, d.gltfExtensions);
+// ...
+vkCmdPushConstants(commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                   0, sizeof(push), &amp;push);
+vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, vertexOffset, 0);
+</code></pre>
+<p><code>firstIndex</code> and <code>indexCount</code> come from <code>VulkanCustomMeshPool::ResolveRigidDrawSlice</code>, which uses <code>item.submeshIndex</code> to select the <code>MeshSubmesh</code> range inside the packed custom index buffer.</p>
+<p><strong>Material pipeline summary:</strong></p>
+<pre><code class="language-text">ECS MaterialComponent / MultiMaterialComponent (CPU textures)
+→ SceneSubmit (layer indices + PBR scalars in SceneDrawItem)
+→ VulkanSceneTextureUploader (RGBA8 / RGBA32F → GPU array layers)
+→ VulkanSceneDescriptors binding 1 + 11
+→ Push constants per draw
+→ scene.frag GGX + ORM + normal mapping
+→ HDR RGBA16F attachment (Part X)
+</code></pre>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="single-gather-entry-point">Single gather entry point</h3>
@@ -1287,6 +1456,34 @@ at end of fill. <strong>Material Showcase Demo</strong> is the visual regression
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#what-is-submit-the-bridge-every-beginner-must-understand">What is "submit"? (the bridge every beginner must understand)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#inside-fillstandardlitscenefromworld-conceptual-steps">Inside FillStandardLitSceneFromWorld (conceptual steps)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-findoraddscenetexture-and-sky-submit">1b. Concept Deep Dive — FindOrAddSceneTexture and Sky Submit</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#texture-deduplication-by-pointer-identity">Texture deduplication by pointer identity</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#populateskydrawitem-separate-from-standard-material-path">PopulateSkyDrawItem — separate from standard material path</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fillstandardlitscenefromworld-orchestration">FillStandardLitSceneFromWorld orchestration</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constants-map-layers-to-shader">Push constants map layers to shader</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1305,6 +1502,14 @@ at end of fill. <strong>Material Showcase Demo</strong> is the visual regression
                         
                         <li class="toc-h3">
                           <a href="#resolveiblenvironmentlayer-post-gather">ResolveIblEnvironmentLayer post-gather</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#multi-material-submit-one-entity-many-draws">Multi-material submit: one entity, many draws</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#gpu-record-push-constants-carry-material-state">GPU record: push constants carry material state</a>
                         </li>
                         
                         <li class="toc-h2">

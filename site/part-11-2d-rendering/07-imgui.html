@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,21 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Tuning HDR exposure, spawning debug entities, and inspecting frame flags needs <strong>fast iteration UI</strong>. Dear ImGui generates draw lists each frame; your engine uploads them like screen UI but with its own Vulkan backend and descriptor pool.</p>
 <p>Spark records ImGui immediately after <code>screenUi</code> in the present pass. Milestone: exposure slider live-tunes tonemap while gameplay input pauses when the mouse hovers ImGui panels.</p>
+<h2 id="b.concept-deep-dive-immediate-mode-debug-ui-on-the-present-pass">1b. Concept Deep Dive — Immediate-Mode Debug UI on the Present Pass</h2>
+<h3 id="imgui-rebuilds-every-frame-screen-ui-is-retained-arrays">ImGui rebuilds every frame; screen UI is retained arrays</h3>
+<p>Dear ImGui is <strong>immediate mode</strong> — each tick you call <code>ImGui::Button</code>, ImGui builds transient widget state and draw lists from scratch. Spark's production screen UI (Chapter 6) pushes retained <code>ScreenRectDraw</code> structs. ImGui excels at dev tools: exposure sliders, spawn menus, frame stats.</p>
+<pre><code class="language-cpp">// Typical integration loop (concept)
+ImGui_ImplVulkan_NewFrame();
+ImGui_ImplGlfw_NewFrame();
+ImGui::NewFrame();
+// ... debug panels ...
+ImGui::Render();
+RecordImGuiDrawData(commandBuffer);  // after tonemap + screenUi
+</code></pre>
+<h3 id="same-present-pass-as-screen-ui-after-tonemap">Same present pass as screen UI, after tonemap</h3>
+<p><code>VulkanRenderer::RecordImGuiDrawData</code> runs at the end of the present pass so widget colors match display space. NewFrame happens in demo <code>OnUpdate</code> <strong>before</strong> snapshot submit — draw data must be recorded after tonemap target is bound.</p>
+<h3 id="input-capture-via-wantcapturemouse-wantcapturekeyboard">Input capture via WantCaptureMouse / WantCaptureKeyboard</h3>
+<p>Poll ImGui IO flags before gameplay camera controls — when the mouse hovers a panel, disable fly-camera input so sliders do not fight WASD. Spark wraps ImGui behind <code>IImGuiLayer</code>; shipping builds can strip the layer while retaining screen UI HUD art.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="immediate-mode-vs-retained-ui">Immediate-mode vs retained UI</h3>
 <p><strong>Dear ImGui</strong> is <strong>immediate mode</strong>: every frame you call <code>ImGui::Button("Spawn")</code> and ImGui builds transient widget state, layout, and draw lists from scratch. Spark's screen UI (Chapter 6) is <strong>retained</strong> — you push <code>ScreenRectDraw</code> structs meant to ship in production.</p>
@@ -1264,6 +1285,22 @@ vkCmdEndRenderPass(commandBuffer);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-immediate-mode-debug-ui-on-the-present-pass">1b. Concept Deep Dive — Immediate-Mode Debug UI on the Present Pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#imgui-rebuilds-every-frame-screen-ui-is-retained-arrays">ImGui rebuilds every frame; screen UI is retained arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-present-pass-as-screen-ui-after-tonemap">Same present pass as screen UI, after tonemap</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#input-capture-via-wantcapturemouse-wantcapturekeyboard">Input capture via WantCaptureMouse / WantCaptureKeyboard</a>
                         </li>
                         
                         <li class="toc-h2">

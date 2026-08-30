@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,31 @@
 <p>The lit mesh pipeline assumes rigid transforms and material descriptors. Particles need <strong>billboard expansion,
 additive blend, and a lightweight vertex format</strong> — bundled into <code>VulkanParticlePass</code> instead of special-casing scene draws.</p>
 <p>Build along: trace Record from <code>scene.particles</code> through scratchVertices to <code>vkCmdDraw</code>.</p>
+<h2 id="b.concept-deep-dive-vulkanparticlepassrecord">1b. Concept Deep Dive — VulkanParticlePass::Record</h2>
+<h3 id="host-visible-10-mb-vertex-ring">Host-visible 10 MB vertex ring</h3>
+<pre><code class="language-cpp">// src/spark/render/sprites2d/VulkanParticlePass.cpp (lines 13–15, 106–117)
+constexpr VkDeviceSize kParticleVertexBytes = 10 * 1024 * 1024;
+constexpr std::uint32_t kParticleFloatsPerVertex = 10;
+// CreateBuffer(... HOST_VISIBLE | HOST_COHERENT, vertexBuffer, vertexBufferMemory);
+// vkMapMemory → vertexMapped (persistent map for the pass lifetime)
+</code></pre>
+<p>No staging buffer — Record memcpy's expanded vertices directly into the mapped ring each frame. At 10 floats × 6 verts × 8192 particles ≈ 1.9 MB worst case, well under capacity.</p>
+<h3 id="cpu-quad-expansion-and-single-draw">CPU quad expansion and single draw</h3>
+<pre><code class="language-cpp">// Record (lines 362–412)
+const float corners[4][2] = { {-1,-1}, {1,-1}, {1,1}, {-1,1} };
+const std::uint32_t idx0[] = {0, 1, 2, 0, 2, 3};
+for (std::size_t pi = 0; pi &lt; nPart; ++pi) {
+    const SceneParticleInstance&amp; p = scene.particles[pi];
+    for (int t = 0; t &lt; 6; ++t) {
+        // push: pos.xyz, color.rgba, size, corner.xy  (10 floats)
+    }
+}
+std::memcpy(vertexMapped, scratchVertices.GetData(), vbBytes);
+vkCmdDraw(commandBuffer, vertCount, 1, 0, 0);
+</code></pre>
+<p>Each particle becomes six vertices (two triangles). Vertex layout: location 0 = center position, 1 = color, 2 = size, 3 = corner offset (−1..1). The vertex shader reconstructs world corners from center + camera axes.</p>
+<h3 id="early-out-guards">Early-out guards</h3>
+<p>Record returns immediately when <code>!sceneParamsValid</code>, pipeline is null, <code>scene.particles</code> is empty, or <code>nPart</code> exceeds both <code>MaxParticles</code> and buffer capacity (<code>maxByBuffer = vertexCapacityBytes / (40 * 4)</code>).</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="host-visible-vertex-ring">Host-visible vertex ring</h3>
 <p>Spark maps a 10 MB host-coherent vertex buffer once. Record memcpy's expanded quads each frame — no staging copy or device-local buffer for particles.</p>
@@ -1276,6 +1307,22 @@ vkCmdDraw(commandBuffer, vertCount, 1, 0, 0);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vulkanparticlepassrecord">1b. Concept Deep Dive — VulkanParticlePass::Record</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#host-visible-10-mb-vertex-ring">Host-visible 10 MB vertex ring</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cpu-quad-expansion-and-single-draw">CPU quad expansion and single draw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#early-out-guards">Early-out guards</a>
                         </li>
                         
                         <li class="toc-h2">

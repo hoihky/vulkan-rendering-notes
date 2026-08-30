@@ -14,6 +14,77 @@ One orthographic shadow map covering an entire open level blurs distant shadows 
 
 You will follow Spark's CPU cascade math, then confirm the GPU receives matching `worldToShadowClip` and `cascadeAtlas` arrays each frame.
 
+### Why one shadow map is not enough (beginner)
+
+Imagine a sun shadow map covering an entire open world at 2048×2048 texels. Near your character's feet, each texel might cover **50 cm** of ground — shadows look like chunky blocks. Mountains kilometers away get the same texel budget — wasted resolution.
+
+**Cascaded Shadow Maps (CSM)** split the camera view into **near, mid, far** slices. Each slice gets its own shadow map (or region in an atlas) with an orthographic light projection fitted tightly to that slice:
+
+```text
+Camera frustum side view:
+
+  near slice  ──► high-res shadow map (crisp character shadow)
+  mid slice   ──► medium-res map
+  far slice   ──► low-res map (distant hills)
+```
+
+The fragment shader picks which cascade to sample based on how far the pixel is from the camera.
+
+### Step-by-step cascade flow in Spark
+
+1. **CPU:** Compute camera frustum corner distances → split distances λ-blended near/far.
+2. **CPU:** For each cascade, build orthographic light matrix enclosing that frustum slice.
+3. **CPU:** Snap projection to texel grid (reduces shadow edge shimmering when camera moves).
+4. **GPU:** Render depth-only pass per cascade into atlas regions.
+5. **CPU:** Upload `worldToShadowClip[cascade]` + atlas UV rects to scene UBO.
+6. **GPU:** Main pass fragment shader selects cascade, samples depth, applies PCF.
+
+Beginners should visualize cascade **false-color debug** (Spark demo / RenderDoc) before tuning bias — confirms index 0 is near camera.
+
+## 1b. Concept Deep Dive — VulkanDirectionalShadowCascadeMath
+
+### λ-blended split distances
+
+```cpp
+// src/spark/render/shadow/VulkanDirectionalShadowCascadeMath.cpp (lines 31–41)
+float ComputeSplitDistance(float nearDist, float farDist, int splitIndex,
+                           int splitCount, float lambda) {
+    const float p = static_cast<float>(splitIndex) / static_cast<float>(splitCount);
+    const float logSplit = nearDist * std::pow(farDist / std::max(nearDist, 1e-3F), p);
+    const float uniSplit = nearDist + (farDist - nearDist) * p;
+    return lambda * logSplit + (1.0F - lambda) * uniSplit;
+}
+```
+
+λ = 0.5 mixes logarithmic (more resolution near camera) with uniform splits. Spark uses four cascades; split distances feed both shadow pass viewport scissor and `ubo.cascadeSplits` for fragment shader selection.
+
+### Ortho light fit with texel snapping
+
+```cpp
+// ComputeWorldToShadowClip — frustum slice → light-space AABB (concept)
+const Matrix4 lightView = Matrix4::LookAt(lightPos, center, up);
+// accumulate frustum corners + ground grid in light view
+// pad X/Y/Z, then snap minX/minY to texel grid:
+minX = std::floor((minX - cx) / texelX) * texelX + cx;
+```
+
+Snapping the orthographic projection to shadow-map texel boundaries reduces **shadow edge shimmering** when the camera translates. Ground corners at ±`kSceneGroundHalfExtent` are included so terrain near the player stays inside the near cascade.
+
+### Z-flip matrix for Vulkan depth convention
+
+```cpp
+// ShadowClipLinearZFlip() — maps OpenGL-style [0,1] depth to Vulkan [0,1] with reversed Z
+static const Matrix4 k = [] {
+    Matrix4 r = Matrix4::IdentityMatrix();
+    r.m[10] = -1.0F;
+    r.m[14] = 1.0F;
+    return r;
+}();
+// worldToShadowClip = ZFlip * lightProj * lightView
+```
+
+The same matrix is uploaded to the scene UBO and pushed to `shadow_depth.vert` via `ShadowPushConstants.lightViewProj` — matrix mismatch between passes is a common bug source.
+
 ## 2. Core Concepts
 
 ### Cascade splits

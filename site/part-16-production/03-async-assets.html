@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,30 @@
 <p>Synchronous glTF/PNG load <strong>hitches</strong> <code>PresentFrame</code> — users feel stutter even if average FPS looks fine. <strong>Async assets</strong> decode off-thread, finalize into existing <code>Texture2D</code> / <code>Mesh</code> CPU types on the main thread, then upload through <code>DeferredUploadBatch</code>.</p>
 <p>Spark's <code>GameWorldAssetLoader</code> worker thread and <code>SceneManager::Pump</code> (Part XIII) combine into the production loading pipeline you will extend in this chapter.</p>
 <p>Milestone: async-load a large scene with an ImGui progress bar — max frame ms stays under 2× normal gameplay frame budget.</p>
+<h2 id="b.concept-deep-dive-two-thread-asset-pump">1b. Concept Deep Dive — Two-Thread Asset Pump</h2>
+<h3 id="worker-decodes-main-thread-registers-uploads">Worker decodes; main thread registers + uploads</h3>
+<pre><code class="language-cpp">// include/spark/scene/assets/GameWorldAssetLoader.hpp
+class GameWorldAssetLoader {
+    void RequestGltf(const char* path);
+    void OnGltfReady(const char* path, AssetLoadCallback callback);
+    /** Call Pump from the main thread each frame; caches updated only in Pump. */
+    void Pump(GameWorld&amp; world);
+};
+</code></pre>
+<p>Worker thread parses glTF/PNG off the hot path; <code>Pump</code> moves decoded CPU data into <code>GameWorldAssetCache</code> and fires ready callbacks on the main thread — safe for <code>AddComponent</code> and Vulkan resource creation.</p>
+<h3 id="scenemanagerpump-chains-scene-finalize">SceneManager::Pump chains scene finalize</h3>
+<p>Part XIII async load and Part XVI production loading share one pump hook:</p>
+<pre><code class="language-cpp">void SceneManager::Pump() {
+    world.GetAssetLoader().Pump(world);
+    for (each LoadedSceneInstance not ready) {
+        RetryPendingComponents(instance);
+        FinalizeInstanceReadyState(instance);
+    }
+}
+</code></pre>
+<p>Deferred <code>gltf_scene</code> / <code>skinned_mesh</code> restores retry each frame until assets register — no multi-frame main-thread stall parsing hundreds of files synchronously.</p>
+<h3 id="placeholders-and-generation-ids">Placeholders and generation ids</h3>
+<p>Show low-res placeholder textures while high-res loads; bump generation id on finalize so stale worker completions cannot overwrite a newer request. Max frame ms should stay under 2× normal gameplay budget during load — if not, reduce per-frame Pump work or increase worker parallelism.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="two-stage-asset-pipeline">Two-stage asset pipeline</h3>
 <p><strong>Async assets</strong> split work across threads:</p>
@@ -1319,6 +1349,22 @@ void SceneManager::Pump() {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-two-thread-asset-pump">1b. Concept Deep Dive — Two-Thread Asset Pump</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#worker-decodes-main-thread-registers-uploads">Worker decodes; main thread registers + uploads</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenemanagerpump-chains-scene-finalize">SceneManager::Pump chains scene finalize</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#placeholders-and-generation-ids">Placeholders and generation ids</a>
                         </li>
                         
                         <li class="toc-h2">

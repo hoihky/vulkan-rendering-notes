@@ -14,6 +14,51 @@ Directional CSM covers the sun; **spot** and **point** lights need **perspective
 
 Spark implements punctual shadows as a separate pass object with its own SSBO and sampler bindings.
 
+## 1b. Concept Deep Dive — VulkanPunctualShadowPass
+
+### Spot shadow — perspective frustum aligned to cone
+
+```cpp
+// src/spark/render/shadow/VulkanPunctualShadowPass.cpp (lines 33–43)
+Matrix4 BuildSpotShadowMatrix(const SceneSpotLight& spot) {
+    const Vector3 target = spot.positionWorld + spot.directionWorld;
+    const Matrix4 view = Matrix4::LookAt(spot.positionWorld, target, up);
+    const float fovY = std::max(spot.outerConeRadians * 1.12F, 0.35F);
+    const Matrix4 proj = Matrix4::PerspectiveVulkan(fovY, 1.0F, 0.08F, spot.range);
+    return proj * view;
+}
+```
+
+FOV is slightly wider than the outer cone (×1.12) so shadow map edges do not clip valid light volume. Spot maps pack into a 2×2 atlas (`FillSpotAtlasUv`).
+
+### Point light — six face cubemap renders
+
+```cpp
+// BuildPointFaceMatrices (lines 45–73)
+static const Vector3 kFaceDirs[6] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+const Matrix4 proj = Matrix4::PerspectiveVulkan(HalfPi, 1.0F, nearZ, farZ);
+// per face: view = LookAt(lightPos, lightPos + faceDir, faceUp)
+```
+
+Each point light renders six 90° perspective faces into a `sampler2DArray`. Light scoring (`LightScore`) picks the top-N brightest punctual lights near the camera for shadow budget.
+
+### PunctualShadowSSBO — separate from directional atlas
+
+```glsl
+// shaders/punctual_shadows.glsl (lines 9–28)
+layout(std430, set = 0, binding = 6) readonly buffer PunctualShadowSSBO {
+    uint numSpotShadows;
+    mat4 spotWorldToClip[kMaxSpotShadowMaps];
+    vec4 spotAtlas[kMaxSpotShadowMaps];
+    mat4 pointFaceWorldToClip[kMaxPointShadowMaps][6];
+    // ...
+} punctualShadow;
+layout(set = 0, binding = 7) uniform sampler2D spotShadowMap;
+layout(set = 0, binding = 8) uniform sampler2DArray pointShadowMap;
+```
+
+Directional CSM uses binding 3; punctual shadows use bindings 6–8. `PrepareAndUpload` fills the SSBO each frame before the scene UBO write.
+
 ## 2. Core Concepts
 
 ### Spot light shadow

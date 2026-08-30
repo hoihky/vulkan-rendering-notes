@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1064,6 +1070,71 @@
 </ul>
 <p>Spark encodes these as <strong><code>SceneLightingProfile</code> presets</strong> plus optional <strong><code>useTimeOfDay</code></strong> animation. <code>SceneLightingResolver</code> merges preset, overrides on <code>SceneRenderParams</code>, and analytic sun/ambient curves into <code>ResolvedSceneLighting</code> and mutates sun fields on the snapshot.</p>
 <p>This chapter closes Part IV — you can now texture meshes and light them with profile-aware forward shading.</p>
+<h3 id="time-of-day-in-plain-language-beginner">Time of day in plain language (beginner)</h3>
+<p>Games often fake a 24-hour cycle without simulating astronomy. <strong>Time of day</strong> is usually:</p>
+<ol>
+<li>A <strong>normalized clock</strong> <code>t ∈ [0,1]</code> (0 = midnight, 0.25 = sunrise, 0.5 = noon).</li>
+<li>A function that maps <code>t</code> → <strong>sun direction</strong>, <strong>sun color</strong>, <strong>ambient color</strong>, <strong>fog density</strong>.</li>
+</ol>
+<pre><code class="language-text">t = 0.35 (morning)
+→ sunDir = lerp(eastHorizon, zenith, curve)
+→ sunColor = warm orange
+→ ambient = cool blue-gray (fill from sky)
+→ ApplyTimeOfDayLighting writes SceneRenderParams sun fields
+</code></pre>
+<p><strong>No new shader needed</strong> — same directional light UBO, different values each frame.</p>
+<p><strong>Lighting profiles</strong> bundle defaults:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Profile</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Outdoor</code></td>
+<td>Sun + time-of-day, wide shadow fade</td>
+</tr>
+<tr>
+<td><code>Interior</code></td>
+<td>Dim sun, stronger fill ambient</td>
+</tr>
+<tr>
+<td><code>NightInterior</code></td>
+<td>Moon-tinted ambient, low exposure</td>
+</tr>
+</tbody>
+</table>
+<p><code>SceneLightingResolver</code> merges preset + per-scene overrides so one outdoor level and one dungeon level share the same <code>scene.frag</code> but different resolved sun/ambient each frame.</p>
+<p><strong>Shadows follow sun:</strong> when <code>lightDir</code> rotates, shadow map ortho frustum must update (Part IX) — otherwise shadows slide incorrectly at dusk.</p>
+<h2 id="b.concept-deep-dive-scenelightingprofile-and-applytimeofdaylighting">1b. Concept Deep Dive — SceneLightingProfile and ApplyTimeOfDayLighting</h2>
+<h3 id="preset-enum-drives-defaults">Preset enum drives defaults</h3>
+<pre><code class="language-cpp">// include/spark/render/lighting/SceneLightingProfile.hpp
+enum class SceneLightingProfile : std::uint8_t {
+    Default = 0,
+    Outdoor = 1,        // sun arc, long shadow fade, cool sky fill
+    Interior = 2,       // tighter cascades, brighter probe
+    NightInterior = 3,  // dim moon sun, strong ambient probe
+};
+</code></pre>
+<p><code>LightingProfileSettingsFor(profile)</code> returns exposure, cascade near/far, ambient hemisphere colors, and whether time-of-day is enabled on the preset row.</p>
+<h3 id="analytic-sun-from-normalized-clock">Analytic sun from normalized clock</h3>
+<p><code>ApplyTimeOfDayLighting</code> maps <code>normalizedTime ∈ [0,1]</code> to sun direction, color, and intensity:</p>
+<pre><code class="language-cpp">// src/spark/render/lighting/SceneLightingProfile.cpp (concept)
+void ApplyTimeOfDayLighting(
+        const float normalizedTime,
+        const SceneLightingProfile profile,
+        ResolvedSceneLighting&amp; out,
+        Vector3* outSunDirectionWorld,
+        Vector3* outSunColor,
+        float* outSunIntensity) noexcept;
+</code></pre>
+<p>Outdoor profiles rotate azimuth with <code>t</code>; elevation uses <code>SunElevation01(t)</code> — warm twilight tints blend between night blue and noon white. Night interior caps sun intensity near 0.08–0.4 while boosting probe ambient.</p>
+<h3 id="scenesubmit-integrates-time-drivers">SceneSubmit integrates time drivers</h3>
+<p>Inside <code>FillStandardLitSceneFromWorld</code>, <code>ProcessTimeOfDayDrivers(world, dt)</code> advances <code>SceneTimeOfDayComponent</code> clocks before <code>SceneLightingResolver::Resolve</code>. <code>TimeOfDayDemo</code> sets <code>params.lightingProfile = SceneLightingProfile::Outdoor</code> and watches sun color shift without shader changes.</p>
+<h3 id="resolved-lighting-mutates-the-snapshot">Resolved lighting mutates the snapshot</h3>
+<p>Resolver output adjusts <code>params.lightDirectionWorld</code>, <code>lightColor</code>, <code>lightIntensity</code>, and ambient hemisphere fields on <code>SceneRenderParams</code> — the same UBO path as manual sun setup. Shadow cascade far/near and distance fade come from <code>ResolvedSceneLighting</code> into <code>VulkanSceneUniformWriter</code> and the directional shadow pass.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="profile-enum">Profile enum</h3>
 <pre><code class="language-cpp">enum class SceneLightingProfile : uint8_t {
@@ -1281,6 +1352,30 @@ sunShadow = mix(sunShadow, 1.0, fade);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#time-of-day-in-plain-language-beginner">Time of day in plain language (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenelightingprofile-and-applytimeofdaylighting">1b. Concept Deep Dive — SceneLightingProfile and ApplyTimeOfDayLighting</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#preset-enum-drives-defaults">Preset enum drives defaults</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#analytic-sun-from-normalized-clock">Analytic sun from normalized clock</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenesubmit-integrates-time-drivers">SceneSubmit integrates time drivers</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#resolved-lighting-mutates-the-snapshot">Resolved lighting mutates the snapshot</a>
                         </li>
                         
                         <li class="toc-h2">

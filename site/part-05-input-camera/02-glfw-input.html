@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,50 @@
 <li>Compute mouse delta — especially tricky with captured cursor</li>
 </ol>
 <p>Getting ordering wrong produces sticky keys, double jumps, or camera spikes. This chapter implements the desktop path Spark ships in every demo.</p>
+<h3 id="how-glfwinput-snapshots-each-frame-beginner">How GlfwInput snapshots each frame (beginner)</h3>
+<p>GLFW stores <strong>current</strong> OS state. Games need <strong>edges</strong> (pressed this frame) — compare today vs yesterday:</p>
+<pre><code class="language-text">BeginFrame():
+  prev = curr                    // yesterday's keys
+  curr[i] = glfwGetKey(window, i) // today's keys
+
+WasKeyPressed(key):
+  return curr[key] &amp;&amp; !prev[key]  // down now, up before
+</code></pre>
+<p><strong>Mouse delta with captured cursor:</strong> when the cursor is hidden and re-centered each frame, raw position stays near window center — delta = <code>currPos - lastPos</code> after <code>PollEvents</code>, not absolute screen coordinates.</p>
+<p><strong>Scroll wheel:</strong> GLFW fires scroll callbacks between frames; <code>GlfwInput</code> accumulates <code>scrollDeltaY</code> in <code>BeginFrame</code> then resets — read once per frame in camera zoom code.</p>
+<p><strong>HiDPI:</strong> <code>GetCursorPosition</code> returns <strong>framebuffer pixels</strong> (not window points) so picking and UI align with Vulkan swapchain size on Retina displays.</p>
+<p><strong>Common bug:</strong> calling <code>WasKeyPressed</code> before <code>BeginFrame</code> — edges use stale <code>prev</code> and miss the first press.</p>
+<h2 id="b.concept-deep-dive-glfwinput-snapshot-arrays">1b. Concept Deep Dive — GlfwInput Snapshot Arrays</h2>
+<h3 id="parallel-currprev-arrays">Parallel curr/prev arrays</h3>
+<pre><code class="language-cpp">// include/spark/engine/GlfwInput.hpp
+class GlfwInput final : public IInput {
+    void BeginFrame();
+private:
+    bool curr[GLFW_KEY_LAST + 1U]{};
+    bool prev[GLFW_KEY_LAST + 1U]{};
+    bool mouseCurr[GLFW_MOUSE_BUTTON_LAST + 1U]{};
+    bool mousePrev[GLFW_MOUSE_BUTTON_LAST + 1U]{};
+    float mouseDeltaX = 0.0F;
+    float mouseDeltaY = 0.0F;
+    double scrollAccumY = 0.0;
+};
+</code></pre>
+<p><code>BeginFrame</code> shifts keyboard and mouse button state, then polls GLFW:</p>
+<pre><code class="language-cpp">// src/spark/engine/GlfwInput.cpp
+for (int k = 0; k &lt;= GLFW_KEY_LAST; ++k) {
+    prev[k] = curr[k];
+    curr[k] = (glfwGetKey(window, k) == GLFW_PRESS || glfwGetKey(...) == GLFW_REPEAT);
+}
+scrollDeltaThisFrame = static_cast&lt;float&gt;(scrollAccumY);
+scrollAccumY = 0.0;
+</code></pre>
+<p><code>IsKeyPressedThisFrame</code> returns <code>curr[key] &amp;&amp; !prev[key]</code>.</p>
+<h3 id="captured-cursor-re-centering">Captured cursor re-centering</h3>
+<p>When <code>cursorCaptured</code> is true, delta comes from position change, then the cursor warps to window center — enabling infinite mouse look without hitting screen edges. <code>ThreeDDemo</code> toggles capture on F1; without it, yaw stops at the bezel.</p>
+<h3 id="scroll-callback-accumulation">Scroll callback accumulation</h3>
+<p><code>WireToWindow</code> registers <code>SetScrollCallback</code> — scroll events arrive asynchronously between frames. <code>BeginFrame</code> drains <code>scrollAccumY</code> into <code>scrollDeltaThisFrame</code> for one-shot zoom reads in orbit and fly cameras.</p>
+<h3 id="platform-cursor-callback-split">Platform cursor callback split</h3>
+<p>On Apple builds, <code>SPARK_GLFW_USE_CURSOR_CALLBACK</code> is 0 — cursor position is polled in <code>BeginFrame</code> instead of a callback, avoiding MoltenVK/GLFW interaction quirks documented in the source.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="construction-and-wiring">Construction and wiring</h3>
 <pre><code class="language-cpp">GlfwInput input(window.Handle());
@@ -1241,6 +1291,30 @@ game-&gt;OnUpdate(timing, *engineContext);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#how-glfwinput-snapshots-each-frame-beginner">How GlfwInput snapshots each frame (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-glfwinput-snapshot-arrays">1b. Concept Deep Dive — GlfwInput Snapshot Arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#parallel-currprev-arrays">Parallel curr/prev arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#captured-cursor-re-centering">Captured cursor re-centering</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scroll-callback-accumulation">Scroll callback accumulation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#platform-cursor-callback-split">Platform cursor callback split</a>
                         </li>
                         
                         <li class="toc-h2">

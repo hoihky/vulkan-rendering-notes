@@ -15,6 +15,39 @@ Debugging HDR, shadows, and SSAO requires **seeing intermediate buffers** — no
 
 Spark includes `VulkanFrameCapture` on the renderer with swapchain PNG and video paths — you will follow the record hook, then extend the same staging pattern to HDR attachments for linear diagnosis.
 
+## 1b. Concept Deep Dive — GPU Readback Without Stalling Every Frame
+
+### Request flag defers copy to command buffer record
+
+Capture is dev-triggered, not per-frame. `RequestScreenshotSave` sets a pending path; the next `RecordSceneCommandBuffer` inserts the copy after tonemap, screen UI, and ImGui so captures include overlays when desired:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 409–412)
+    frameCapture.RecordCopyFromSwapchain(
+            commandBuffer,
+            presentSwapchain().images[imageIndex],
+            presentSwapchain().extent,
+            frameIndex);
+```
+
+File I/O runs in `OnFlightFenceSignaled` after fence wait — not inside submit from gameplay thread.
+
+### Staging path: layout transition → copy → restore present layout
+
+Swapchain image must transition `PRESENT_SRC_KHR` → `TRANSFER_SRC_OPTIMAL` → copy to HOST_VISIBLE staging → restore before WSI continues. Row pitch must respect `bufferImageGranularity` — wrong pitch skews PNG diagonally.
+
+```text
+DEVICE_LOCAL swapchain
+  → TRANSFER_SRC layout
+  → vkCmdCopyImageToBuffer → staging buffer
+  → fence wait → mmap → stb PNG encode
+  → restore PRESENT_SRC_KHR
+```
+
+### Extending to HDR float16 capture
+
+Swapchain PNG is display-referred UNORM8. HDR stage capture reuses the same pattern against `R16G16B16A16_SFLOAT` with different row pitch — apply exposure + ACES on CPU when writing 8-bit preview, or export `.exr` to preserve values above 1.0. Guard during swapchain `OUT_OF_DATE` resize to avoid corrupt captures.
+
 ## 2. Core Concepts
 
 ### Readback pipeline

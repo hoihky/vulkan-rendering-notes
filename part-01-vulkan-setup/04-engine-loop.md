@@ -16,6 +16,132 @@ Get the order wrong and you get subtle bugs: input one frame late, GPU reading s
 
 Open `src/Engine.cpp` and keep it visible.
 
+### The game loop in plain English
+
+Every video game is a `while` loop:
+
+```cpp
+while (window is open) {
+    float dt = time since last frame;
+    read keyboard/mouse;
+    update game world using dt;
+    build what to draw this frame;
+    tell GPU to draw it;
+    show result on screen;
+}
+```
+
+That is **all** real-time rendering is at the application level. Vulkan code lives inside "tell GPU to draw it." Spark splits responsibilities:
+
+| Loop phase | Spark function | Layer |
+|------------|----------------|-------|
+| Poll events | `glfwPollEvents` | Platform |
+| Update | `game->OnUpdate(dt)` | Gameplay / ECS |
+| Build draw list | `game->OnRender` → `SceneSubmit` | Rendering prep (CPU) |
+| GPU + present | `renderer->PresentFrame()` | Vulkan |
+
+**Why `OnRender` before `PresentFrame`:** the renderer needs a finished `SceneRenderParams` snapshot before it records command buffers. If you called `PresentFrame` first, the GPU would redraw last frame's scene.
+
+**Why `OnUpdate` before `OnRender`:** the camera and object positions for frame N must reflect input processed this frame, not the previous one.
+
+### Delta time (`dt`) for beginners
+
+`dt` is seconds elapsed since the last frame. At 60 FPS, `dt ≈ 0.0167`. Use it to move objects at consistent speed regardless of frame rate:
+
+```text
+position += velocity * dt;   // meters per second, not per frame
+```
+
+Spark passes `FrameTiming` to `OnUpdate` so demos and gameplay systems share one clock.
+
+## 1b. Concept Deep Dive — Phase Ordering Inside `Engine::Run`
+
+### Why the loop order is a contract, not a suggestion
+
+The engine loop is deceptively simple: a `while` with half a dozen calls. Each call's position is load-bearing. `PollEvents` must run first so input reflects OS state before `BeginFrame` computes edge-triggered keys. `OnUpdate` must precede `OnRender` because the snapshot describes frame *N* after simulation for frame *N* has applied input. `PresentFrame` must be last because command recording reads the `SceneRenderParams` written during `OnRender` — calling present first would display stale geometry.
+
+Spark uses `std::chrono::steady_clock` for delta time because `system_clock` can jump when NTP adjusts wall time, exploding physics integrators. `FrameTiming` bundles `deltaTimeSeconds`, `totalTimeSeconds`, and `frameIndex` so every subsystem shares one clock instead of calling `glfwGetTime()` ad hoc.
+
+Resize is the subtle exception: GLFW may fire framebuffer callbacks off the main thread on some platforms, so Spark sets `framebufferResized = true` and recreates the swapchain at the **start** of the next `DrawFrame`, after fence waits — never inside the callback itself.
+
+### Single-frame timeline (Spark)
+
+```text
+time ─────────────────────────────────────────────────────────────►
+
+PollEvents   BeginFrame   OnUpdate      OnRender       PresentFrame
+    │             │           │             │                 │
+    │             │      physics/input  SceneSubmit      acquire/submit/present
+    │             │           │             │                 │
+    └─ OS events  └─ edges    └─ dt ────────┴─ snapshot ──────┘
+```
+
+| Hook | Runs before | Must not |
+|------|-------------|----------|
+| `OnUpdate` | `OnRender` | Call `SetSceneRenderParams` |
+| `OnRender` | `PresentFrame` | Run heavy unrelated physics |
+| `PresentFrame` | next poll | Assume swapchain valid mid-resize |
+
+### `FrameTiming` — one clock for the whole frame
+
+```cpp
+// include/spark/engine/FrameTiming.hpp (lines 7–11)
+struct FrameTiming {
+    float deltaTimeSeconds = 0.0F;
+    float totalTimeSeconds = 0.0F;
+    std::uint64_t frameIndex = 0;
+};
+```
+
+Demos multiply velocities by `timing.deltaTimeSeconds`; overlay code uses `frameIndex` for profiling hooks.
+
+### Core iteration — trimmed to essentials
+
+```cpp
+// src/Engine.cpp (lines 132–200, abbreviated)
+        while (!window.ShouldClose()) {
+            window.PollEvents();
+            input->BeginFrame();
+
+            const auto now = Clock::now();
+            const float deltaSeconds = std::chrono::duration<float>(now - previous).count();
+            previous = now;
+            totalSeconds += deltaSeconds;
+
+            const FrameTiming timing{deltaSeconds, totalSeconds, frameIndex};
+
+            game->OnUpdate(timing, *engineContext);
+            audio.PumpFrame(timing.deltaTimeSeconds);
+
+            Ui::UiSystem::Get().OnEnginePreRender(window, *input, timing.deltaTimeSeconds);
+
+            game->OnRender(renderFrame, *engineContext);
+
+            Ui::UiSystem::Get().OnEnginePostRender();
+
+            renderer->PresentFrame();
+            ++frameIndex;
+        }
+```
+
+### Deferred resize — flag in callback, recreate in `DrawFrame`
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 429–437)
+void VulkanRenderer::NotifySwapchainResize() {
+    framebufferResized = true;
+}
+
+void VulkanRenderer::DrawFrame() {
+    if (framebufferResized) {
+        framebufferResized = false;
+        RecreateSwapchain();
+        return;
+    }
+```
+
+The early `return` skips recording into swapchain images that were just destroyed — a common beginner crash when recreate runs mid-frame.
+
 ## 2. Core Concepts
 
 ### Canonical loop shape

@@ -14,6 +14,54 @@ Open outdoor scenes need large ground surfaces. A **heightfield** extrudes an XZ
 
 Milestone: run `TerrainDemo` and verify lit hills with correct normals and visible winding under back-face cull.
 
+### Terrain as a heightfield (beginner)
+
+**Terrain** is ground that stretches far into the distance. Instead of modeling every hill as a separate mesh file, engines often use a **heightfield**:
+
+- A 2D grid of height values `height[x][z]` (or a function like noise).
+- Each grid point becomes a vertex; grid cells become two triangles.
+
+```text
+Top view (XZ grid):          Side view (heights):
+
+  ●───●───●                  ●
+  │ \ │ / │                 / \
+  ●───●───●                ●───●───●  hills
+  │ / │ \ │
+  ●───●───●
+```
+
+Spark's `TerrainMeshGenerator` runs on **CPU** at load or when brushes edit height — same `Mesh` + `Custom` slot path as glTF props. The fragment shader does not know "this is terrain"; it only sees normals and albedo like any mesh.
+
+**Normals from height:** for each vertex, sample neighboring heights to estimate slope — steeper slope → normal tilts → grass looks darker on hillsides under directional sun.
+
+## 1b. Concept Deep Dive — CPU Heightfield to Custom Mesh Slot
+
+### fBM fills height samples; BuildIntoFromHeights emits topology
+
+Spark generates outdoor ground as a regular XZ grid. `FillProceduralHeights` evaluates layered smooth noise; `BuildIntoFromHeights` places vertices, indexes triangles, then derives normals from neighbor height differences:
+
+```cpp
+// src/spark/scene/mesh/TerrainMeshGenerator.cpp (lines 86–89, 137–156)
+            const float h = (Fbm(nxw, nzw, settings) * 2.0F - 1.0F) * settings.heightScale;
+            outHeights.PushBack(h);
+// ...
+            Vector3 t{R.x - L.x, R.y - L.y, R.z - L.z};
+            Vector3 b{U.x - D.x, U.y - D.y, U.z - D.z};
+            Vector3 n = Vector3::Cross(b, t);
+            verts[i].normal = n.Normalized();
+```
+
+The GPU fragment shader does not know "this is terrain" — it sees positions, normals, and UVs like any lit mesh.
+
+### Custom mesh slot, same opaque pass as glTF props
+
+Generated geometry routes through `SceneMeshSlot::Custom` and `VulkanCustomMeshPool` — identical submit and record path to imported props. Planar UVs scale with world XZ via `worldUnitsPerTextureRepeat` for tiled grass/soil materials (Part VII).
+
+### Winding matches engine convention
+
+Triangle winding in `BuildIntoFromHeights` matches unit cube / Vulkan back-face culling — TerrainDemo hills should remain visible under default cull mode. Wrong winding shows invisible terrain with depth-only shadow silhouettes.
+
 ## 2. Core Concepts
 
 ### Heightfield grid topology

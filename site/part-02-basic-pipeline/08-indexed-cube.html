@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,83 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>A single triangle proved the pipeline works. Real scenes need <strong>many objects</strong> sharing GPU memory. Spark's static buffer holds a <strong>unit cube</strong> and a <strong>ground plane</strong> with separate index ranges. Each <code>SceneDrawItem</code> selects a slot; the opaque pass issues <code>vkCmdDrawIndexed</code> with the correct <code>firstIndex</code> and <code>indexCount</code>.</p>
 <p>This chapter is the first time <code>SceneRenderParams</code> becomes <strong>visible geometry</strong> — the payoff for Chapters 1–6.</p>
+<h2 id="b.concept-deep-dive-scenemeshslot-to-vkcmddrawindexed">1b. Concept Deep Dive — SceneMeshSlot to vkCmdDrawIndexed</h2>
+<h3 id="resolvescenemeshdrawrange-slot-enum-to-index-range">ResolveSceneMeshDrawRange — slot enum to index range</h3>
+<p>The opaque pass never branches on mesh type inline. <code>ResolveSceneMeshDrawRange</code> maps <code>SceneDrawItem::mesh</code> to <code>firstIndex</code>, <code>indexCount</code>, and buffer binding:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneMeshDraw.cpp (lines 5–29)
+SceneMeshDrawRange ResolveSceneMeshDrawRange(
+        const SceneDrawItem&amp; draw,
+        const std::size_t drawIndex,
+        const SceneMeshDrawBindings&amp; bindings) noexcept {
+    if (draw.mesh == SceneMeshSlot::UnitCube || draw.mesh == SceneMeshSlot::GroundPlane) {
+        out.binding = SceneMeshGeometryBinding::StaticScene;
+        switch (draw.mesh) {
+        case SceneMeshSlot::UnitCube:
+            out.indexCount = bindings.cubeIndexCount;
+            out.firstIndex = 0;
+            out.vertexOffset = bindings.cubeVertexOffset;
+            break;
+        case SceneMeshSlot::GroundPlane:
+            out.indexCount = bindings.planeIndexCount;
+            out.firstIndex = bindings.planeFirstIndex;
+            out.vertexOffset = bindings.planeVertexOffset;
+            break;
+        // ...
+        }
+        out.drawable = out.indexCount &gt; 0 &amp;&amp; bindings.staticVertexBuffer != VK_NULL_HANDLE;
+        return out;
+    }
+</code></pre>
+<p><code>Custom</code> meshes take a separate path through <code>customDrawPacked</code> — Part VI extends this without changing the opaque pass loop structure.</p>
+<h3 id="per-draw-model-matrix-via-push-constants">Per-draw model matrix via push constants</h3>
+<p>Each <code>SceneDrawItem::model</code> copies into <code>ModelPushConstants</code> before the draw call. Descriptors stay bound for the whole pass — only push constants change per mesh:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 149–206)
+std::memcpy(push.model, d.model.m, sizeof(push.model));
+push.albedo[0] = d.albedo.x;
+push.albedo[1] = d.albedo.y;
+push.albedo[2] = d.albedo.z;
+// ... texture layers, PBR scalars ...
+vkCmdPushConstants(
+        commandBuffer,
+        ctx.pipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        sizeof(ModelPushConstants),
+        &amp;push);
+vkCmdDrawIndexed(commandBuffer, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+</code></pre>
+<p>Vertex shader computes <code>gl_Position = viewProj * model * localPos</code>; fragment shader reads albedo from push constants when no texture is bound.</p>
+<h3 id="mesh-bindings-flow-from-createscenegeometry-to-record-context">Mesh bindings flow from CreateSceneGeometry to record context</h3>
+<p><code>RecordSceneCommandBuffer</code> passes static buffer handles and subrange counts into the opaque pass context — populated once at init:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 304–316)
+.meshBindings =
+        {
+                .staticVertexBuffer = vertexBuffer,
+                .staticIndexBuffer = indexBuffer,
+                .cubeIndexCount = cubeIndexCount,
+                .planeIndexCount = planeIndexCount,
+                .planeFirstIndex = planeFirstIndex,
+                .cubeVertexOffset = cubeVertexOffset,
+                .planeVertexOffset = planeVertexOffset,
+                .customDrawPacked = &amp;customDrawPacked,
+        },
+</code></pre>
+<p>Two draw items with <code>UnitCube</code> and <code>GroundPlane</code> slots share one VB/IB bind — only push constants and index ranges differ.</p>
+<h3 id="end-to-end-data-path-for-one-cube-on-the-floor">End-to-end data path for one cube on the floor</h3>
+<pre><code class="language-text">SceneDrawItem { mesh=UnitCube, model=Translation(0,0.5,0), albedo=red }
+SceneDrawItem { mesh=GroundPlane, model=Identity, albedo=gray }
+        │
+        ▼ SetSceneRenderParams
+pendingScene.draws[0..1]
+        │
+        ▼ RecordSceneCommandBuffer → sceneOpaquePass.Record
+  bind pipelineLit, descriptors, static VB/IB
+  draw[0]: push model, vkCmdDrawIndexed(cubeIndexCount, firstIndex=0)
+  draw[1]: push model, vkCmdDrawIndexed(6, firstIndex=planeFirstIndex)
+        │
+        ▼ tonemap → present
+Monitor shows red cube on gray ground
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="scenemeshslot-routing">SceneMeshSlot routing</h3>
 <table class="table">
@@ -1225,6 +1308,26 @@ for (const SceneDrawItem&amp; item : ctx.scene-&gt;draws) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenemeshslot-to-vkcmddrawindexed">1b. Concept Deep Dive — SceneMeshSlot to vkCmdDrawIndexed</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#resolvescenemeshdrawrange-slot-enum-to-index-range">ResolveSceneMeshDrawRange — slot enum to index range</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-draw-model-matrix-via-push-constants">Per-draw model matrix via push constants</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#mesh-bindings-flow-from-createscenegeometry-to-record-context">Mesh bindings flow from CreateSceneGeometry to record context</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#end-to-end-data-path-for-one-cube-on-the-floor">End-to-end data path for one cube on the floor</a>
                         </li>
                         
                         <li class="toc-h2">

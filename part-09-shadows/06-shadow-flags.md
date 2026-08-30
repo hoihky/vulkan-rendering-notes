@@ -14,6 +14,59 @@ Not every mesh should **cast** shadows (particles, invisible proxies). Not every
 
 Spark stores these flags on scene draw items and filters at submit and record time.
 
+## 1b. Concept Deep Dive — kSceneShadowCast and kSceneShadowReceive
+
+### Bit flags on SceneDrawItem
+
+```cpp
+// include/spark/render/lighting/SceneLightingProfile.hpp (lines 9–12)
+inline constexpr std::int32_t kSceneShadowCast = 1;
+inline constexpr std::int32_t kSceneShadowReceive = 2;
+inline constexpr std::int32_t kSceneShadowCastAndReceive = kSceneShadowCast | kSceneShadowReceive;
+```
+
+```cpp
+// include/spark/engine/SceneRenderParams.hpp (line 213)
+std::int32_t shadowFlags = kSceneShadowCastAndReceive;
+```
+
+Default is both cast and receive. Per-draw override via submit or material path.
+
+### Shadow pass filters casters only
+
+```cpp
+// src/spark/render/shadow/VulkanShadowCastDraw.cpp (line 48)
+if ((d.shadowFlags & kSceneShadowCast) == 0) continue;
+```
+
+Non-casters skip the depth pass entirely — saving fill rate for particles, skies, and invisible collision proxies.
+
+### Scene pass checks receiver flag in shader
+
+```glsl
+// shaders/scene.frag (lines 271, 517)
+const bool receiveShadow = (push.shadowFlags & 2) != 0;
+if (ubo.shadowParams.w > 0.5 && (push.shadowFlags & 2) != 0) {
+    // sample directional shadow, multiply sun term
+}
+```
+
+Cast-only meshes (e.g. a small prop) still appear in the shadow map but skip shadow multiplication on their own surface — useful for thin foliage cards that should cast but not self-darken.
+
+### Default flags from lighting profile
+
+```cpp
+// src/spark/render/lighting/SceneLightingProfile.cpp (lines 114–122)
+std::int32_t DefaultShadowFlagsFor(const ResolvedSceneLighting& resolved) {
+    std::int32_t flags = 0;
+    if (resolved.defaultShadowCast)   flags |= kSceneShadowCast;
+    if (resolved.defaultShadowReceive) flags |= kSceneShadowReceive;
+    return flags;
+}
+```
+
+Outdoor scenes default both on; interior/night profiles may disable receive globally while individual draws opt in.
+
 ## 2. Core Concepts
 
 ### Cast vs receive

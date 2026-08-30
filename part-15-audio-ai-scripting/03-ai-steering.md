@@ -16,6 +16,35 @@ Spark packages behaviors behind `ISteeringBehavior` with shared `AiBlackboard` s
 
 Milestone: enemy in SteeringShowcase3DDemo seeks player with Arrive slowing — stops within 0.5 m without oscillating.
 
+## 1b. Concept Deep Dive — SteeringComposer Weights
+
+### Behaviors return acceleration, not velocity
+
+Each `ISteeringBehavior` maps agent state + blackboard targets → desired **acceleration**. `SteeringComposer` sums weighted outputs:
+
+```cpp
+// include/spark/ai/steering/SteeringBehaviors.hpp
+class SteeringComposer final {
+    void AddBehavior(const ISteeringBehavior& behavior, const float weight);
+    [[nodiscard]] Vector2 Compose(
+            const Vector2& positionXZ,
+            const Vector2& velocityXZ,
+            AiBlackboard& board) const;
+};
+```
+
+Seek pulls toward target; Arrive scales down inside slowing radius; Flee pushes away. Weights tune dominance — `(Seek, 1.0) + (Avoid, 2.0)` lets avoidance override pure pursuit near walls.
+
+### AiBlackboard on AiAgentComponent
+
+Shared per-agent storage holds target entity id, slowing radius, max speed — behaviors read/write through the board without tight coupling. Update feeds player transform into the board **before** compose, then applies resulting acceleration to velocity or `TransformComponent`.
+
+### 3D variant in SteeringShowcase3DDemo
+
+`SteeringComposer3D` mirrors the 2D API with full Vector3 positions. The demo composes Seek + Arrive for ground enemies — Arrive's slowing radius prevents overshoot oscillation around the player.
+
+Run steering before SceneSubmit so submitted transforms reflect the latest AI motion same frame.
+
 ## 2. Core Concepts
 
 ### Steering as acceleration composition

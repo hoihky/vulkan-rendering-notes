@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,39 @@
 <p>3D games need rigid bodies, controllable characters, and trigger volumes. Spark splits these across simulators united by <strong>PhysicsSubsystem</strong> — you call <code>Simulate3D</code> or <code>SimulateAll3D</code> from Update, then submit the scene with updated transforms. Substepping trades CPU for contact stability on stacks and fast projectiles.</p>
 <p>Rendering never imports physics headers beyond gameplay systems — the bridge is always <code>TransformComponent</code>.</p>
 <p>Milestone: throw ball in PhysicsBallThrow3DDemo — bounces on ground, mesh position matches physics same frame.</p>
+<h2 id="b.concept-deep-dive-substepped-3d-simulation">1b. Concept Deep Dive — Substepped 3D Simulation</h2>
+<h3 id="substeps-for-contact-stability">Substeps for contact stability</h3>
+<p>3D simulation divides frame time into <code>settings.substeps</code> integration passes — fast projectiles and stacked boxes stay stable:</p>
+<pre><code class="language-cpp">// src/spark/physics/PhysicsWorld3D.cpp
+void PhysicsWorld3D::Simulate(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    const int substeps = std::max(1, settings.substeps);
+    const float h = dt / static_cast&lt;float&gt;(substeps);
+
+    ColliderBakePipeline3D::GetDefault().Rebuild(world, broadPhaseCellSize, colliders, broadPhase);
+    CollectDynamicBodies3D(world, bodies);
+
+    for (int s = 0; s &lt; substeps; ++s) {
+        RigidbodyIntegrator3D::IntegrateSubstep(bodies, h, settings, colliders, broadPhase, ...);
+        ContactResolver3D::ApplyStaticNormalImpulses(...);
+        ContactResolver3D::ResolvePenetrations(...);
+        ContactResolver3D::ResolveDynamicPairVelocities(...);
+        JointSolver3D::SolveSubstep(world, h, settings);
+    }
+}
+</code></pre>
+<p>Each substep is a full integrate → impulse → penetration → joint cycle on the same baked collider set.</p>
+<h3 id="physicssubsystem-splits-simulators-by-concern">PhysicsSubsystem splits simulators by concern</h3>
+<p>Base rigid bodies, character controllers, and trigger volumes run as separate passes:</p>
+<pre><code class="language-cpp">// src/spark/physics/PhysicsSubsystem.cpp
+void PhysicsSubsystem::SimulateAll3D(GameWorld&amp; world, const FrameTiming&amp; timing) {
+    world3D.Simulate(world, timing);
+    characterController3D.Simulate(world, timing);
+    triggerVolumes3D.Simulate(world, timing);
+}
+</code></pre>
+<p>Controllers override raw integration for player capsules; triggers emit overlap events without blocking motion. Rendering still only reads <code>TransformComponent</code>.</p>
+<h3 id="physicsballthrow3ddemo-as-3d-baseline">PhysicsBallThrow3DDemo as 3D baseline</h3>
+<p>The demo configures restitution on ball and ground materials, calls <code>Simulate3D</code> in Update, then submits — mesh position matches physics body same frame when ordering is correct.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="physicsworld3d-scope">PhysicsWorld3D scope</h3>
 <p>3D simulation handles rigid bodies (dynamic, static, kinematic), box/sphere/capsule colliders, and joints. Spark splits <strong>character controllers</strong> and <strong>trigger volumes</strong> into separate simulators called after base rigidbody step — controllers override raw integration for player capsules; triggers emit overlap events without blocking motion.</p>
@@ -1248,6 +1287,22 @@ ground-&gt;AddComponent&lt;Spark::PhysicsMaterial3DComponent&gt;(0.62F, 0.48F, 0
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-substepped-3d-simulation">1b. Concept Deep Dive — Substepped 3D Simulation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#substeps-for-contact-stability">Substeps for contact stability</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicssubsystem-splits-simulators-by-concern">PhysicsSubsystem splits simulators by concern</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#physicsballthrow3ddemo-as-3d-baseline">PhysicsBallThrow3DDemo as 3D baseline</a>
                         </li>
                         
                         <li class="toc-h2">

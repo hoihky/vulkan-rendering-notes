@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,62 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Realistic PBR and stylized cel shading share the same mesh, texture fetch, and shadow visibility — they diverge only in how <strong>N·L</strong> and specular are integrated. Duplicating render passes or pipelines per art style wastes maintenance and breaks batching.</p>
 <p>Your engine should select the shading model <strong>per material</strong> with a single push constant branch inside <code>scene.frag</code>. Build along: place two identical spheres, set one <code>LitPbr</code> and one <code>ToonCel</code>, and tune bands until the cel read is crisp under the same sun and point lights.</p>
+<h2 id="b.concept-deep-dive-cook-torrance-pbr-in-scene.frag">1b. Concept Deep Dive — Cook-Torrance PBR in scene.frag</h2>
+<h3 id="evalbrdf-the-litpbr-core">evalBRDF — the LitPbr core</h3>
+<p>Spark's PBR path uses GGX normal distribution, Smith geometry, and Schlick Fresnel:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 203–237)
+vec3 evalBRDF(vec3 N, vec3 V, vec3 L, vec3 baseColor, float metallic, float roughness,
+        vec3 radiance, float wrapNL) {
+    float rawNL = dot(N, L);
+    float NdotL = (wrapNL &gt; 1e-5) ? max((rawNL + wrapNL) / (1.0 + wrapNL), 0.0) : max(rawNL, 0.0);
+    if (NdotL &lt;= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(V + L);
+    float rough = clamp(roughness, 0.04, 1.0);
+    vec3 F0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 F = F_Schlick(max(dot(V, H), 0.0), F0);
+
+    float D = D_GGX(max(dot(N, H), 0.0), rough);
+    float G = G_Smith(max(dot(N, V), 0.001), max(rawNL, 0.0), rough);
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * max(rawNL, 1e-4), 1e-6);
+
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = kD * baseColor / PI;
+    return (diffuse * NdotL + specular * max(rawNL, 0.0)) * radiance;
+}
+</code></pre>
+<p><strong>Energy conservation:</strong> <code>kD = (1-F) × (1-metallic)</code> — metals have no diffuse term; dielectrics use F0 ≈ 0.04.</p>
+<h3 id="litpbr-output-assembly">LitPbr output assembly</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (concept — after toon early-out)
+vec3 sunBrdf = evalBRDF(N, V, Ld, base, met, rough, sunRad, sunDiffuseWrap);
+Lo += sunBrdf * sunShadow;
+accumulatePunctualPbr(N, V, base, met, rough, Lo);  // clustered point/spot lights
+vec3 iblSpecular = sparkEvalSpecularIbl(...);
+vec3 iblDiffuse = sparkEvalDiffuseIbl(...);
+vec3 color = ambient + Lo + iblSpecular + emissive;
+sparkApplyTransmission(...);  // KHR_materials_transmission
+outColor = vec4(color, alpha);
+</code></pre>
+<h3 id="toon-path-quantized-nl-before-return">Toon path — quantized N·L before return</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 504–527)
+if (push.shadingModel == 1) {
+    float b = clamp(float(push.toonDiffuseBands), 2.0, 8.0);
+    float steppedNL = floor(ndl * b + 1e-4) / max(b - 1.0, 1.0);
+    vec3 sunDiffuse = base * (1.0 - met * 0.92) * steppedNL * sunRad * sunShadow;
+    // hard spec band + view rim ...
+    Lo = sunDiffuse + specCol + rimCol;
+    accumulatePunctualToon(...);
+    outColor = vec4(ambient + Lo + emissive, alpha);
+    return;  // skip IBL specular entirely
+}
+</code></pre>
+<h3 id="push-constant-wiring-from-cpu">Push constant wiring from CPU</h3>
+<pre><code class="language-cpp">// VulkanSceneOpaquePass.cpp (concept)
+push.shadingModel = static_cast&lt;std::int32_t&gt;(d.shadingModel);
+push.toonDiffuseBands = std::clamp(d.toonDiffuseBands, 2, 8);
+push.toonRimIntensity = d.toonRimIntensity;
+push.toonRimPower = d.toonRimPower;
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="single-pipeline-shader-branch">Single pipeline, shader branch</h3>
 <p>Spark keeps <strong>one</strong> lit graphics pipeline (<code>pipelineLit</code>) and switches shading inside <code>scene.frag</code> via <code>push.shadingModel</code>. PBR uses Cook-Torrance <code>evalBRDF</code>; toon uses banded wrap diffuse, stepped specular, and view rim.</p>
@@ -1316,6 +1378,26 @@ push.toonRimPower = d.toonRimPower;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-cook-torrance-pbr-in-scenefrag">1b. Concept Deep Dive — Cook-Torrance PBR in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#evalbrdf-the-litpbr-core">evalBRDF — the LitPbr core</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#litpbr-output-assembly">LitPbr output assembly</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#toon-path-quantized-nl-before-return">Toon path — quantized N·L before return</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constant-wiring-from-cpu">Push constant wiring from CPU</a>
                         </li>
                         
                         <li class="toc-h2">

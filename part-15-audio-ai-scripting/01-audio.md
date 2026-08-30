@@ -16,6 +16,42 @@ You will wire the same lifecycle you already know from the main loop: init after
 
 Milestone: preload footstep WAV at level load; key press plays one-shot while BGM loops underneath without frame hitch.
 
+## 1b. Concept Deep Dive — SoundEngine Lifecycle
+
+### Facade parallel to IFramePresenter
+
+Audio is a subsystem facade — games talk to `SoundEngine`, not platform drivers directly:
+
+```cpp
+// include/spark/audio/SoundEngine.hpp
+class SoundEngine {
+    [[nodiscard]] bool Startup();
+    void Shutdown() noexcept;
+    void PumpFrame(float deltaTimeSeconds) noexcept;
+    [[nodiscard]] SoundMixer& GetMixer() noexcept;
+    void SetBackgroundMusic(const SharedPtr<SoundClip>& clip, float volume = 0.32F, bool loop = true);
+};
+```
+
+Decode, voice pooling, and 48 kHz stereo mix happen inside; `PumpFrame` drains queued one-shots each engine tick after simulation.
+
+### Engine.cpp call order mirrors renderer
+
+```text
+OnAttach  → SoundEngine::Startup()
+OnUpdate  → gameplay + physics (no audio yet)
+          → ProcessSoundCues(world, context)  // flush SoundCueComponent queues
+OnRender  → Vulkan submit
+End frame → SoundEngine::PumpFrame(deltaTime)
+OnDetach  → SoundEngine::Shutdown()
+```
+
+Audio neither reads nor writes `SceneRenderParams` — it runs on PCM buffers, not command buffers.
+
+### Preload at level load, play without hitch
+
+Load WAV/OGG into `SharedPtr<SoundClip>` during `Load()` — disk IO off the hot path. Key press queues a one-shot through `SoundCueComponent`; BGM loops under SFX via `SetBackgroundMusic` without blocking `PresentFrame`.
+
 ## 2. Core Concepts
 
 ### SoundEngine as a subsystem facade

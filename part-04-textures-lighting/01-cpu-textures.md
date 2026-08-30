@@ -21,6 +21,70 @@ Disk / glTF bytes  →  Texture2D (RGBA8)  →  SceneRenderParams::sceneTextures
 
 If this boundary is weak — mixed formats, no deduplication, flip chaos — every downstream chapter (upload, sampling, lighting) becomes unreliable. This chapter makes the CPU contract explicit: **always RGBA8**, named layers, fingerprinted for change detection, max 16 entries per frame.
 
+### Textures before the GPU (beginner)
+
+A **texture file** on disk (PNG, JPEG) is compressed image data. The GPU cannot sample PNG directly — you must **decode** to raw pixels:
+
+```text
+brick.png on disk
+  → stb_image / glTF decoder
+  → Texture2D: width, height, RGBA8 bytes[row-major]
+  → (later) vkCmdCopyBufferToImage → GPU sampler2DArray layer
+```
+
+`Texture2D` in Spark is **CPU-only**. It has no `VkImage`. This separation means:
+
+- Gameplay code loads textures without including Vulkan headers.
+- Same texture can be referenced by many materials before any GPU upload.
+- Unit tests can inspect pixels without a GPU.
+
+### RGBA8 convention
+
+Spark normalizes to **4 bytes per pixel: R, G, B, A** in that order, 0–255 per channel:
+
+| Channel | Meaning |
+|---------|---------|
+| R, G, B | Color (sRGB-encoded for albedo in files) |
+| A | Opacity (0 = transparent, 255 = opaque) |
+
+Grayscale PNGs expand to RGB with equal channels. Missing alpha defaults to 255.
+
+**Vertical flip:** image file formats often store row 0 at top; Vulkan texture upload may expect bottom-first. Spark documents flip at load time — inconsistency here makes textures appear upside-down (fix once at import, not in every shader).
+
+## 1b. Concept Deep Dive — Texture2D API and Scene Layer Assignment
+
+### CPU container: no Vulkan headers
+
+`Texture2D` lives entirely in `spark/scene/` — gameplay and importers depend on it, not on `vulkan.h`:
+
+```cpp
+// include/spark/scene/texture/Texture2D.hpp (selected API)
+class Texture2D {
+public:
+    [[nodiscard]] std::uint32_t GetWidth() const noexcept;
+    [[nodiscard]] const Array<std::uint8_t>& GetRgba() const noexcept;
+    void SetPixels(std::uint32_t w, std::uint32_t h, Array<std::uint8_t> bytes);
+    [[nodiscard]] static bool TryLoadFromFile(const char* path, Texture2D& out, bool flipVerticalOnLoad = true);
+    [[nodiscard]] std::uint64_t GetContentFingerprint() const noexcept;
+    [[nodiscard]] std::int32_t GetGpuSceneLayer() const noexcept;
+    void EnsureGpuSceneLayer(std::int32_t& nextFreeLayer) noexcept;
+};
+```
+
+HDR assets use `SetFloatPixels` / `IsHdrFloatPixels()` and land in `SceneRenderParams::sceneHdrTextures` instead of the LDR array — same dedup rules, separate 16-layer cap.
+
+### Fingerprint drives dirty upload (Chapter 2)
+
+`RefreshContentFingerprint()` runs whenever pixels change. `VulkanSceneTextureUploader` compares `GetContentFingerprint()` against `lastFingerprints[layer]` — unchanged layers skip staging memcpy that frame. This is why you mutate pixels through setters, not by reaching into private `rgba` arrays.
+
+### Scene layer fit and atlas binding
+
+Before GPU copy, submit calls `PrepareSceneLayerUpload(layerSize, outRgba)` — uniform aspect-preserving fit into a square layer, updating `sceneLayerUvScale`. Sprite atlases use `SetAtlasBinding(atlas, uvRect)` so `ResolveAtlasUv` redirects sampling to a sub-rectangle of a parent texture without duplicating pixels.
+
+### Dedup at submit time
+
+`SceneSubmitDetail::FindOrAddSceneTexture` scans `params.sceneTextures` for pointer equality — two materials sharing `SharedPtr<Texture2D>` get the same layer index. That stable index becomes `SceneDrawItem::textureLayer` and the push constant the fragment shader reads.
+
 ## 2. Core Concepts
 
 ### Texture2D: the CPU pixel container

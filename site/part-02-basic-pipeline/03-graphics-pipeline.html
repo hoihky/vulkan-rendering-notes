@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,178 @@
 <pre><code class="language-text">bind pipeline → bind descriptors → bind vertex buffers → vkCmdDraw*
 </code></pre>
 <p>This chapter walks through what Spark packs into <code>VulkanScenePipeline::CreateGraphicsPipeline</code> — the same structure you will use for a minimal triangle pipeline in Chapter 7.</p>
+<h3 id="what-is-a-graphics-pipeline-complete-beginner">What is a graphics pipeline? (complete beginner)</h3>
+<p>In everyday terms, a <strong>graphics pipeline</strong> is a <strong>recipe</strong> the GPU follows for every draw call. The recipe includes:</p>
+<ul>
+<li><strong>Which programs run</strong> (vertex shader, fragment shader)</li>
+<li><strong>How to read vertex data</strong> (stride, attribute locations)</li>
+<li><strong>How triangles are assembled</strong> (triangle list, strip, etc.)</li>
+<li><strong>Whether back faces are culled</strong></li>
+<li><strong>Whether depth testing is on</strong></li>
+<li><strong>Whether colors are blended with what's already in the framebuffer</strong></li>
+<li><strong>Which render pass format</strong> the output must match</li>
+</ul>
+<p>In OpenGL (older API), you changed this recipe with hundreds of loose function calls. In <strong>Vulkan</strong>, almost the entire recipe is frozen into one object: <code>VkPipeline</code>. If you want different blend mode, you create a <strong>second pipeline</strong> — you do not flip a global "blend on" switch.</p>
+<pre><code class="language-text">Analogy: OpenGL = cooking with adjustable knobs on the stove
+Vulkan   = pre-printed recipe cards; swap the whole card to change the dish
+</code></pre>
+<p>Spark creates three recipe cards for the same shaders:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Pipeline</th>
+<th>When used</th>
+<th>Key difference</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pipelineLit</code></td>
+<td>Opaque meshes</td>
+<td>Depth write ON, blending OFF</td>
+</tr>
+<tr>
+<td><code>pipelineSky</code></td>
+<td>Sky dome</td>
+<td>Depth write OFF, no culling</td>
+</tr>
+<tr>
+<td><code>pipelineLitTransparent</code></td>
+<td>Glass, foliage</td>
+<td>Depth write OFF, alpha blend ON</td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-gpu-pipeline-stages-simplified">The GPU pipeline stages (simplified)</h3>
+<p>You only write <strong>vertex</strong> and <strong>fragment</strong> shaders in this book. The hardware still runs fixed stages between them:</p>
+<pre><code class="language-text">[Vertex shader]     ← you write this (move vertices, pass UVs)
+       ↓
+[Clip / perspective] ← fixed function (hardware)
+       ↓
+[Rasterization]      ← fixed function (triangle → pixels)
+       ↓
+[Fragment shader]   ← you write this (color, lighting, textures)
+       ↓
+[Depth test / blend] ← configured in VkPipeline, not in GLSL
+       ↓
+[Framebuffer color attachment]
+</code></pre>
+<p><strong>Vertex shader</strong> runs once per vertex. <strong>Fragment shader</strong> runs once per pixel (roughly — GPUs optimize). Lighting and texturing happen in the fragment shader in Spark's forward renderer.</p>
+<h3 id="why-pipelines-are-created-after-the-render-pass">Why pipelines are created after the render pass</h3>
+<p>Vulkan needs to know the <strong>format of the color attachment</strong> (e.g. <code>R16G16B16A16_SFLOAT</code> for HDR, <code>B8G8R8A8_UNORM</code> for swapchain) when compiling the pipeline. That format comes from the <strong>render pass</strong> definition.</p>
+<p>Spark's lit meshes render into an <strong>HDR offscreen buffer</strong>, not directly into the window. Therefore:</p>
+<pre><code class="language-text">Create HDR render pass  →  Create scene pipelines compatible with HDR pass
+Create present pass     →  Create tonemap/UI pipelines compatible with swapchain
+</code></pre>
+<p>If you create a pipeline against the wrong render pass, <code>vkCreateGraphicsPipelines</code> may succeed but validation layers scream on the first draw.</p>
+<h2 id="b.concept-deep-dive-vulkanscenepipeline-internals">1b. Concept Deep Dive — VulkanScenePipeline Internals</h2>
+<h3 id="one-spir-v-pair-three-pipeline-objects">One SPIR-V pair, three pipeline objects</h3>
+<p>Spark avoids creating a pipeline per material. The same <code>scene.vert.spv</code> / <code>scene.frag.spv</code> modules feed three <code>VkPipeline</code> handles that differ only in rasterization, depth, and blend state:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Pipeline</th>
+<th>Depth write</th>
+<th>Cull</th>
+<th>Blend</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pipelineLit</code></td>
+<td>ON</td>
+<td>BACK</td>
+<td>OFF</td>
+<td>Opaque meshes</td>
+</tr>
+<tr>
+<td><code>pipelineSky</code></td>
+<td>OFF</td>
+<td>NONE</td>
+<td>OFF</td>
+<td>Infinite sky shell</td>
+</tr>
+<tr>
+<td><code>pipelineLitTransparent</code></td>
+<td>OFF</td>
+<td>BACK</td>
+<td>alpha</td>
+<td>Glass, fade</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 228–247)
+if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &amp;pipelineCreateInfo, nullptr, &amp;pipelineLit) !=
+        VK_SUCCESS) {
+    throw std::runtime_error("VulkanScenePipeline: vkCreateGraphicsPipelines failed");
+}
+
+pipelineCreateInfo.pDepthStencilState = &amp;depthStencilSky;
+pipelineCreateInfo.pRasterizationState = &amp;rasterizerSky;
+if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &amp;pipelineCreateInfo, nullptr, &amp;pipelineSky) !=
+        VK_SUCCESS) {
+    throw std::runtime_error("VulkanScenePipeline: vkCreateGraphicsPipelines (sky) failed");
+}
+
+pipelineCreateInfo.pDepthStencilState = &amp;depthStencilTransparent;
+pipelineCreateInfo.pColorBlendState = &amp;transparentColorBlending;
+if (vkCreateGraphicsPipelines(
+            device, VK_NULL_HANDLE, 1, &amp;pipelineCreateInfo, nullptr, &amp;pipelineLitTransparent) !=
+        VK_SUCCESS) {
+    throw std::runtime_error("VulkanScenePipeline: vkCreateGraphicsPipelines (transparent) failed");
+}
+</code></pre>
+<p>Per-draw variation (model matrix, albedo, texture layer) comes from <strong>push constants</strong>, not rebinding pipelines.</p>
+<h3 id="vertex-input-eight-attributes-one-binding">Vertex input — eight attributes, one binding</h3>
+<p>The pipeline describes how the GPU reads each interleaved vertex. Every <code>location</code> must match GLSL <code>layout(location = N)</code> in <code>scene.vert</code>:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 71–86)
+using VL = VulkanSceneVertexLayout;
+VkVertexInputBindingDescription binding{};
+binding.binding = 0;
+binding.stride = VL::kStrideBytes;
+binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+VkVertexInputAttributeDescription attrs[8]{};
+attrs[0].binding = 0;
+attrs[0].location = 0;
+attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+attrs[0].offset = sizeof(float) * VL::kOffPosition;
+attrs[1].binding = 0;
+attrs[1].location = 1;
+attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+attrs[1].offset = sizeof(float) * VL::kOffNormal;
+</code></pre>
+<p>Part II demos use position, normal, and UV; joints/weights slots stay zero for rigid meshes.</p>
+<h3 id="pipeline-layout-descriptor-set-0-modelpushconstants">Pipeline layout — descriptor set 0 + ModelPushConstants</h3>
+<p>Before <code>vkCreateGraphicsPipelines</code>, Spark creates a layout referencing the scene descriptor set layout and a push constant range sized to <code>ModelPushConstants</code>:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 197–225)
+VkPushConstantRange pushConstantRange{};
+pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+pushConstantRange.offset = 0;
+pushConstantRange.size = sizeof(VulkanSceneOpaquePass::ModelPushConstants);
+
+VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+pipelineLayoutCreateInfo.setLayoutCount = 1;
+pipelineLayoutCreateInfo.pSetLayouts = &amp;sceneDescriptorSetLayout;
+pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+pipelineLayoutCreateInfo.pPushConstantRanges = &amp;pushConstantRange;
+// ...
+pipelineCreateInfo.layout = pipelineLayout;
+pipelineCreateInfo.renderPass = hdrRenderPass;
+pipelineCreateInfo.subpass = 0;
+</code></pre>
+<p>The HDR render pass handle is mandatory — Vulkan validates attachment format compatibility at pipeline creation time.</p>
+<h3 id="bootstrap-order-in-vulkanrenderer">Bootstrap order in VulkanRenderer</h3>
+<p>Pipelines cannot exist until descriptors, render pass, and shader modules are ready:</p>
+<pre><code class="language-text">CreatePersistentSceneResources()
+  → sceneDescriptors.CreateSetLayout + uniform buffers
+  → CreateSceneGeometry()           (static VB/IB)
+RecreateSwapchain()
+  → hdrTonemapPass.CreateHdrRenderPass()
+  → scenePipeline.CreateGraphicsPipeline(device, hdrRenderPass, layout, shaders)
+</code></pre>
+<p>Resize triggers <code>RecreateSwapchain</code> only — persistent resources (layout, static geometry) survive if formats unchanged.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="programmable-stages">Programmable stages</h3>
 <table class="table">
@@ -1090,6 +1268,136 @@
 </ul>
 <p>Spark's lit mesh layout uses <strong>one binding</strong>, stride from <code>VulkanSceneVertexLayout::kStrideBytes</code>, six attributes (position, normal, UV, tangent, joint indices, weights).</p>
 <p>Mismatch between C++ interleaved data and shader <code>layout(location = N)</code> causes validation errors or garbage vertices.</p>
+<h3 id="vertex-layout-how-c-memory-becomes-shader-inputs">Vertex layout: how C++ memory becomes shader inputs</h3>
+<p>Every mesh vertex in Spark is a contiguous block of floats in RAM. The GPU does not understand C++ structs — you must describe the layout with <code>VkVertexInputBindingDescription</code> and <code>VkVertexInputAttributeDescription</code>.</p>
+<p>Spark's scene mesh uses <strong>one binding</strong> (binding index 0) with stride <code>VulkanSceneVertexLayout::kStrideBytes</code>:</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanScenePipeline.cpp (lines 71–110)
+using VL = VulkanSceneVertexLayout;
+VkVertexInputBindingDescription binding{};
+binding.binding = 0;
+binding.stride = VL::kStrideBytes;           // bytes between consecutive vertices
+binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;  // advance per vertex, not per instance
+
+VkVertexInputAttributeDescription attrs[8]{};
+attrs[0].location = 0;  // matches layout(location = 0) in scene.vert
+attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+attrs[0].offset = sizeof(float) * VL::kOffPosition;
+attrs[2].location = 2;  // UV
+attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
+attrs[2].offset = sizeof(float) * VL::kOffTexCoord0;
+// ... normal, tangent, joints, weights, texCoord1, color
+</code></pre>
+<p><strong>How to read this table when debugging:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>location</code></td>
+<td>Must match GLSL <code>layout(location = N)</code></td>
+</tr>
+<tr>
+<td><code>format</code></td>
+<td>How many floats/ints to read (<code>R32G32B32_SFLOAT</code> = 3 floats)</td>
+</tr>
+<tr>
+<td><code>offset</code></td>
+<td>Byte offset from start of vertex struct</td>
+</tr>
+<tr>
+<td><code>binding</code></td>
+<td>Which vertex buffer stream (Spark uses only 0)</td>
+</tr>
+</tbody>
+</table>
+<p>At draw time you bind a <code>VkBuffer</code> and tell Vulkan "binding 0 starts at offset 0." The pipeline's vertex input state tells the GPU how to interpret each 80-byte (or whatever stride) chunk as position, normal, UV, etc.</p>
+<p><strong>Common beginner mistake:</strong> <code>sizeof(Vertex)</code> in C++ does not match <code>stride</code> because of padding. Spark centralizes offsets in <code>VulkanSceneVertexLayout</code> so pipeline creation, mesh upload, and glTF import all agree.</p>
+<h3 id="step-by-step-creating-pipelinelit-in-spark">Step-by-step: creating pipelineLit in Spark</h3>
+<p>When <code>RecreateSwapchain</code> runs after a window resize, Spark calls <code>VulkanScenePipeline::CreateGraphicsPipeline</code>. The function performs these steps in order:</p>
+<ol>
+<li><strong>Load SPIR-V</strong> from disk (<code>scene.vert.spv</code>, <code>scene.frag.spv</code>).</li>
+<li><strong>Create shader modules</strong> (<code>vkCreateShaderModule</code>).</li>
+<li><strong>Describe vertex input</strong> (8 attributes, one binding).</li>
+<li><strong>Set input assembly</strong> to <code>TRIANGLE_LIST</code>.</li>
+<li><strong>Enable dynamic viewport/scissor</strong> (set actual viewport during record).</li>
+<li><strong>Configure rasterization</strong> — fill mode, back-face cull, CCW front face.</li>
+<li><strong>Configure depth</strong> — test ON, write ON for opaque.</li>
+<li><strong>Configure blend</strong> — OFF for opaque (<code>pipelineLit</code>).</li>
+<li><strong>Create pipeline layout</strong> — descriptor set 0 + push constant range for <code>ModelPushConstants</code>.</li>
+<li><strong>Call <code>vkCreateGraphicsPipelines</code></strong> with <code>hdrRenderPass</code> handle.</li>
+<li><strong>Repeat steps 7–8</strong> with different depth/blend for sky and transparent pipelines.</li>
+</ol>
+<p>Steps 9–10 are why you cannot draw until descriptors exist (Part II Chapter 6) even though shaders compiled successfully.</p>
+<h3 id="building-a-vulkan-renderer-pipeline-from-scratch">Building a Vulkan renderer pipeline from scratch</h3>
+<p>Spark does not create a single "mega pipeline" at startup. The <strong>bootstrap sequence</strong> in <code>VulkanRenderer</code>'s constructor shows the dependency order every engine must respect:</p>
+<pre><code class="language-text">VulkanDeviceContext (instance → surface → device → queues)
+→ CreateCommandPool
+→ CreatePersistentSceneResources (descriptors, static meshes, shadow resources)
+→ RecreateSwapchain (swapchain images, HDR render pass, ALL graphics pipelines)
+→ frameSync.Create (fences + semaphores)
+</code></pre>
+<p>The constructor wires this explicitly:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 43–54)
+VulkanRenderer::VulkanRenderer(Window&amp; inAppWindow) : deviceContext(inAppWindow), boundWindow(&amp;inAppWindow) {
+    shaderLoader.SetDevice(device());
+
+    CreateCommandPool();
+    CreatePersistentSceneResources();
+    RecreateSwapchain();
+    frameSync.Create(device());
+    // ...
+}
+</code></pre>
+<p><strong>Why this order matters:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Step</th>
+<th>Depends on</th>
+<th>Creates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VulkanDeviceContext</code></td>
+<td>GLFW window</td>
+<td><code>VkInstance</code>, <code>VkDevice</code>, queues</td>
+</tr>
+<tr>
+<td><code>CreatePersistentSceneResources</code></td>
+<td>logical device</td>
+<td>descriptor layout, uniform buffers, static cube/plane geometry</td>
+</tr>
+<tr>
+<td><code>RecreateSwapchain</code></td>
+<td>surface + device</td>
+<td>swapchain, <strong>HDR render pass</strong>, scene/sprite/particle pipelines</td>
+</tr>
+<tr>
+<td><code>frameSync</code></td>
+<td>device</td>
+<td>per-flight fences, acquire/present semaphores</td>
+</tr>
+</tbody>
+</table>
+<p>Graphics pipelines cannot be created until you know the <strong>render pass handle</strong> and <strong>attachment formats</strong>. Spark's scene pipelines target <code>hdrTonemapPass.HdrRenderPass()</code> — not the swapchain present pass. That is why pipeline creation lives inside <code>RecreateSwapchain</code>, not in the constructor's first line.</p>
+<p>Inside <code>RecreateSwapchain</code>, Spark creates <strong>three</strong> scene pipelines from one shader pair (<code>scene.vert</code> / <code>scene.frag</code>):</p>
+<pre><code class="language-text">pipelineLit           — depth write ON,  blend OFF  (opaque meshes)
+pipelineSky           — depth write OFF, cull NONE   (infinite sky shell)
+pipelineLitTransparent — depth write OFF, alpha blend ON (glass, fade)
+</code></pre>
+<p>All three share one <code>VkPipelineLayout</code> (descriptor set 0 + <code>ModelPushConstants</code> push range). Per-draw variation comes from push constants — metallic, texture layers, shading model — not from rebinding pipelines unless the draw is sky or transparent.</p>
+<p>When you build your own engine from scratch, replicate this layering:</p>
+<ol>
+<li><strong>Device bootstrap</strong> — isolate in a <code>DeviceContext</code> class (Spark: <code>VulkanDeviceContext</code>).</li>
+<li><strong>Swapchain-dependent resources</strong> — isolate in <code>RecreateSwapchain</code> so resize only rebuilds what must change.</li>
+<li><strong>Pipeline triple</strong> — opaque / sky / transparent from one SPIR-V pair; avoid N pipelines per material.</li>
+<li><strong>Record pass</strong> — delegate mesh draws to <code>VulkanSceneOpaquePass::Record</code> so <code>VulkanRenderer</code> stays an orchestrator.</li>
+</ol>
 <h3 id="input-assembly">Input assembly</h3>
 <p><code>topology</code> — <code>VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST</code> for meshes. <code>primitiveRestartEnable</code> — false for standard indexed triangles.</p>
 <h3 id="viewport-and-scissor">Viewport and scissor</h3>
@@ -1261,6 +1569,38 @@ vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLi
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#what-is-a-graphics-pipeline-complete-beginner">What is a graphics pipeline? (complete beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-gpu-pipeline-stages-simplified">The GPU pipeline stages (simplified)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-pipelines-are-created-after-the-render-pass">Why pipelines are created after the render pass</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vulkanscenepipeline-internals">1b. Concept Deep Dive — VulkanScenePipeline Internals</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-spir-v-pair-three-pipeline-objects">One SPIR-V pair, three pipeline objects</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vertex-input-eight-attributes-one-binding">Vertex input — eight attributes, one binding</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#pipeline-layout-descriptor-set-0-modelpushconstants">Pipeline layout — descriptor set 0 + ModelPushConstants</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#bootstrap-order-in-vulkanrenderer">Bootstrap order in VulkanRenderer</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1271,6 +1611,18 @@ vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLi
                         
                         <li class="toc-h3">
                           <a href="#vertex-input-state">Vertex input state</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vertex-layout-how-c-memory-becomes-shader-inputs">Vertex layout: how C++ memory becomes shader inputs</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-by-step-creating-pipelinelit-in-spark">Step-by-step: creating pipelineLit in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#building-a-vulkan-renderer-pipeline-from-scratch">Building a Vulkan renderer pipeline from scratch</a>
                         </li>
                         
                         <li class="toc-h3">

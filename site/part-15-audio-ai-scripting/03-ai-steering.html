@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,24 @@
 <p>Sliding enemies feel robotic. <strong>Steering behaviors</strong> compute direction from simple rules — seek the player, flee when threatened, arrive without overshoot — and sum into acceleration.</p>
 <p>Spark packages behaviors behind <code>ISteeringBehavior</code> with shared <code>AiBlackboard</code> storage on <code>AiAgentComponent</code>. You will drive Transform or rigidbody velocity from composed acceleration <strong>before</strong> SceneSubmit, and optionally link speed to Part XI sprite FSM states.</p>
 <p>Milestone: enemy in SteeringShowcase3DDemo seeks player with Arrive slowing — stops within 0.5 m without oscillating.</p>
+<h2 id="b.concept-deep-dive-steeringcomposer-weights">1b. Concept Deep Dive — SteeringComposer Weights</h2>
+<h3 id="behaviors-return-acceleration-not-velocity">Behaviors return acceleration, not velocity</h3>
+<p>Each <code>ISteeringBehavior</code> maps agent state + blackboard targets → desired <strong>acceleration</strong>. <code>SteeringComposer</code> sums weighted outputs:</p>
+<pre><code class="language-cpp">// include/spark/ai/steering/SteeringBehaviors.hpp
+class SteeringComposer final {
+    void AddBehavior(const ISteeringBehavior&amp; behavior, const float weight);
+    [[nodiscard]] Vector2 Compose(
+            const Vector2&amp; positionXZ,
+            const Vector2&amp; velocityXZ,
+            AiBlackboard&amp; board) const;
+};
+</code></pre>
+<p>Seek pulls toward target; Arrive scales down inside slowing radius; Flee pushes away. Weights tune dominance — <code>(Seek, 1.0) + (Avoid, 2.0)</code> lets avoidance override pure pursuit near walls.</p>
+<h3 id="aiblackboard-on-aiagentcomponent">AiBlackboard on AiAgentComponent</h3>
+<p>Shared per-agent storage holds target entity id, slowing radius, max speed — behaviors read/write through the board without tight coupling. Update feeds player transform into the board <strong>before</strong> compose, then applies resulting acceleration to velocity or <code>TransformComponent</code>.</p>
+<h3 id="d-variant-in-steeringshowcase3ddemo">3D variant in SteeringShowcase3DDemo</h3>
+<p><code>SteeringComposer3D</code> mirrors the 2D API with full Vector3 positions. The demo composes Seek + Arrive for ground enemies — Arrive's slowing radius prevents overshoot oscillation around the player.</p>
+<p>Run steering before SceneSubmit so submitted transforms reflect the latest AI motion same frame.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="steering-as-acceleration-composition">Steering as acceleration composition</h3>
 <p><strong>Steering behaviors</strong> map agent state + world targets → desired <strong>acceleration</strong> (not velocity directly).</p>
@@ -1284,6 +1308,22 @@ velocity += accel * dt;
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-steeringcomposer-weights">1b. Concept Deep Dive — SteeringComposer Weights</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#behaviors-return-acceleration-not-velocity">Behaviors return acceleration, not velocity</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#aiblackboard-on-aiagentcomponent">AiBlackboard on AiAgentComponent</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#3d-variant-in-steeringshowcase3ddemo">3D variant in SteeringShowcase3DDemo</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,33 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Hard shadow compares produce <strong>stairstepped</strong> edges. With CSM, PCF must sample within the <strong>correct atlas sub-rect</strong> and use cascade-appropriate bias, or you get seams and acne at split boundaries.</p>
 <p>You will implement PCF in the lit fragment shader using the same depth convention as the shadow pass.</p>
+<h2 id="b.concept-deep-dive-pcf-and-cascade-selection-in-scene.frag">1b. Concept Deep Dive — PCF and Cascade Selection in scene.frag</h2>
+<h3 id="cascade-pick-by-camera-space-depth">Cascade pick by camera-space depth</h3>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 88–108, concept)
+float shadowCascadeViewDepth(vec3 worldPos) { /* view-space Z */ }
+int selectShadowCascade(float viewDepth) {
+    if (viewDepth &lt;= ubo.cascadeSplits.x) return 0;
+    if (viewDepth &lt;= ubo.cascadeSplits.y) return 1;
+    if (viewDepth &lt;= ubo.cascadeSplits.z) return 2;
+    return 3;
+}
+</code></pre>
+<p>Splits come from the same <code>ComputeSplitDistance</code> values packed into the scene UBO. Atlas UV remapping (<code>cascadeAtlasUv</code>) maps normalized UV into the correct tile within the combined shadow atlas.</p>
+<h3 id="rotated-pcf-kernel">5×5 rotated PCF kernel</h3>
+<pre><code class="language-glsl">// sampleSunShadowAtCascade (lines 147–168)
+float depthBias = max(ubo.shadowParams.x, 1e-5) * (1.0 + 6.25 * g);
+depthBias += ubo.shadowParams.y * 0.22 * g;
+float refZ = clamp(proj.z - depthBias, 0.0, 1.0);
+float rot01 = shadowPcfRotation01(gl_FragCoord.xy);
+float sh = sampleSunShadowPcf(shadowMap, uv, refZ, texel, penumbraScale, rot01);
+</code></pre>
+<p><code>g</code> is a grazing-light factor (low N·L → wider kernel). Per-pixel rotation breaks axis-aligned blockiness from the shadow map grid. Spark uses <code>sampler2D</code> with manual compare (not <code>sampler2DShadow</code>) for MoltenVK compatibility.</p>
+<h3 id="cascade-blend-at-split-boundaries">Cascade blend at split boundaries</h3>
+<pre><code class="language-glsl">// blendSunShadowCascades (lines 172–197)
+float wPrev = 1.0 - smoothstep(splitLow - blendLen, splitLow, viewDepth);
+sh = mix(sh, shPrev, wPrev);
+</code></pre>
+<p>Adjacent cascades are mixed near split distances to hide resolution pops. <code>blendFrac</code> from <code>ubo.timeGlobal.w</code> controls blend width — tunable via shadow tuning UI.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="hard-compare-vs-pcf">Hard compare vs PCF</h3>
 <p>A single depth test produces stairstepped shadow edges. <strong>Percentage-closer filtering (PCF)</strong> averages multiple depth tests with offset UVs, approximating soft penumbra cheaply.</p>
@@ -1327,6 +1360,22 @@ float blendSunShadowCascades(float distCam, vec3 worldPos, vec3 N, vec3 Ld, floa
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-pcf-and-cascade-selection-in-scenefrag">1b. Concept Deep Dive — PCF and Cascade Selection in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cascade-pick-by-camera-space-depth">Cascade pick by camera-space depth</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#55-rotated-pcf-kernel">5×5 rotated PCF kernel</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cascade-blend-at-split-boundaries">Cascade blend at split boundaries</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,144 @@
 <p>glTF is the interchange format for PBR props and environments. Your engine must decode accessors into the same
 <code>Mesh</code> type procedural geometry uses — or you maintain parallel render paths forever.</p>
 <p>Build along: import a rigid <code>.glb</code>, spawn it with <code>MeshComponent</code> + <code>MaterialComponent</code>, and scale from bounds.</p>
+<h3 id="what-is-gltf-start-here-if-you-are-new-to-3d-assets">What is glTF? (start here if you are new to 3D assets)</h3>
+<p><strong>glTF</strong> (GL Transmission Format) is a file format for 3D models — think "PNG for geometry." Artists export from Blender, Maya, or Substance Painter into <code>.gltf</code> (JSON + sidecar files) or <code>.glb</code> (single binary package).</p>
+<p>A glTF file typically contains:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Piece</th>
+<th>What it stores</th>
+<th>Why your engine cares</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Meshes</strong></td>
+<td>Vertex positions, normals, UVs, indices</td>
+<td>Becomes your <code>Mesh</code> type</td>
+</tr>
+<tr>
+<td><strong>Materials</strong></td>
+<td>Base color, metallic, roughness, normal maps</td>
+<td>Becomes <code>MaterialComponent</code></td>
+</tr>
+<tr>
+<td><strong>Textures</strong></td>
+<td>PNG/JPEG embedded or referenced</td>
+<td>Becomes <code>Texture2D</code> on CPU</td>
+</tr>
+<tr>
+<td><strong>Nodes</strong></td>
+<td>Transform hierarchy (parent/child)</td>
+<td>Becomes <code>GameObject</code> tree</td>
+</tr>
+<tr>
+<td><strong>Scenes</strong></td>
+<td>Which nodes are roots</td>
+<td>Entry point for loading</td>
+</tr>
+</tbody>
+</table>
+<p>You almost never hand-author glTF in a text editor. You <strong>import</strong> it. Spark's job is to turn glTF bytes into engine-native structures the renderer already understands.</p>
+<h3 id="the-two-import-paths-in-spark-which-one-to-use">The two import paths in Spark (which one to use)</h3>
+<p><strong>Path A — Quick prop (<code>Mesh::TryLoadFromGltf</code>):</strong></p>
+<ul>
+<li>Merges the whole scene into <strong>one</strong> <code>Mesh</code>.</li>
+<li>Bakes node transforms into vertex positions.</li>
+<li>Grabs the first base-color texture it finds.</li>
+<li>Good for: trees, rocks, simple props in demos.</li>
+</ul>
+<p><strong>Path B — Full scene (<code>GltfSceneLoader</code>):</strong></p>
+<ul>
+<li>Preserves <strong>node hierarchy</strong> as separate objects.</li>
+<li>Keeps <strong>one mesh with many submeshes</strong> (one per glTF primitive/material).</li>
+<li>Loads <strong>all materials</strong> into a table.</li>
+<li>Good for: characters, furniture with wood/metal parts, entire levels.</li>
+</ul>
+<p>If your asset has <strong>multiple materials on one mesh</strong> (a chair with fabric seat + metal legs), you <strong>must</strong> use Path B. Path A would merge geometry but lose per-primitive material assignment.</p>
+<h3 id="step-by-step-what-happens-when-you-load-a.glb-file">Step-by-step: what happens when you load a .glb file</h3>
+<p>Follow one byte from disk to pixel:</p>
+<p><strong>Step 1 — Parse file (CPU, no GPU yet)</strong></p>
+<pre><code class="language-cpp">cgltf_parse_file(&amp;options, path, &amp;data);   // read JSON/binary structure
+cgltf_load_buffers(&amp;options, data, path);  // load .bin + images into memory
+</code></pre>
+<p>cgltf builds an in-memory tree: meshes, materials, accessors pointing at raw byte buffers.</p>
+<p><strong>Step 2 — For each triangle primitive, read attributes</strong></p>
+<p>An <strong>accessor</strong> is glTF's way of saying "there are N vec3 positions starting at byte offset X with stride Y." Spark calls <code>cgltf_accessor_read_float</code> for each vertex:</p>
+<pre><code class="language-text">For vertex i:
+read POSITION  → Vector3 position (object space)
+read NORMAL    → Vector3 normal (optional but needed for lighting)
+read TEXCOORD_0 → Vector2 uv (needed for textures)
+</code></pre>
+<p><strong>Step 3 — Transform positions by node hierarchy</strong></p>
+<p>glTF nodes have translation, rotation, scale. Spark multiplies vertices by the accumulated <strong>world matrix</strong> so rigid imports can collapse to one mesh in Path A, or keep per-node transforms in Path B.</p>
+<p><strong>Step 4 — Build index buffer</strong></p>
+<p>Triangles are triplets of vertex indices. Spark stores <code>uint32_t</code> indices for <code>vkCmdDrawIndexed</code>. If glTF winding does not match Vulkan's cull mode, Spark swaps two indices per triangle (<code>ShouldFlipGltfTriangleWinding</code>).</p>
+<p><strong>Step 5 — Record submesh slices (Path B only)</strong></p>
+<p>Each primitive appends a <code>MeshSubmesh</code> with <code>indexOffset</code>, <code>indexCount</code>, <code>materialIndex</code>. This tells the renderer "indices 0–599 use material 0, indices 600–1200 use material 1" without duplicating vertices.</p>
+<p><strong>Step 6 — Decode materials (still CPU)</strong></p>
+<p><code>GltfMaterialLoader</code> reads metallic/roughness factors, loads PNGs into <code>Texture2D</code>, merges occlusion into ORM when needed. <strong>No VkImage yet.</strong></p>
+<p><strong>Step 7 — Attach to ECS</strong></p>
+<p><code>MeshComponent</code> holds <code>SharedPtr&lt;Mesh&gt;</code>. <code>MaterialComponent</code> or <code>MultiMaterialComponent</code> holds texture pointers and scalar PBR values.</p>
+<p><strong>Step 8 — Scene submit (every frame)</strong></p>
+<p><code>FillStandardLitSceneFromWorld</code> walks entities, builds <code>SceneDrawItem</code> list, assigns texture <strong>array layer indices</strong>.</p>
+<p><strong>Step 9 — GPU upload</strong></p>
+<p><code>VulkanCustomMeshPool</code> copies vertices/indices to <code>VkBuffer</code>. <code>VulkanSceneTextureUploader</code> copies texels to a <code>sampler2DArray</code>.</p>
+<p><strong>Step 10 — Draw</strong></p>
+<p><code>VulkanSceneOpaquePass::Record</code> binds pipeline, descriptors, buffers, push constants, <code>vkCmdDrawIndexed</code>.</p>
+<p>You will not implement all ten steps in one day. Parts VI–VII split them across chapters; this list is the map.</p>
+<h2 id="b.concept-deep-dive-sparks-rigid-gltf-pipeline">1b. Concept Deep Dive — Spark's Rigid glTF Pipeline</h2>
+<h3 id="content-classifier-rigid-vs-skinned-routing">Content classifier: rigid vs skinned routing</h3>
+<p>Spark probes every glTF path before choosing a loader. Skinned files must <strong>not</strong> go through <code>GltfRigidLoader</code> — they need <code>LoadSkinnedGltf</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/GameWorldAssetCache.cpp (concept)
+const GltfContentClassifier::ProbeResult probe = GltfContentClassifier::ProbeFile(path);
+if (probe.parseOk &amp;&amp; probe.kind == GltfContentKind::Skinned) {
+    outcome.errorMessage = "glTF contains skinned mesh; use LoadSkinnedGltf";
+    return outcome;
+}
+</code></pre>
+<h3 id="scene-graph-traversal-bakes-transforms-skips-skinned-nodes">Scene graph traversal bakes transforms, skips skinned nodes</h3>
+<p><code>GltfRigidLoader</code> walks the node tree recursively. Each node's local TRS multiplies into a <strong>world matrix</strong> that is baked into vertex positions at import time. Nodes with <code>skin != nullptr</code> are skipped — those belong to the skinned path:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/gltf/GltfRigidLoader.cpp (lines 14–37)
+bool VisitNode(cgltf_data* data, cgltf_node* node, const Matrix4&amp; parentWorld, Mesh&amp; outMesh, ...) {
+    const Matrix4 local = GltfNodeTransforms::LocalTransform(node).ToMatrix4();
+    const Matrix4 world = parentWorld * local;
+
+    if (node-&gt;mesh != nullptr &amp;&amp; node-&gt;skin == nullptr) {
+        const cgltf_mesh* mesh = node-&gt;mesh;
+        for (cgltf_size pi = 0; pi &lt; mesh-&gt;primitives_count; ++pi) {
+            GltfMeshBuilder::AppendPrimitive(data, &amp;mesh-&gt;primitives[pi], world, outMesh);
+        }
+    }
+    for (cgltf_size ci = 0; ci &lt; node-&gt;children_count; ++ci) {
+        VisitNode(data, node-&gt;children[ci], world, outMesh, ...);
+    }
+    return true;
+}
+</code></pre>
+<p><strong>Why bake transforms?</strong> Rigid props import as one <code>Mesh</code> in model space; the entity's <code>TransformComponent</code> places them in the world. Skinned characters keep vertices in bind pose and animate joints instead.</p>
+<h3 id="gltfasset-mesh-materials-variants-in-one-cache-entry">GltfAsset — mesh + materials + variants in one cache entry</h3>
+<pre><code class="language-cpp">// include/spark/scene/assets/GameWorldAssetCache.hpp
+struct GltfAsset {
+    SharedPtr&lt;Mesh&gt; mesh;
+    Array&lt;GltfMaterialDesc&gt; materials;       // indexed by primitive material index
+    Array&lt;Utf8String&gt; materialVariantNames; // KHR_materials_variants
+};
+</code></pre>
+<p><code>Mesh::TryLoadFromGltf</code> is a thin wrapper over <code>GltfRigidLoader</code> that copies mesh + primary material into caller out-params — demos often use <code>GameWorld::LoadGltf</code> instead for the full <code>GltfAsset</code>.</p>
+<h3 id="thin-wrapper-entry-point">Thin wrapper entry point</h3>
+<pre><code class="language-cpp">// src/spark/scene/mesh/mesh_gltf.cpp
+bool Mesh::TryLoadFromGltf(const char* path, Mesh&amp; outMesh, ...) {
+    GltfRigidLoadResult result{};
+    if (!GltfRigidLoader{}.LoadFromFile(path, result) || !result.mesh) {
+        return false;
+    }
+    outMesh = *result.mesh;
+    // copy materials to outMaterials if requested
+    return true;
+}
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="cgltf-parse-pipeline">cgltf parse pipeline</h3>
 <p>Spark uses <strong>cgltf</strong> to parse <code>.gltf</code>/<code>.glb</code>, load external buffers, then walk scene nodes. <code>TryLoadFromGltf</code> bakes node transforms into vertices — output is one world-space mesh suitable for rigid <code>MeshComponent</code> drawing.</p>
@@ -1068,6 +1212,81 @@
 <p>First usable PBR <code>baseColorTexture</code> (PNG/JPEG from buffer or URI) decodes into <code>SharedPtr&lt;Texture2D&gt;</code>. Materials become ECS <code>MaterialComponent</code> data later — not GPU objects inside the loader.</p>
 <h3 id="y-up-meters-baked-transforms">Y-up, meters, baked transforms</h3>
 <p>glTF is Y-up. Spark bakes node hierarchy into vertices for rigid import — document any extra root rotation you apply in gameplay so animation and static props stay aligned.</p>
+<h3 id="full-scene-import-vs-single-mesh-bake">Full scene import vs single-mesh bake</h3>
+<p>Spark exposes <strong>two</strong> glTF entry points:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Path</th>
+<th>Use case</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Mesh::TryLoadFromGltf</code></td>
+<td>Simple props (one merged mesh)</td>
+<td>Single <code>Mesh</code> + optional base color texture</td>
+</tr>
+<tr>
+<td><code>GltfSceneLoader::TryLoadFromFile</code></td>
+<td>Full scenes with hierarchy</td>
+<td><code>GltfSceneDocument</code> — meshes, materials, nodes, skins</td>
+</tr>
+</tbody>
+</table>
+<p>For production assets with <strong>multiple materials per mesh</strong>, prefer the scene loader. <code>GltfMeshBuilder::BuildFromCgltfMesh</code> walks each primitive, appends geometry, and records a <code>MeshSubmesh</code> per primitive with its glTF <code>materialIndex</code>. Materials decode separately via <code>GltfMaterialLoader::LoadAll</code> into <code>GltfMaterialDesc</code> entries (base color, normal, ORM merge, emissive, KHR extensions).</p>
+<h3 id="multi-material-ecs-binding">Multi-material ECS binding</h3>
+<p>When a mesh has more than one submesh, <code>GltfAssetBinder</code> attaches <code>MultiMaterialComponent</code> instead of a single <code>MaterialComponent</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/gltf/GltfAssetBindings.cpp (lines 52–91)
+[[nodiscard]] bool ShouldUseMultiMaterialComponent(const GltfAsset&amp; asset) noexcept {
+    return static_cast&lt;bool&gt;(asset.mesh) &amp;&amp; asset.mesh-&gt;GetSubmeshes().GetSize() &gt; 1U;
+}
+
+void BindMaterials(GameObject&amp; owner, const GltfAsset&amp; asset, const char* gltfLibraryKey) {
+    // ...
+    if (ShouldUseMultiMaterialComponent(asset)) {
+        if (MultiMaterialComponent* multi = owner.AddComponent&lt;MultiMaterialComponent&gt;()) {
+            multi-&gt;BindFromGltfAsset(world, libraryKey.CStr(), asset);
+        }
+        return;
+    }
+    // single MaterialComponent path for one-submesh assets ...
+}
+</code></pre>
+<p>Each slot in <code>MultiMaterialComponent</code> maps to a glTF material index. Library keys follow <code>path#material/N</code> so <code>GameWorldAssetCache</code> can share decoded textures across instances.</p>
+<h3 id="end-to-end-gltf-file-draw-call">End-to-end: glTF file → draw call</h3>
+<p>Trace this pipeline when debugging a multi-material import:</p>
+<pre><code class="language-text">.glb file
+→ cgltf_parse + cgltf_load_buffers (GltfDataLoader)
+→ GltfSceneLoader::TryLoadFromFile
+     ├── GltfMeshBuilder per cgltf_mesh → Mesh + MeshSubmesh[]
+     └── GltfMaterialLoader → GltfMaterial[] (CPU Texture2D pixels)
+→ GltfSceneImporter / GltfAssetBinder
+     ├── MeshComponent(Custom, SharedPtr&lt;Mesh&gt;)
+     └── MultiMaterialComponent OR MaterialComponent
+→ FillStandardLitSceneFromWorld (SceneSubmit)
+     └── PushRigidMeshDraws — one SceneDrawItem per submesh
+→ VulkanCustomMeshPool::UpdateFromScene — pack VBO/IBO + submesh slices
+→ VulkanSceneOpaquePass::Record — push constants + vkCmdDrawIndexed
+→ scene.frag — sample sceneTextures[layer], ORM, normal map
+</code></pre>
+<p>At submit, <code>PushRigidMeshDraws</code> loops submeshes and resolves the material slot by <code>sm.ResolveMaterialIndex(activeVariant)</code>:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 101–115)
+for (std::size_t si = 0; si &lt; submeshes.GetSize(); ++si) {
+    SceneDrawItem item = baseItem;
+    item.submeshIndex = static_cast&lt;std::uint32_t&gt;(si);
+    const MeshSubmesh&amp; sm = submeshes[si];
+    const std::uint32_t materialIndex = sm.ResolveMaterialIndex(multiMat-&gt;GetActiveVariantIndex());
+    if (materialIndex &lt; multiMat-&gt;GetSlotCount()) {
+        const MultiMaterialComponent::Slot&amp; slot = multiMat-&gt;GetSlot(materialIndex);
+        ApplyMultiMaterialSlotToSceneDrawItem(item, slot, &amp;params);
+        ApplyAlbedoTexture(item, slot.baseColor, slot.tint, findOrAddTexture);
+    }
+    drawList.PushBack(item);
+}
+</code></pre>
+<p>On the GPU, <code>VulkanSceneOpaquePass</code> copies each draw's layer indices into push constants (<code>textureLayer</code>, <code>normalMapLayer</code>, <code>metallicRoughnessMapLayer</code>) before <code>vkCmdDrawIndexed</code>. The fragment shader samples <code>sceneTextures</code> and <code>sceneHdrTextures</code> by layer — no per-material descriptor sets.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="meshtryloadfromgltf-with-cgltf">Mesh::TryLoadFromGltf with cgltf</h3>
@@ -1135,6 +1354,34 @@ bool Mesh::TryLoadFromGltf(const char* path, Mesh&amp; outMesh, SharedPtr&lt;Tex
 </code></pre>
 <h3 id="step-2-study-appendprimitive-attribute-read">Step 2 — Study AppendPrimitive attribute read</h3>
 <p><em>POSITION/NORMAL/UV accessors → Mesh::Vertex in baked world space.</em></p>
+<p><strong>Line-by-line for beginners:</strong></p>
+<pre><code class="language-cpp">// src/spark/scene/mesh_gltf.cpp — AppendPrimitive (excerpt)
+void AppendPrimitive(const cgltf_primitive* prim, const Matrix4&amp; world, Mesh&amp; outMesh) {
+</code></pre>
+<ul>
+<li><code>prim</code> — one glTF primitive (usually one material's triangles).</li>
+<li><code>world</code> — accumulated transform from parent nodes (position/rotation/scale baked into this matrix).</li>
+</ul>
+<pre><code class="language-cpp">    if (prim == nullptr || prim-&gt;type != cgltf_primitive_type_triangles) {
+    return;  // Spark only supports triangles, not lines or points
+}
+</code></pre>
+<pre><code class="language-cpp">    // Find POSITION, NORMAL, TEXCOORD_0 accessors by scanning attributes
+for (cgltf_size ai = 0; ai &lt; prim-&gt;attributes_count; ++ai) {
+    const cgltf_attribute&amp; a = prim-&gt;attributes[ai];
+    if (a.type == cgltf_attribute_type_position) { pos = a.data; }
+    // ...
+}
+</code></pre>
+<pre><code class="language-cpp">    const std::uint32_t base = static_cast&lt;std::uint32_t&gt;(outMesh.GetVertices().GetSize());
+</code></pre>
+<p><code>base</code> is the vertex index where <strong>this primitive's</strong> vertices start in the shared array. Earlier primitives already appended vertices; indices will offset by <code>base</code>.</p>
+<pre><code class="language-cpp">    for (cgltf_size vi = 0; vi &lt; vcount; ++vi) {
+cgltf_accessor_read_float(pos, vi, p, 3);  // read local-space position
+const Vector3 pw = world.TransformPoint({p[0], p[1], p[2]});  // bake transform
+</code></pre>
+<p>After this loop, every vertex is in <strong>world space</strong> (for Path A) or mesh space with node transform applied (Path B).</p>
+<p>Full reference implementation:</p>
 <pre><code class="language-cpp">// src/spark/scene/mesh_gltf.cpp (lines 48–90)
 void AppendPrimitive(const cgltf_primitive* prim, const Matrix4&amp; world, Mesh&amp; outMesh) {
     if (prim == nullptr || prim-&gt;type != cgltf_primitive_type_triangles) {
@@ -1266,6 +1513,10 @@ Part VII <strong>MaterialComponent</strong> maps metallic/roughness from glTF ma
 <li>Import a glTF cube; compare bounds to CreateUnitCube.</li>
 <li>List accessor types for one Tree glTF primitive in RenderDoc or cgltf inspect tool.</li>
 <li>Disable baseColor texture; confirm flat albedo tint still draws.</li>
+<li><strong>Beginner:</strong> Open a <code>.glb</code> in <a href="https://github.khronos.org/glTF-Sample-Viewer-Release/">gltf-viewer</a> and count how many materials it has — predict whether Spark will use <code>MaterialComponent</code> or <code>MultiMaterialComponent</code>.</li>
+<li><strong>Beginner:</strong> Draw the data flow from <code>assets/models/tree.glb</code> to <code>SceneDrawItem</code> on paper — one box per step from the ten-step list in Section 1.</li>
+<li><strong>Intermediate:</strong> Load the same asset via Path A (<code>Mesh::TryLoadFromGltf</code>) and Path B (<code>GltfSceneLoader</code>) — compare submesh count and material assignment.</li>
+<li><strong>Debug:</strong> Intentionally flip winding (disable <code>ShouldFlipGltfTriangleWinding</code>) — describe what you see with back-face culling enabled.</li>
 </ol>
 <h2 id="summary">Summary</h2>
 <p>Rigid glTF import bakes nodes into Mesh via cgltf; GltfAsset pairs geometry and baseColor for cache + spawn.</p>
@@ -1290,6 +1541,38 @@ Part VII <strong>MaterialComponent</strong> maps metallic/roughness from glTF ma
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#what-is-gltf-start-here-if-you-are-new-to-3d-assets">What is glTF? (start here if you are new to 3D assets)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-two-import-paths-in-spark-which-one-to-use">The two import paths in Spark (which one to use)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#step-by-step-what-happens-when-you-load-a-glb-file">Step-by-step: what happens when you load a .glb file</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparks-rigid-gltf-pipeline">1b. Concept Deep Dive — Spark's Rigid glTF Pipeline</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#content-classifier-rigid-vs-skinned-routing">Content classifier: rigid vs skinned routing</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scene-graph-traversal-bakes-transforms-skips-skinned-nodes">Scene graph traversal bakes transforms, skips skinned nodes</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#gltfasset-mesh-materials-variants-in-one-cache-entry">GltfAsset — mesh + materials + variants in one cache entry</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#thin-wrapper-entry-point">Thin wrapper entry point</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1312,6 +1595,18 @@ Part VII <strong>MaterialComponent</strong> maps metallic/roughness from glTF ma
                         
                         <li class="toc-h3">
                           <a href="#y-up-meters-baked-transforms">Y-up, meters, baked transforms</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#full-scene-import-vs-single-mesh-bake">Full scene import vs single-mesh bake</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#multi-material-ecs-binding">Multi-material ECS binding</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#end-to-end-gltf-file-draw-call">End-to-end: glTF file → draw call</a>
                         </li>
                         
                         <li class="toc-h2">

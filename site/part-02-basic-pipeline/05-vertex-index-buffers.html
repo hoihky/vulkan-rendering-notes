@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1061,6 +1067,97 @@
 <li>Referenced by draws with correct <strong>index ranges</strong></li>
 </ol>
 <p>Spark packs cube, ground plane, and sprite quad into <strong>one</strong> static VB/IB pair in <code>CreateSceneGeometry</code> — efficient for small built-in geometry and the pattern you will reuse for imported meshes in Part VI.</p>
+<h2 id="b.concept-deep-dive-createscenegeometry-packed-buffer">1b. Concept Deep Dive — CreateSceneGeometry Packed Buffer</h2>
+<h3 id="one-vbib-three-submeshes-subrange-drawing">One VB/IB, three submeshes — subrange drawing</h3>
+<p>Spark uploads cube, ground plane, and sprite quad into a <strong>single</strong> device-local vertex buffer and index buffer. Draw items select geometry by index range, not by rebinding buffers:</p>
+<pre><code class="language-text">Interleaved vertex buffer (device-local):
+  [cube verts 0..7][plane verts 8..11][sprite verts 12..15]
+
+Index buffer:
+  [cube indices 0..35][plane indices 36..41][sprite indices 42..47]
+   ↑ firstIndex=0      ↑ planeFirstIndex=36   ↑ spriteQuadFirstIndex=42
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Submesh</th>
+<th><code>firstIndex</code></th>
+<th><code>indexCount</code></th>
+<th><code>vertexOffset</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unit cube</td>
+<td>0</td>
+<td><code>cubeIndexCount</code></td>
+<td>0</td>
+</tr>
+<tr>
+<td>Ground plane</td>
+<td><code>planeFirstIndex</code></td>
+<td>6</td>
+<td>0 (absolute indices)</td>
+</tr>
+<tr>
+<td>Sprite quad</td>
+<td><code>spriteQuadFirstIndex</code></td>
+<td>6</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="building-interleaved-cpu-data-from-meshvertex">Building interleaved CPU data from Mesh::Vertex</h3>
+<p><code>CreateSceneGeometry</code> converts ergonomic CPU vertices to the float layout <code>VulkanSceneVertexLayout</code> expects, then appends plane and sprite corners:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 742–762)
+void VulkanRenderer::CreateSceneGeometry() {
+    Mesh cubeMesh = Mesh::CreateUnitCube();
+    Array&lt;float&gt; interleaved;
+    interleaved.Reserve((cubeMesh.GetVertices().GetSize() + 8) * VulkanSceneVertexLayout::kFloatsPerVertex);
+    for (std::size_t i = 0; i &lt; cubeMesh.GetVertices().GetSize(); ++i) {
+        VulkanRendererGpu::AppendRigidMeshVertexToInterleaved(cubeMesh.GetVertices()[i], interleaved);
+    }
+
+    const std::uint32_t planeVertexBase = static_cast&lt;std::uint32_t&gt;(cubeMesh.GetVertices().GetSize());
+    const float groundExtent = kSceneGroundHalfExtent;
+    // Four XZ corners at y=0 with +Y normals and tiled UVs (see full source)
+    const Mesh::Vertex planeVerts[4] = { /* -groundExtent corners */ };
+</code></pre>
+<p>The same helper path is reused when glTF meshes upload in Part VI — one interleaved format everywhere.</p>
+<h3 id="index-packing-ccw-winding-for-y-ground-normal">Index packing — CCW winding for +Y ground normal</h3>
+<p>Plane triangles use <strong>absolute</strong> vertex indices (<code>planeVertexBase + corner</code>). Spark explicitly sets <code>planeVertexOffset = 0</code> because adding the base again would double-offset and read past the buffer:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 780–802)
+planeFirstIndex = static_cast&lt;std::uint32_t&gt;(indices.GetSize());
+planeIndexCount = 6;
+indices.PushBack(planeVertexBase);
+indices.PushBack(planeVertexBase + 1);
+indices.PushBack(planeVertexBase + 2);
+indices.PushBack(planeVertexBase);
+indices.PushBack(planeVertexBase + 3);
+indices.PushBack(planeVertexBase + 2);
+
+cubeVertexOffset = 0;
+// Indices already store absolute vertex indices (planeVertexBase..); vertexOffset must be 0.
+planeVertexOffset = 0;
+</code></pre>
+<p>Wrong winding here makes back-face culling hide the entire ground plane.</p>
+<h3 id="staging-upload-host-visible-device-local">Staging upload — host-visible → device-local</h3>
+<p>Final buffers use <code>TRANSFER_DST | VERTEX_BUFFER_BIT</code> (or <code>INDEX_BUFFER_BIT</code>) with <code>DEVICE_LOCAL</code> memory. Spark maps staging, memcpy's, records one copy command, then destroys staging:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 807–848)
+VulkanRendererGpu::CreateBuffer(
+        physicalDevice(), device(), vbSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        stagingVertex, stagingVertexMemory);
+std::memcpy(vtxData, interleaved.GetData(), static_cast&lt;std::size_t&gt;(vbSize));
+
+VulkanRendererGpu::CreateBuffer(
+        physicalDevice(), device(), vbSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        vertexBuffer, vertexBufferMemory);
+</code></pre>
+<p>Static geometry uploads once at init; dynamic custom meshes use <code>VulkanCustomMeshPool</code> with the same staging pattern each frame.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="buffer-usage-flags">Buffer usage flags</h3>
 <table class="table">
@@ -1247,6 +1344,26 @@ vkCmdDrawIndexed(commandBuffer, range.indexCount, 1, range.firstIndex, range.ver
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-createscenegeometry-packed-buffer">1b. Concept Deep Dive — CreateSceneGeometry Packed Buffer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-vbib-three-submeshes-subrange-drawing">One VB/IB, three submeshes — subrange drawing</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#building-interleaved-cpu-data-from-meshvertex">Building interleaved CPU data from Mesh::Vertex</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#index-packing-ccw-winding-for-y-ground-normal">Index packing — CCW winding for +Y ground normal</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#staging-upload-host-visible-device-local">Staging upload — host-visible → device-local</a>
                         </li>
                         
                         <li class="toc-h2">

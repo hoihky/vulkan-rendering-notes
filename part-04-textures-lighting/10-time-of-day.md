@@ -22,6 +22,76 @@ Spark encodes these as **`SceneLightingProfile` presets** plus optional **`useTi
 
 This chapter closes Part IV — you can now texture meshes and light them with profile-aware forward shading.
 
+### Time of day in plain language (beginner)
+
+Games often fake a 24-hour cycle without simulating astronomy. **Time of day** is usually:
+
+1. A **normalized clock** `t ∈ [0,1]` (0 = midnight, 0.25 = sunrise, 0.5 = noon).
+2. A function that maps `t` → **sun direction**, **sun color**, **ambient color**, **fog density**.
+
+```text
+t = 0.35 (morning)
+  → sunDir = lerp(eastHorizon, zenith, curve)
+  → sunColor = warm orange
+  → ambient = cool blue-gray (fill from sky)
+  → ApplyTimeOfDayLighting writes SceneRenderParams sun fields
+```
+
+**No new shader needed** — same directional light UBO, different values each frame.
+
+**Lighting profiles** bundle defaults:
+
+| Profile | Typical use |
+|---------|-------------|
+| `Outdoor` | Sun + time-of-day, wide shadow fade |
+| `Interior` | Dim sun, stronger fill ambient |
+| `NightInterior` | Moon-tinted ambient, low exposure |
+
+`SceneLightingResolver` merges preset + per-scene overrides so one outdoor level and one dungeon level share the same `scene.frag` but different resolved sun/ambient each frame.
+
+**Shadows follow sun:** when `lightDir` rotates, shadow map ortho frustum must update (Part IX) — otherwise shadows slide incorrectly at dusk.
+
+## 1b. Concept Deep Dive — SceneLightingProfile and ApplyTimeOfDayLighting
+
+### Preset enum drives defaults
+
+```cpp
+// include/spark/render/lighting/SceneLightingProfile.hpp
+enum class SceneLightingProfile : std::uint8_t {
+    Default = 0,
+    Outdoor = 1,        // sun arc, long shadow fade, cool sky fill
+    Interior = 2,       // tighter cascades, brighter probe
+    NightInterior = 3,  // dim moon sun, strong ambient probe
+};
+```
+
+`LightingProfileSettingsFor(profile)` returns exposure, cascade near/far, ambient hemisphere colors, and whether time-of-day is enabled on the preset row.
+
+### Analytic sun from normalized clock
+
+`ApplyTimeOfDayLighting` maps `normalizedTime ∈ [0,1]` to sun direction, color, and intensity:
+
+```cpp
+// src/spark/render/lighting/SceneLightingProfile.cpp (concept)
+void ApplyTimeOfDayLighting(
+        const float normalizedTime,
+        const SceneLightingProfile profile,
+        ResolvedSceneLighting& out,
+        Vector3* outSunDirectionWorld,
+        Vector3* outSunColor,
+        float* outSunIntensity) noexcept;
+```
+
+Outdoor profiles rotate azimuth with `t`; elevation uses `SunElevation01(t)` — warm twilight tints blend between night blue and noon white. Night interior caps sun intensity near 0.08–0.4 while boosting probe ambient.
+
+### SceneSubmit integrates time drivers
+
+Inside `FillStandardLitSceneFromWorld`, `ProcessTimeOfDayDrivers(world, dt)` advances `SceneTimeOfDayComponent` clocks before `SceneLightingResolver::Resolve`. `TimeOfDayDemo` sets `params.lightingProfile = SceneLightingProfile::Outdoor` and watches sun color shift without shader changes.
+
+### Resolved lighting mutates the snapshot
+
+Resolver output adjusts `params.lightDirectionWorld`, `lightColor`, `lightIntensity`, and ambient hemisphere fields on `SceneRenderParams` — the same UBO path as manual sun setup. Shadow cascade far/near and distance fade come from `ResolvedSceneLighting` into `VulkanSceneUniformWriter` and the directional shadow pass.
+
 ## 2. Core Concepts
 
 ### Profile enum

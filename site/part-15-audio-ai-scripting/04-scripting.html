@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,36 @@
 <p>Recompiling C++ for every gameplay tweak slows iteration. <strong>Scripting</strong> hosts managed code behind Spark's <strong>C interop</strong> — the same facades native demos use (<code>ProcessSoundCues</code>, physics simulate, component mutation) without exporting ECS memory layouts or GPU handles.</p>
 <p>You may not ship C# in your fork yet — understanding the boundary prevents accidental <code>vk*</code> calls from gameplay and prepares you to enable <code>spark_script_host_run</code> when ready.</p>
 <p>Milestone: document OnUpdate call order mirroring native demos and list ten allowed vs ten forbidden interop APIs.</p>
+<h2 id="b.concept-deep-dive-sparkinterop-c-abi">1b. Concept Deep Dive — SparkInterop C ABI</h2>
+<h3 id="stable-c-header-opaque-handles">Stable C header, opaque handles</h3>
+<p>Managed gameplay cannot include C++ ECS headers that change layout every commit. Spark exposes a <strong>C API</strong> in <code>SparkInterop.h</code> — P/Invoke friendly, parsed by ClangSharp for codegen:</p>
+<pre><code class="language-cpp">// include/spark/scripting/SparkInterop.h
+typedef struct SparkEngineContext SparkEngineContext;
+typedef struct SparkGameWorld SparkGameWorld;
+typedef struct SparkGameObject SparkGameObject;
+
+typedef struct SparkFrameTiming {
+    float deltaTimeSeconds;
+    // ...
+} SparkFrameTiming;
+</code></pre>
+<p>Handles are opaque pointers — scripts never see <code>GameObject</code> memory layout or vtables.</p>
+<h3 id="allowed-subsystem-facades-native-demos-use">Allowed: subsystem facades native demos use</h3>
+<pre><code class="language-text">spark_world_create_game_object
+spark_transform_set_translation
+spark_physics_simulate_2d
+spark_process_sound_cues
+spark_game_get_world
+</code></pre>
+<p>These route through the same code paths as <code>Platformer2DDemo</code> — physics, audio, component mutation without GPU exposure.</p>
+<h3 id="forbidden-anything-touching-vulkan-or-ecs-internals">Forbidden: anything touching Vulkan or ECS internals</h3>
+<pre><code class="language-text">vkCreateBuffer          — never exported
+GameComponent* raw      — layout unstable
+SceneRenderParams*      — per-frame renderer state
+DescriptorSet handles   — GPU resource lifetime
+Mesh vertex buffer ptr  — bypasses asset cache
+</code></pre>
+<p><code>SparkInteropComponents.cpp</code> implements safe mutation wrappers; <code>SparkInteropScene.cpp</code> covers spawn/destroy. Regenerate C# bindings after header changes: <code>tools/generate-csharp-bindings.sh</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-a-c-abi-boundary">Why a C ABI boundary</h3>
 <p>Managed gameplay (C# via CoreCLR) cannot safely include C++ ECS headers that change layout every commit. Spark exposes a <strong>stable C API</strong> in <code>SparkInterop.h</code> — P/Invoke friendly, parsed by ClangSharp for codegen.</p>
@@ -1291,6 +1327,22 @@ int spark_object_get_name(const SparkGameObject* object, char* outUtf8, const st
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sparkinterop-c-abi">1b. Concept Deep Dive — SparkInterop C ABI</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#stable-c-header-opaque-handles">Stable C header, opaque handles</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#allowed-subsystem-facades-native-demos-use">Allowed: subsystem facades native demos use</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#forbidden-anything-touching-vulkan-or-ecs-internals">Forbidden: anything touching Vulkan or ECS internals</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -15,6 +15,42 @@ additive blend, and a lightweight vertex format** — bundled into `VulkanPartic
 
 Build along: trace Record from `scene.particles` through scratchVertices to `vkCmdDraw`.
 
+## 1b. Concept Deep Dive — VulkanParticlePass::Record
+
+### Host-visible 10 MB vertex ring
+
+```cpp
+// src/spark/render/sprites2d/VulkanParticlePass.cpp (lines 13–15, 106–117)
+constexpr VkDeviceSize kParticleVertexBytes = 10 * 1024 * 1024;
+constexpr std::uint32_t kParticleFloatsPerVertex = 10;
+// CreateBuffer(... HOST_VISIBLE | HOST_COHERENT, vertexBuffer, vertexBufferMemory);
+// vkMapMemory → vertexMapped (persistent map for the pass lifetime)
+```
+
+No staging buffer — Record memcpy's expanded vertices directly into the mapped ring each frame. At 10 floats × 6 verts × 8192 particles ≈ 1.9 MB worst case, well under capacity.
+
+### CPU quad expansion and single draw
+
+```cpp
+// Record (lines 362–412)
+const float corners[4][2] = { {-1,-1}, {1,-1}, {1,1}, {-1,1} };
+const std::uint32_t idx0[] = {0, 1, 2, 0, 2, 3};
+for (std::size_t pi = 0; pi < nPart; ++pi) {
+    const SceneParticleInstance& p = scene.particles[pi];
+    for (int t = 0; t < 6; ++t) {
+        // push: pos.xyz, color.rgba, size, corner.xy  (10 floats)
+    }
+}
+std::memcpy(vertexMapped, scratchVertices.GetData(), vbBytes);
+vkCmdDraw(commandBuffer, vertCount, 1, 0, 0);
+```
+
+Each particle becomes six vertices (two triangles). Vertex layout: location 0 = center position, 1 = color, 2 = size, 3 = corner offset (−1..1). The vertex shader reconstructs world corners from center + camera axes.
+
+### Early-out guards
+
+Record returns immediately when `!sceneParamsValid`, pipeline is null, `scene.particles` is empty, or `nPart` exceeds both `MaxParticles` and buffer capacity (`maxByBuffer = vertexCapacityBytes / (40 * 4)`).
+
 ## 2. Core Concepts
 
 ### Host-visible vertex ring

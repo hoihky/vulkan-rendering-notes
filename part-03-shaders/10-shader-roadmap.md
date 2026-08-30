@@ -14,6 +14,76 @@ Part III taught toolchain, vertex/fragment stages, UBOs, push constants, include
 
 Before diving into Part IV (textures and lighting depth), you need a **roadmap**: what exists, what binds where, and how to extend without combinatorial explosion. This chapter is the capstone inventory and forward plan.
 
+### How Part III fits the bigger picture (beginner)
+
+Part III taught you to **author and wire shaders**. You now understand:
+
+- Vertex shader → clip position + varyings
+- Fragment shader → color output
+- UBO (per frame) vs push constants (per draw)
+- Depth, cull, blend pipeline variants
+
+**What comes next in the book:**
+
+| Part | Shader topic added |
+|------|-------------------|
+| IV | Texture sampling, lights in `scene.frag` |
+| VII | PBR maps, normal mapping, IBL includes |
+| IX | Shadow sampling in `scene.frag`, `shadow_depth.vert` |
+| X | `tonemap.frag` — separate pass, HDR → swapchain |
+| XI | `sprite.vert/frag`, UI shaders — same HDR pass |
+
+**One shader pair (`scene.vert`/`scene.frag`) draws most 3D content.** Other `.spv` files are for specialized passes (shadow depth, particles, post). Do not create a new fragment shader per material — use push constant `textureLayer` and PBR scalars instead.
+
+**Extension rule:** add features as includes + UBO fields + push fields before forking entire shader files. Spark's `gltf_pbr_extensions.glsl` pattern scales KHR material features without duplicating `scene.frag`.
+
+## 1b. Concept Deep Dive — Scene Shader Architecture and Extension Points
+
+### scene.vert / scene.frag anchor the 3D forward pass
+
+Most visible geometry flows through one SPIR-V pair compiled from:
+
+```text
+scene.vert  +  scene_ubo.glsl  +  scene_push.glsl  +  SkinSSBO (binding 2)
+scene.frag  +  above includes    +  clustered_lights / ibl / punctual_shadows / glTF extensions
+```
+
+CMake lists both in `SHADER_SOURCES` and loads them via `VulkanSpvShaderLoader::ReadSpvFile("scene.vert.spv")`. Other passes (shadow depth, particles, sprites, tonemap) are separate `.spv` files with their own `VkPipelineLayout` — **set 0 binding 1 is not interchangeable** across passes.
+
+### Descriptor binding map (scene set 0)
+
+| Binding | GLSL declaration | Stages | Update rate |
+|---------|------------------|--------|-------------|
+| 0 | `SceneUBO ubo` (656 B std140) | VS, FS | Per frame |
+| 1 | `sampler2DArray sceneTextures` | FS | Static atlas |
+| 2 | `SkinSSBO bones[]` (std430) | VS | Per skinned draw |
+| 3+ | Cluster / shadow SSBOs | FS | Per frame |
+| 11 | `sampler2DArray sceneHdrTextures` | FS | HDR env layers |
+
+Per-draw material selection uses push constants (`textureLayer`, map layers, `shadingModel`) — not extra descriptor slots. This is why Spark scales to hundreds of draws without hundreds of descriptor sets.
+
+### Three specialization strategies in one pass
+
+| Technique | Spark example | When to choose |
+|-----------|---------------|----------------|
+| Separate pipelines | lit / sky / transparent | Fixed-function state differs (depth, blend) |
+| Runtime branch | `push.shadingModel`, `push.skyMode` | Few modes, same SPIR-V |
+| Include modules | `gltf_pbr_extensions.glsl` | Feature grows but `main()` stays readable |
+
+Avoid compile-time `#define` permutations until profiling proves a branch is hot — Spark's production `scene.frag` is large but maintains one module per stage.
+
+### Forward path for new features
+
+When adding capability from later parts (shadows, IBL, new glTF extension):
+
+1. Add UBO or push fields to **both** C++ struct and `scene_ubo.glsl` / `scene_push.glsl`
+2. Implement logic in a new `.glsl` include, not duplicated in `scene.frag`
+3. Add the include to CMake DEPENDS on all consuming shaders
+4. Extend `ModelPushConstants` or `SceneUniformGpu` with `static_assert` proofs
+5. Only fork a new `.frag` file if the render pass target or descriptor set layout fundamentally differs (e.g. `tonemap.frag` writing to swapchain)
+
+Part III infrastructure — CMake `SparkShaders`, shared includes, UBO/push contracts — is the foundation every later part extends without rewriting the scene pass from scratch.
+
 ## 2. Core Concepts
 
 ### Spark shader pass inventory

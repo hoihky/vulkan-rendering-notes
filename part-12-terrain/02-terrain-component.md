@@ -14,6 +14,38 @@ Chapter 1 generates a static heightfield mesh. Games need **runtime ownership** 
 
 Milestone: raise a hill with the world-space brush in TerrainDemo and see lighting update on the new slope immediately.
 
+## 1b. Concept Deep Dive — Runtime Height Ownership and Rebuild
+
+### TerrainComponent owns samples; MaterialComponent owns shading
+
+The component wraps three concerns: generator settings (subdiv, extents, noise), mutable `heightSamples[]`, and fallback albedo tint. Shading maps live on sibling `MaterialComponent` — same pattern as static meshes:
+
+```cpp
+// src/spark/ecs/components/rendering/TerrainComponent.cpp (lines 37–48)
+void TerrainComponent::RegenerateMesh(GameObject& owner) {
+    EnsureHeightBuffer(owner);
+    SharedPtr<Mesh> mesh = MakeShared<Mesh>(Utf8String("ProceduralTerrain"));
+    TerrainMeshGenerator::BuildIntoFromHeights(*mesh, settings, heightSamples);
+
+    MeshComponent* mc = owner.GetComponent<MeshComponent>();
+    if (mc == nullptr) {
+        owner.AddComponent<MeshComponent>(mesh, SceneMeshSlot::Custom, meshAlbedo);
+    } else {
+        mc->SetMesh(mesh);
+    }
+}
+```
+
+Serialize **heights + settings**, not the generated mesh — reload regenerates topology on boot.
+
+### Brush APIs mutate heights, then RegenerateMesh
+
+`ApplyHeightBrushWorld` transforms brush center/radius from world space using object scale, applies smoothstep falloff, then calls `RegenerateMesh`. TerrainDemo uses this every stroke — acceptable for learning; shipping open worlds chunk regeneration (Chapter 5).
+
+### Raycast for editor picks
+
+`TryRaycastWorld` walks terrain triangles with Möller–Trumbore intersection — cursor placement and sculpt tools raycast against the regenerated mesh, not an analytical height function. Brush + raycast share the same height buffer the generator reads.
+
 ## 2. Core Concepts
 
 ### Component ownership model

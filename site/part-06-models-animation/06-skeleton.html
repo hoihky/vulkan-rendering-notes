@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1045,7 +1051,7 @@
           </header>
           <div class="doc-body"><h1 id="skeleton-and-bones">Skeleton and Bones</h1>
 <blockquote class="blockquote">
-<p><strong>Build-Along Milestone:</strong> Bind-pose skin palette evaluated for imported character with ≤64 joints.</p>
+<p><strong>Build-Along Milestone:</strong> Bind-pose skin palette evaluated for imported character with ≤128 joints.</p>
 </blockquote>
 <p><strong>You will learn:</strong></p>
 <ul>
@@ -1057,6 +1063,105 @@
 <p>Skinned meshes deform with a <strong>bone hierarchy</strong> and bind-pose inverses. Without a clear CPU skeleton type,
 animation clips cannot target joints and the GPU cannot blend vertices.</p>
 <p>Build along: import a skinned glTF (next chapter), inspect joint count and clip names, evaluate bind-pose palette.</p>
+<h3 id="skeleton-and-skinning-for-beginners">Skeleton and skinning for beginners</h3>
+<p>A <strong>rigid mesh</strong> moves as one piece. A <strong>skinned mesh</strong> (character) deforms — elbows bend, cloth wrinkles — because vertices follow <strong>bones</strong>.</p>
+<p><strong>Skeleton = tree of joints:</strong></p>
+<pre><code class="language-text">Root (hips)
+├─ Spine
+│    └─ Head
+└─ Leg_L
+     └─ Foot_L
+</code></pre>
+<p>Each joint has:</p>
+<ul>
+<li><strong>Local transform</strong> — position/rotation relative to parent</li>
+<li><strong>Inverse bind matrix</strong> — undoes the mesh's pose at export time so animation can re-apply</li>
+</ul>
+<p><strong>Skin weights:</strong> each vertex stores up to 4 bone indices + weights (sum to 1.0):</p>
+<pre><code class="language-text">Vertex on elbow influenced 70% by "Forearm" bone, 30% by "UpperArm"
+</code></pre>
+<p><strong>Palette:</strong> each frame, compute one 4×4 matrix per joint → upload to GPU (Chapter 9).</p>
+<p><strong>MaxJoints limit (128 in Spark):</strong> glTF with more than 128 joints fails import — check <code>Skeleton::MaxJoints</code> and <code>VulkanSceneDescriptors::kMaxSkinJoints</code> when import errors mention joint count.</p>
+<h2 id="b.concept-deep-dive-bind-pose-animation-and-the-skin-matrix">1b. Concept Deep Dive — Bind Pose, Animation, and the Skin Matrix</h2>
+<h3 id="why-inverse-bind-matrices-exist">Why inverse bind matrices exist</h3>
+<p>When an artist rigs a character in Blender, vertices are stored in <strong>bind pose</strong> (usually T-pose or A-pose). Animation moves joints in a hierarchy. To deform a vertex correctly, the GPU must:</p>
+<ol>
+<li>Transform the vertex from bind space into <strong>joint local space</strong> (<code>inverseBind</code>)</li>
+<li>Apply the <strong>animated joint transform</strong> (<code>worldJoint</code>)</li>
+<li>Apply any <strong>scene-graph correction</strong> (<code>jointGlobalPrefix</code> — glTF armature offset)</li>
+</ol>
+<p>Spark combines these into one palette matrix per joint:</p>
+<pre><code class="language-text">palette[j] = jointGlobalPrefix[j] × worldJoint[j] × inverseBind[j]
+</code></pre>
+<p>The vertex shader then blends four such matrices by weight — <strong>linear blend skinning (LBS)</strong>.</p>
+<h3 id="jointglobalprefix-the-gltf-armature-gotcha">jointGlobalPrefix — the glTF armature gotcha</h3>
+<p>glTF skins often live under a scene node with non-identity transform. Spark bakes that into <code>inverseBind</code> at import (<code>GltfSkinNodeLoader</code>) and may also store <code>jointGlobalPrefix</code> so animation clips authored in joint-local space still align with the mesh in world space:</p>
+<pre><code class="language-cpp">// src/spark/scene/assets/gltf/GltfSkinNodeLoader.cpp (lines 99–105)
+cgltf_node_transform_world(skinNode, wm);
+const Matrix4 bakeWorld = Matrix4FromCgltf(wm);
+Matrix4 invBake{};
+if (!bakeWorld.TryInvert(invBake)) {
+    invBake = Matrix4::Identity;
+}
+// inverseBind[i] = ibm * invBake  — adjusts IBM for skin-node world transform
+</code></pre>
+<p>Without this bake, characters appear offset, scaled, or rotated relative to their collision capsule.</p>
+<h3 id="buildpalettefrompose-the-cpu-heart-of-skinning">BuildPaletteFromPose — the CPU heart of skinning</h3>
+<p>Every frame (or bind pose), Spark converts joint <strong>local poses</strong> → <strong>world matrices</strong> → <strong>skin palette</strong>:</p>
+<pre><code class="language-cpp">// src/spark/animation/Skeleton.cpp (lines 255–276)
+void Skeleton::BuildPaletteFromPose(
+        const Array&lt;Transform&gt;&amp; pose,
+        Matrix4* outPalette,
+        std::uint32_t paletteMax) const {
+    Array&lt;Matrix4&gt; locals;
+    locals.Resize(jointCount);
+    for (std::uint32_t j = 0; j &lt; jointCount; ++j) {
+        locals[j] = pose[j].ToMatrix4();
+    }
+    Array&lt;Matrix4&gt; world;
+    ComputeJointWorldMatrices(jointCount, jointParents, locals, world);
+
+    const bool usePrefix = jointGlobalPrefix.GetSize() == jointCount;
+    for (std::uint32_t j = 0; j &lt; jointCount; ++j) {
+        const Matrix4&amp; pre = usePrefix ? jointGlobalPrefix[j] : Matrix4::Identity;
+        outPalette[j] = pre * world[j] * inverseBind[j];
+    }
+}
+</code></pre>
+<p><code>ComputeJointWorldMatrices</code> walks the parent chain iteratively — glTF joint arrays are not guaranteed topologically sorted.</p>
+<h3 id="joint-cap-128-everywhere">Joint cap: 128 everywhere</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Location</th>
+<th>Constant</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU skeleton</td>
+<td><code>Skeleton::MaxJoints</code></td>
+<td>128</td>
+</tr>
+<tr>
+<td>GPU SSBO</td>
+<td><code>VulkanSceneDescriptors::kMaxSkinJoints</code></td>
+<td>128</td>
+</tr>
+<tr>
+<td>SSBO byte size</td>
+<td><code>kSkinSsboBytes</code></td>
+<td>8192 (128 × 64-byte <code>mat4</code>)</td>
+</tr>
+<tr>
+<td>Import guard</td>
+<td><code>GltfSkinNodeLoader</code></td>
+<td>rejects <code>jointCount &gt; 128</code></td>
+</tr>
+</tbody>
+</table>
+<p>Raising the cap requires coordinated changes in C++, SSBO allocation, and <code>scene.vert</code> <code>push.jointCount</code> guard.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="joint-hierarchy">Joint hierarchy</h3>
 <p>A <strong>skeleton</strong> is a tree of joints: parent indices, rest local transforms, and <strong>inverse bind matrices</strong> from glTF skin. Animation clips store sparse TRS key channels targeting joint indices.</p>
@@ -1064,8 +1169,8 @@ animation clips cannot target joints and the GPU cannot blend vertices.</p>
 <p>GPU palette entry: <code>skinMatrix[j] = jointGlobalPrefix[j] * worldJoint[j] * inverseBind[j]</code>. Vertices stay in bind pose on CPU; shader multiplies by the blended skin matrix.</p>
 <h3 id="topological-evaluation">Topological evaluation</h3>
 <p><code>ComputeJointWorldMatrices</code> resolves parent chains — parents must be ready before children. Spark uses iterative <code>SolveWorldMatrix</code> with a done[] guard for out-of-order joint lists.</p>
-<h3 id="maxjoints-64">MaxJoints = 64</h3>
-<p><code>Skeleton::MaxJoints</code> caps palette size for SSBO packing and push constant jointCount. glTF skins with &gt;64 joints fail import early.</p>
+<h3 id="maxjoints-128">MaxJoints = 128</h3>
+<p><code>Skeleton::MaxJoints</code> caps palette size for SSBO packing and push constant <code>jointCount</code>. glTF skins with &gt;128 joints fail import early in <code>GltfSkinNodeLoader</code>.</p>
 <h3 id="clip-sampling">Clip sampling</h3>
 <p><code>SampleClipPose</code> lerps translation/scale, slerps rotation per channel at clamped time. Missing channels fall back to <code>restLocal</code> bind pose.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
@@ -1086,7 +1191,7 @@ animation clips cannot target joints and the GPU cannot blend vertices.</p>
 <p><strong>Why:</strong> Handles unsorted glTF joint arrays without requiring strict topological import order.</p>
 <p><strong>In Spark:</strong> <code>Skeleton.cpp</code> — SolveWorldMatrix helper</p>
 <h3 id="static-cap-at-import-and-gpu">Static cap at import and GPU</h3>
-<p><strong>Concept:</strong> MaxJoints = 64</p>
+<p><strong>Concept:</strong> MaxJoints = 128</p>
 <p><strong>Decision:</strong> Static cap at import and GPU</p>
 <p><strong>Why:</strong> Matches skin SSBO sizing and scene.vert jointCount guard.</p>
 <p><strong>In Spark:</strong> <code>Skeleton::MaxJoints</code> + skinned_mesh_gltf jointCount check</p>
@@ -1108,7 +1213,7 @@ Spark is the reference implementation you can build, run, and diff against.</p>
  */
 class Skeleton {
 public:
-    static constexpr std::uint32_t MaxJoints = 64;
+    static constexpr std::uint32_t MaxJoints = 128;
 
     Skeleton() = default;
 
@@ -1246,7 +1351,7 @@ local pose then calls BuildPaletteFromPose. <strong>GPU Skinning</strong> consum
 <ul>
 <li><strong>Wrong joint order</strong> — parent indices must match glTF skin.joints array order.</li>
 <li><strong>Missing inverse bind</strong> — mesh collapses or explodes; verify inverseBindMatrices accessor loaded.</li>
-<li><strong>&gt;64 joints</strong> — import fails; simplify skeleton or raise cap coherently in C++ and GLSL.</li>
+<li><strong>&gt;128 joints</strong> — import fails; simplify skeleton or raise cap coherently in C++, SSBO size, and GLSL.</li>
 <li><strong>Euler rotation keys</strong> — Spark slerps quaternions; ensure glTF rotations are quaternion channels.</li>
 </ul>
 <h2 id="exercises">7. Exercises</h2>
@@ -1278,6 +1383,30 @@ local pose then calls BuildPaletteFromPose. <strong>GPU Skinning</strong> consum
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#skeleton-and-skinning-for-beginners">Skeleton and skinning for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-bind-pose-animation-and-the-skin-matrix">1b. Concept Deep Dive — Bind Pose, Animation, and the Skin Matrix</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-inverse-bind-matrices-exist">Why inverse bind matrices exist</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#jointglobalprefix-the-gltf-armature-gotcha">jointGlobalPrefix — the glTF armature gotcha</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#buildpalettefrompose-the-cpu-heart-of-skinning">BuildPaletteFromPose — the CPU heart of skinning</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#joint-cap-128-everywhere">Joint cap: 128 everywhere</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1295,7 +1424,7 @@ local pose then calls BuildPaletteFromPose. <strong>GPU Skinning</strong> consum
                         </li>
                         
                         <li class="toc-h3">
-                          <a href="#maxjoints-64">MaxJoints = 64</a>
+                          <a href="#maxjoints-128">MaxJoints = 128</a>
                         </li>
                         
                         <li class="toc-h3">

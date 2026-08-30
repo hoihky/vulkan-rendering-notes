@@ -16,6 +16,108 @@ needs a **CPU mesh type** — vertices, indices, optional bounds — shared acro
 Your build-along milestone: represent a colored cube and ground plane through `Mesh` + `MeshComponent`, understanding
 which slots hit static GPU packs vs the dynamic custom path.
 
+### What is a mesh? (complete beginner)
+
+A **3D model** in a game is made of **triangles**. GPUs only rasterize triangles (or lines/points in special modes). A **mesh** is the engine's CPU-side container for:
+
+- **Vertices** — corners of triangles, each with data (position, normal, UV, …)
+- **Indices** — which three vertices form each triangle
+
+Example: a quad (four corners) is drawn as **two** triangles → six indices, but you might store four unique vertices and reuse corners via indices.
+
+```text
+Vertices:  A B C D  (positions in 3D space)
+Indices:   0,1,2  and  0,2,3  → two triangles ABC and ACD
+```
+
+`vkCmdDrawIndexed` says: "For each triangle, look up three indices, fetch three vertices, run shaders."
+
+### Why separate mesh from GameObject
+
+A **GameObject** is an entity in your world (a tree, the player, a bullet). A **Mesh** is shared geometry — one oak tree mesh can instantiate 500 trees with different transforms. Spark uses:
+
+```text
+SharedPtr<Mesh>  ← loaded once, read-only geometry
+MeshComponent    ← per-entity: which mesh + which render slot + fallback color
+TransformComponent ← per-entity: position, rotation, scale
+```
+
+Without this split, duplicating a forest would duplicate megabytes of vertex data.
+
+### Static slot vs custom upload (the two GPU paths)
+
+Spark optimizes the two most common cases:
+
+| `SceneMeshSlot` | Geometry | GPU path | When |
+|-----------------|----------|----------|------|
+| `UnitCube` | Engine built-in cube | Pre-uploaded static `VkBuffer` | Debug, placeholders |
+| `GroundPlane` | Engine built-in plane | Pre-uploaded static `VkBuffer` | Ground in demos |
+| `Custom` | Any `SharedPtr<Mesh>` | `VulkanCustomMeshPool` uploads each frame or caches | glTF imports, procedural |
+
+**Beginner rule:** If you loaded a file from disk, you almost always use `SceneMeshSlot::Custom`. Built-in slots exist so Part II can draw cubes before importers exist.
+
+### Walkthrough: one vertex's journey to the screen
+
+1. **Authoring** — Blender exports position `(0.5, 1.0, 0.2)`, normal `(0,1,0)`, UV `(0.3, 0.7)`.
+2. **Import** — glTF loader writes `Mesh::Vertex` into `Array<Vertex>`.
+3. **Gameplay** — `MeshComponent` references the mesh; `TransformComponent` places the object at `(10, 0, 5)`.
+4. **Submit** — `SceneDrawItem` gets world matrix + mesh slot + material layers.
+5. **Upload** — Custom pool copies vertex array to GPU buffer (or reuses cached upload).
+6. **Record** — `vkCmdBindVertexBuffers`, `vkCmdBindIndexBuffer`, `vkCmdDrawIndexed`.
+7. **Vertex shader** — Multiplies position by `model * viewProj` matrices.
+8. **Fragment shader** — Samples texture at interpolated UV, applies lighting.
+9. **HDR framebuffer** — Stores linear color (Part X).
+10. **Tonemap** — Compresses to monitor range, present.
+
+Every later chapter replaces one step with production detail. Part VI focuses on steps 1–3; Part II on 5–6; Part IV on 8; Part X on 9–10.
+
+## 1b. Concept Deep Dive — Full Vertex Layout and MeshComponent
+
+### Production Vertex record (beyond position/normal/UV)
+
+Spark's rigid `Mesh::Vertex` carries fields glTF importers populate:
+
+```cpp
+// include/spark/scene/mesh/Mesh.hpp (lines 25–33)
+struct Vertex {
+    Vector3 position{Vector3::Zero};
+    Vector3 normal{Vector3::UnitZ};
+    Vector2 texCoord{Vector2::Zero};
+    Vector2 texCoord1{Vector2::Zero};   // second UV set (lightmaps, etc.)
+    Vector4 color{1, 1, 1, 1};          // vertex color multiplier
+    Vector4 tangent{};                  // xyz = tangent, w = bitangent handedness
+};
+```
+
+`MeshComponent` pairs a `SharedPtr<Mesh>` with render slot and fallback tint:
+
+```cpp
+// include/spark/ecs/components/rendering/MeshComponent.hpp (concept)
+class MeshComponent {
+    SharedPtr<Mesh> mesh;
+    SceneMeshSlot slot = SceneMeshSlot::UnitCube;
+    Vector3 albedo{1, 1, 1};  // used when no MaterialComponent
+};
+```
+
+### Interleaved GPU stride matches VulkanSceneVertexLayout
+
+When `VulkanCustomMeshPool` packs a rigid mesh, `VulkanGpuMeshInterleaved::AppendRigidVertexToInterleaved` writes floats in shader location order — positions 0–2 in `scene.vert` align with this packing. Skinned meshes append joint indices (bitcast float) and weights after color.
+
+### TryComputeAxisAlignedBounds — used everywhere
+
+```cpp
+// Demos scale imported glTF to target height:
+Vector3 bmin, bmax;
+if (mesh->TryComputeAxisAlignedBounds(bmin, bmax)) {
+    const float h = bmax.y - bmin.y;
+    const float scale = targetHeight / h;
+    transform->SetScale({scale, scale, scale});
+}
+```
+
+CharacterCameraDemo and ThreeDDemo use bounds for camera framing and tree scaling — cheap O(n) after load.
+
 ## 2. Core Concepts
 
 ### CPU mesh as shared asset
@@ -41,6 +143,51 @@ Spark procedural helpers (`CreateUnitCube`, `CreateGroundPlane`, …) duplicate 
 ### Axis-aligned bounds
 
 `TryComputeAxisAlignedBounds` scans positions for min/max — used by demos to scale trees to target height and frame debug cameras. Bounds live on CPU; culling chapters consume them later.
+
+### MeshSubmesh: one buffer, many materials
+
+glTF files often ship **one mesh with multiple primitives**, each referencing a different material. Spark does not split these into separate `Mesh` objects. Instead, a single `Mesh` holds one shared vertex/index buffer and an array of `MeshSubmesh` slices:
+
+```cpp
+// include/spark/scene/mesh/MeshSubmesh.hpp (lines 15–31)
+/** Index range + glTF material index for one primitive within a shared vertex buffer. */
+struct MeshSubmesh {
+    std::uint32_t indexOffset = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t materialIndex = 0;
+    Array<MeshSubmeshVariantMapping> variantMappings;
+
+    [[nodiscard]] std::uint32_t ResolveMaterialIndex(const std::uint32_t activeVariant) const noexcept {
+        for (std::size_t i = 0; i < variantMappings.GetSize(); ++i) {
+            if (variantMappings[i].variantIndex == activeVariant) {
+                return variantMappings[i].materialIndex;
+            }
+        }
+        return materialIndex;
+    }
+};
+```
+
+Each glTF **primitive** appends vertices/indices, then records a submesh entry with `indexOffset`, `indexCount`, and `materialIndex`:
+
+```cpp
+// src/spark/scene/assets/gltf/GltfMeshBuilder.cpp (lines 127–137)
+    MeshSubmesh submesh{};
+    submesh.indexOffset = indexOffset;
+    submesh.indexCount = indexCount;
+    submesh.materialIndex = MaterialIndex(data, prim->material);
+    for (cgltf_size mi = 0; mi < prim->mappings_count; ++mi) {
+        MeshSubmeshVariantMapping mapping{};
+        mapping.variantIndex = static_cast<std::uint32_t>(prim->mappings[mi].variant);
+        mapping.materialIndex = MaterialIndex(data, prim->mappings[mi].material);
+        submesh.variantMappings.PushBack(mapping);
+    }
+    outMesh.GetSubmeshes().PushBack(submesh);
+```
+
+At submit time, each submesh becomes a separate `SceneDrawItem` with `submeshIndex = si`. The GPU issues one `vkCmdDrawIndexed` per submesh, slicing the shared index buffer with `firstIndex` and `indexCount` from the packed custom mesh pool. This is how a single imported `.glb` chair with wood/metal/fabric materials renders without duplicating vertex data.
+
+**Design rule:** if `GetSubmeshes().GetSize() > 1`, pair the mesh with `MultiMaterialComponent` (Part VI Chapter 3, Part VII Chapter 5). A lone `MaterialComponent` only affects the first submesh or the full buffer when no submesh table exists.
 
 ## 3. Design Decisions
 

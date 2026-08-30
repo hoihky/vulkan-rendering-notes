@@ -14,6 +14,136 @@ Vulkan does not create windows — it renders **to surfaces** provided by the OS
 
 This chapter covers the **platform layer** only. No `VkDevice` yet. The milestone is a window that can later host a swapchain, with correct hints and extension queries so Chapter 6's instance creation succeeds.
 
+### What is a surface? (beginner)
+
+Vulkan cannot draw to "the window" directly. It draws to a **VkSurfaceKHR** — an OS-specific object that represents the drawable region of a native window (Cocoa view on macOS, HWND on Windows, Wayland/X11 on Linux).
+
+```text
+GLFW window  →  native window handle  →  VkSurfaceKHR  →  swapchain images
+```
+
+GLFW hides platform differences. You call:
+
+```cpp
+glfwCreateWindowSurface(instance, window, nullptr, &surface);
+```
+
+after creating `VkInstance` with the extensions GLFW requires.
+
+### Why GLFW_NO_API matters
+
+By default GLFW creates an **OpenGL** context. Vulkan is a separate API — you do not want OpenGL and Vulkan fighting over the same window. The hint:
+
+```cpp
+glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+```
+
+tells GLFW: "give me a native window only; I will attach Vulkan myself."
+
+**Beginner checklist for a Vulkan window:**
+
+1. `glfwInit()`
+2. `GLFW_NO_API` hint
+3. `glfwCreateWindow(width, height, title, ...)`
+4. Query `glfwGetRequiredInstanceExtensions` before `vkCreateInstance`
+5. After instance exists, `glfwCreateWindowSurface`
+6. Handle `glfwSetFramebufferSizeCallback` for resize (swapchain recreate later)
+
+## 1b. Concept Deep Dive — From Native Window to `VkSurfaceKHR`
+
+### GLFW as a thin platform adapter
+
+Vulkan is OS-agnostic at the API level but not at the window level — each platform exposes surfaces through different extensions (`VK_KHR_win32_surface`, `VK_MVK_macos_surface`, `VK_KHR_wayland_surface`, etc.). GLFW hides that matrix: it creates a native window, returns the required instance extension list via `glfwGetRequiredInstanceExtensions`, and builds `VkSurfaceKHR` with `glfwCreateWindowSurface` once you have a `VkInstance`.
+
+Spark's `Window` class owns GLFW lifetime (`glfwInit` in constructor, `glfwTerminate` in destructor) and enforces `GLFW_NO_API` so GLFW does not allocate an OpenGL context you never use. On macOS, `GLFW_COCOA_RETINA_FRAMEBUFFER` ensures framebuffer size matches physical pixels — swapchain extent must use `glfwGetFramebufferSize`, not logical window size, or rendering looks soft on Retina displays.
+
+The user-pointer pattern stores `this` on the GLFW window handle so static C callbacks dispatch to member functions (`HandleFramebufferResize`, cursor forwarding). `Engine` registers a `std::function` resize callback that calls `NotifySwapchainResize` without pulling GLFW types into `Engine.hpp`.
+
+### Platform chain Spark uses
+
+```text
+glfwInit + GLFW_NO_API
+       │
+       ▼
+glfwCreateWindow ──► native handle (HWND / NSView / wl_surface)
+       │
+       ├─ glfwGetRequiredInstanceExtensions ──► merged into vkCreateInstance
+       │
+       └─ glfwCreateWindowSurface(instance, window) ──► VkSurfaceKHR
+              │
+              ▼
+         vkCreateSwapchainKHR (Chapter 8)
+```
+
+| Responsibility | Spark API | GLFW call |
+|----------------|-----------|-----------|
+| No GL context | constructor hint | `GLFW_CLIENT_API, GLFW_NO_API` |
+| Pixel size | `GetFramebufferSize` | `glfwGetFramebufferSize` |
+| Instance extensions | `RequiredVulkanInstanceExtensions` | `glfwGetRequiredInstanceExtensions` |
+| Surface | `CreateVulkanSurface` | `glfwCreateWindowSurface` |
+
+### Constructor — hints, window, resize trampoline
+
+```cpp
+// src/spark/render/platform/Window.cpp (lines 11–34)
+Window::Window() {
+    if (!glfwInit()) {
+        throw std::runtime_error("glfwInit failed");
+    }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+#if defined(__APPLE__)
+    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+#endif
+
+    glfwWindow = glfwCreateWindow(DefaultWidth, DefaultHeight, "Spark", nullptr, nullptr);
+    // ...
+    glfwSetWindowUserPointer(glfwWindow, this);
+    glfwSetFramebufferSizeCallback(
+            glfwWindow,
+            +[](GLFWwindow* w, int width, int height) {
+                auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+                if (self != nullptr) {
+                    self->HandleFramebufferResize(width, height);
+                }
+            });
+}
+```
+
+### Extension query — fed into instance creation (Chapter 6)
+
+```cpp
+// src/spark/render/platform/Window.cpp (lines 95–107)
+Array<const char*> Window::RequiredVulkanInstanceExtensions() const {
+    std::uint32_t count = 0;
+    const char** names = glfwGetRequiredInstanceExtensions(&count);
+    if (names == nullptr || count == 0) {
+        throw std::runtime_error("glfwGetRequiredInstanceExtensions returned no extensions");
+    }
+    Array<const char*> out;
+    out.Reserve(static_cast<std::size_t>(count));
+    for (std::uint32_t i = 0; i < count; ++i) {
+        out.PushBack(names[i]);
+    }
+    return out;
+}
+```
+
+### Surface creation after instance exists
+
+```cpp
+// src/spark/render/platform/Window.cpp (lines 109–115)
+void Window::CreateVulkanSurface(void* instancePtr, void* outSurface) const {
+    const auto vkInstance = static_cast<VkInstance>(instancePtr);
+    auto* surfaceOut = static_cast<VkSurfaceKHR*>(outSurface);
+    if (glfwCreateWindowSurface(vkInstance, glfwWindow, nullptr, surfaceOut) != VK_SUCCESS) {
+        throw std::runtime_error("glfwCreateWindowSurface failed");
+    }
+}
+```
+
+Destroy order: surface before instance, window before `glfwTerminate` — every downstream Vulkan object assumes this file got the platform bridge right.
+
 ## 2. Core Concepts
 
 ### GLFW_NO_API

@@ -18,6 +18,154 @@ The CPU records commands **faster** than the GPU executes them. The display show
 
 This chapter completes **Part I**: after it, Spark clears or renders to the swapchain every frame with correct Vulkan sync. Everything in Part II adds draws inside the same sync skeleton.
 
+### Why sync exists (real-world analogy)
+
+Imagine a factory with two workers:
+
+- **CPU worker** writes instructions on a clipboard (command buffer + uniform data).
+- **GPU worker** reads the clipboard and paints (executes draws).
+
+If the CPU erases and rewrites the clipboard **while the GPU is still reading**, the painting gets wrong colors — flickering transforms, corrupted textures, crashes.
+
+**Fences** let the CPU ask: "GPU, are you done with job #2 yet?"  
+**Semaphores** let the GPU coordinate: "acquire finished → now you may render → render finished → now you may present."
+
+Without sync, Vulkan validation layers scream. With bad sync, you get **heisenbugs** — works on one GPU, fails on another.
+
+### Two frames in flight — explained simply
+
+Spark uses **2 frames in flight** (`kMaxFramesInFlight = 2`):
+
+```text
+CPU frame A: writes UBO slot 0, submits work using slot 0
+CPU frame B: writes UBO slot 1, submits work using slot 1  (while GPU still on A)
+CPU frame C: must WAIT for slot 0 fence before overwriting slot 0 again
+```
+
+You need **two copies** of per-frame CPU data (uniform buffers, descriptor sets indexed by `frameIndex % 2`). The GPU may still be reading slot 0 while the CPU prepares slot 1 — that is intentional parallelism.
+
+**Beginner mistake:** one UBO, overwritten every frame without waiting — camera matrix flickers between current and previous frame.
+
+### The three semaphores per frame (conceptual)
+
+```text
+imageAvailableSemaphore  — swapchain image ready to render into
+renderFinishedSemaphore  — rendering done, safe to present
+(acquire/present pair per swapchain image in Spark)
+```
+
+CPU records commands after acquire signals `imageAvailable`. Present waits on `renderFinished` before showing the image.
+
+## 1b. Concept Deep Dive — CPU–GPU Parallelism Without Races
+
+### Two timelines that must meet safely
+
+The CPU can record frame *N+1* while the GPU still executes frame *N*. That overlap is desirable — it fills the 16 ms budget — but only if you never reuse resources the GPU still reads. Spark uses **two frames in flight** (`kMaxFramesInFlight = 2`): two fence slots, two `imageAvailable` semaphores, and per-flight uniform/descriptor indexing in later parts.
+
+**Fences** synchronize CPU with GPU completion: `WaitForCurrentFrameFence` blocks until the submission tagged with this slot finishes, then `ResetCurrentFrameFence` before recording again. Fences are created **signaled** so the first frame's wait does not deadlock. **Semaphores** synchronize GPU stages: acquire signals `imageAvailable`, submit waits on it and signals `renderFinished[imageIndex]`, present waits on `renderFinished`. Semaphores never block the CPU — they chain queue operations.
+
+Swapchain image count often differs from frames in flight (three images, two in-flight slots). Spark therefore indexes `renderFinishedSemaphores` by **acquired image index**, not by `currentFrame`, so present always waits on the correct completion signal even when image count ≠ 2.
+
+### Sync primitives per frame
+
+```text
+CPU                          GPU (graphics queue)              GPU (present)
+───                          ────────────────────              ─────────────
+WaitForCurrentFrameFence
+AcquireNextImage ───────────► imageAvailable signaled
+ResetFence
+Record + Submit ────────────► wait imageAvailable
+                              execute render pass
+                              signal renderFinished[i]
+Present ─────────────────────────────────────────────────────► wait renderFinished[i]
+                                                               show image i
+AdvanceFrame (currentFrame ^= 1)
+```
+
+| Primitive | CPU blocks? | Spark array indexed by |
+|-----------|-------------|------------------------|
+| `inFlightFences` | Yes (`vkWaitForFences`) | `currentFrame` (0..1) |
+| `imageAvailableSemaphores` | No | `currentFrame` |
+| `renderFinishedSemaphores` | No | `imageIndex` (swapchain image) |
+
+### Create per-flight fences (signaled) and semaphores
+
+```cpp
+// src/spark/render/core/VulkanFrameSync.cpp (lines 7–23)
+void VulkanFrameSync::Create(VkDevice device) {
+    imageAvailableSemaphores.Resize(kMaxFramesInFlight);
+    inFlightFences.Resize(kMaxFramesInFlight);
+
+    VkFenceCreateInfo fenceCreateInfo{};
+    fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (std::size_t i = 0; i < kMaxFramesInFlight; ++i) {
+        vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphores[i]);
+        vkCreateFence(device, &fenceCreateInfo, nullptr, &inFlightFences[i]);
+    }
+}
+```
+
+### Submit — wait acquire, signal render finished, attach fence
+
+```cpp
+// src/spark/render/core/VulkanFrameSync.cpp (lines 127–146)
+void VulkanFrameSync::SubmitFrame(
+        VkQueue graphicsQueue,
+        VkCommandBuffer commandBuffer,
+        std::uint32_t imageIndex) const {
+    VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+    constexpr VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT};
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &renderFinishedSemaphores[imageIndex];
+
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+}
+```
+
+### Present — wait on the image's render-finished semaphore
+
+```cpp
+// src/spark/render/core/VulkanFrameSync.cpp (lines 153–164)
+VkResult VulkanFrameSync::PresentFrame(
+        VkQueue presentQueue,
+        VkSwapchainKHR swapchain,
+        std::uint32_t imageIndex) const {
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &renderFinishedSemaphores[imageIndex];
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &swapchain;
+    presentInfo.pImageIndices = &imageIndex;
+    return vkQueuePresentKHR(presentQueue, &presentInfo);
+}
+```
+
+### `DrawFrame` orchestrates the sequence
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 433–437, abbreviated)
+void VulkanRenderer::DrawFrame() {
+    if (framebufferResized) {
+        RecreateSwapchain();
+        return;
+    }
+    frameSync.WaitForCurrentFrameFence(device());
+    // AcquireNextImage → WaitForSwapchainImageFence → ResetCurrentFrameFence
+    // record → SubmitFrame → PresentFrame → AdvanceFrame
+}
+```
+
+Part I completes when this skeleton runs without validation sync errors; Part II inserts draw calls between reset and submit without changing the outer fence/semaphore choreography.
+
 ## 2. Core Concepts
 
 ### CPU–GPU timeline

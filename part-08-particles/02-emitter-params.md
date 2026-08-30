@@ -15,6 +15,54 @@ size shrink, gravity, and cone spread** — all adjustable without recompiling s
 
 Build along: spawn a fire-style emitter with upward direction, warm start color, and transparent end color.
 
+## 1b. Concept Deep Dive — SimParticle Fields and spawnDebt
+
+### Per-slot state vs exported instance
+
+Each alive slot stores simulation-only fields the renderer never sees:
+
+```cpp
+// include/spark/ecs/components/rendering/ParticleEmitterComponent.hpp (lines 60–70)
+struct SimParticle {
+    bool alive = false;
+    Vector3 position{};
+    Vector3 velocity{};
+    float age = 0.0F;
+    float maxAge = 1.0F;
+    float size0 = 0.1F;
+    float size1 = 0.05F;
+    Vector4 color0{1, 1, 1, 1};
+    Vector4 color1{1, 1, 1, 0};
+};
+```
+
+At spawn, `size0`/`size1` and `color0`/`color1` are copied from emitter parameters (`sizeStart`, `colorStart`, etc.). `CollectInstances` lerps by `age / maxAge` before export — the GPU receives final size and color, not endpoints.
+
+### spawnDebt — fractional emission at any frame rate
+
+```cpp
+// src/spark/ecs/components/rendering/ParticleEmitterComponent.cpp (lines 108–112)
+spawnDebt += emissionRate * dt;
+while (spawnDebt >= 1.0F) {
+    spawnDebt -= 1.0F;
+    SpawnOne(origin);
+}
+```
+
+At 30 FPS with `emissionRate = 48`, each frame accrues ~1.6 debt → one spawn most frames, two every third frame. At 144 FPS debt accrues ~0.33 per frame → still ~48 spawns/sec without floating-point drift. `SpawnOne` walks the slot pool for the first dead index — no heap allocation.
+
+### Cone spread via RandomUnitSphere jitter
+
+```cpp
+// SpawnOne (lines 80–89)
+const Vector3 basis = emissionDir;
+const Vector3 jitter = RandomUnitSphere() * spreadRadians;
+Vector3 dir = basis + jitter;
+// ... normalize, then velocity = dir * (speedMin + Random01() * (speedMax - speedMin))
+```
+
+`spreadRadians` scales a random unit-sphere offset added to the emission direction. Fire presets use `0.55F` (~31° half-angle); snow uses `1.25F` for wide drift.
+
 ## 2. Core Concepts
 
 ### Slot pool simulation

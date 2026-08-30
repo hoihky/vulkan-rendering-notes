@@ -14,6 +14,81 @@ The shadow pass does not need albedo, normals, or lighting — only **correct cl
 
 Spark's `shadow_depth.vert` is the reference implementation you will mirror in your engine.
 
+### Depth-only pass for beginners
+
+The shadow pass is simpler than the main lit pass:
+
+```text
+Main pass shader:     position + normals + UVs → color + depth
+Shadow pass shader:   position only           → depth ONLY (no color buffer)
+```
+
+There is **no fragment shader** (or an empty one) — the GPU writes depth automatically from the vertex shader's `gl_Position.z`.
+
+Pipeline differences:
+
+| Setting | Lit pipeline | Shadow pipeline |
+|---------|--------------|-----------------|
+| Color attachment | RGBA16F HDR | **None** |
+| Depth attachment | D32 | D32 shadow map |
+| Depth write | ON | ON |
+| Color write | ON | **OFF** |
+
+The vertex shader transforms position by **light view-projection** instead of camera `viewProj`:
+
+```glsl
+// shadow_depth.vert (concept)
+gl_Position = ubo.worldToShadowClip[cascade] * push.model * vec4(position, 1.0);
+```
+
+Same `push.model` and vertex buffer as the main pass — only the matrix changes. That is why winding and mesh layout must match.
+
+## 1b. Concept Deep Dive — shadow_depth.vert Contract
+
+### Shared vertex input with lit pass
+
+```glsl
+// shaders/shadow_depth.vert (lines 3–8)
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inTexCoord;
+layout(location = 3) in vec4 inTangent;
+layout(location = 4) in vec4 inJointsPacked;
+layout(location = 5) in vec4 inWeights;
+```
+
+Same locations as `scene.vert` — one interleaved vertex buffer serves both pipelines. Normals and UVs are unused in the shadow pass but must be present for attribute layout compatibility.
+
+### Push constants — model + lightViewProj only
+
+```glsl
+// shadow_depth.vert (lines 14–21, 52)
+layout(push_constant) uniform ShadowPush {
+    mat4 model;
+    mat4 lightViewProj;
+    int useSkinning;
+    int jointCount;
+} sp;
+// ...
+gl_Position = sp.lightViewProj * vec4(worldPos, 1.0);
+```
+
+No material, no camera `viewProj`. `RecordShadowCastMeshes` memcpy's `d.model` and the cascade-specific light matrix per draw.
+
+### RecordShadowCastMeshes — indexed draws from scene snapshot
+
+```cpp
+// src/spark/render/shadow/VulkanShadowCastDraw.cpp (lines 43–98)
+for (std::size_t di = 0; di < ctx.scene->draws.GetSize(); ++di) {
+    const SceneDrawItem& d = ctx.scene->draws[di];
+    if (d.skyMode != SceneSkyMode::None) continue;
+    if ((d.shadowFlags & kSceneShadowCast) == 0) continue;
+    // bind static or custom VB/IB, push constants, vkCmdDrawIndexed
+}
+```
+
+Sky draws are skipped. Only casters enter the depth pass. Static scene meshes (cube, plane) and custom dynamic meshes share the same shader — binding switches when geometry source changes.
+
 ## 2. Core Concepts
 
 ### Vertex shader contract

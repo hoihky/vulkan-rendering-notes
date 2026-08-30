@@ -21,6 +21,73 @@ It expects:
 
 This chapter implements movement, look, and view matrix — the pattern most students recognize from game dev tutorials, wired through Spark's `IInput` abstraction.
 
+### Fly camera controls explained (beginner)
+
+A **fly camera** is like spectator mode in an editor — you are not walking on the ground mesh, you float through the world.
+
+**Yaw and pitch:**
+
+- **Yaw** — turn left/right (rotate around world up, usually +Y).
+- **Pitch** — look up/down (clamp to ±89° so you never flip upside down).
+
+```text
+Mouse moved right → yaw increases → look toward +X
+Mouse moved up    → pitch increases → look toward +Y
+```
+
+**WASD movement** uses the camera's **forward/right** vectors, not world axes blindly:
+
+```text
+W → move along forward (where you look)
+S → backward
+A/D → strafe left/right
+Space/Shift → up/down in world space (optional)
+```
+
+**View matrix:** `LookAt(eye, eye + forward, up)` — tells the GPU "place the camera here, look there." Combined with perspective projection (Chapter 4) → `viewProj` for shaders.
+
+**F1 cursor capture:** without capture, mouse hits screen edge and stops turning — capture hides cursor and re-centers each frame for infinite look.
+
+## 1b. Concept Deep Dive — FlyCamera Movement and LookAt
+
+### Struct, not ECS component
+
+```cpp
+// include/spark/scene/camera/FlyCamera.hpp
+struct FlyCamera {
+    Vector3 position{0.0F, 4.2F, 16.0F};
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+    float moveSpeed = 5.0F;
+    float mouseSensitivity = 0.12F;
+    void ProcessMovement(IInput& input, float deltaSeconds) noexcept;
+    [[nodiscard]] Matrix4 ViewMatrix() const noexcept;
+};
+```
+
+Demos keep a `FlyCamera` on the stack or in demo state — no `GameObject` required. Projection (FOV, aspect, clip planes) stays outside the struct.
+
+### Yaw/pitch forward vector
+
+```cpp
+// src/spark/scene/camera/FlyCamera.cpp
+Vector3 FlyCamera::Forward() const noexcept {
+    const float cy = std::cos(yaw), sy = std::sin(yaw);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    return Vector3{sy * cp, sp, -cy * cp}.Normalized();
+}
+```
+
+WASD moves along `forward` and `Cross(forward, UnitY)` — strafe stays horizontal even when looking down.
+
+### IInput-only movement
+
+`ProcessMovement` queries `input.IsKeyDown(GLFW_KEY_W)` etc. — no GLFW window handle on the struct. Mouse look calls `AddLook(input.GetMouseDeltaX(), input.GetMouseDeltaY())` from demo update code after capture is enabled.
+
+### SnapLookAt for framing
+
+`SnapLookAt(target)` derives yaw/pitch from a direction vector — demos call it once after placing the camera to frame a mesh without manual angle tuning.
+
 ## 2. Core Concepts
 
 ### FlyCamera state

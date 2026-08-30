@@ -20,6 +20,80 @@ Wrong settings produce classic bugs: everything invisible (cull wrong winding), 
 
 Spark encodes most depth/cull policy in `VulkanScenePipeline.cpp` with three pipeline variants and **dynamic** cull mode for per-draw overrides. Shaders influence depth only through `gl_Position` (sky Z nudge in `scene.vert`).
 
+### Depth buffer for beginners
+
+The **depth buffer** (Z-buffer) stores how far each pixel is from the camera. When two triangles overlap the same pixel, the GPU keeps the **closer** one:
+
+```text
+Pixel (100, 200):
+  Triangle A depth = 0.45  ← wins, drawn
+  Triangle B depth = 0.72  ← behind A, discarded
+```
+
+Settings in `VkPipelineDepthStencilStateCreateInfo`:
+
+| Flag | Meaning |
+|------|---------|
+| `depthTestEnable` | Compare new fragment depth vs stored |
+| `depthWriteEnable` | Update stored depth when fragment passes test |
+| `depthCompareOp` | Usually `VK_COMPARE_OP_LESS` (closer = smaller depth in Vulkan) |
+
+**Opaque meshes:** test ON, write ON — build correct occlusion.  
+**Transparent glass:** test ON, write OFF — see through objects behind, but do not block them.  
+**Sky:** test OFF or special Z hack — infinite distance shell.
+
+### Face culling for beginners
+
+A triangle has two sides. **Back-face culling** skips triangles facing away from the camera — saves roughly half the fragment work for closed meshes.
+
+```text
+Camera sees front face (CCW winding in Spark) → draw
+Camera sees back face → cull (skip entirely)
+```
+
+If your imported model uses opposite winding, the mesh looks **inside-out** or **invisible** — fix winding at import (Part VI) or flip `frontFace` / `cullMode` temporarily to confirm diagnosis.
+
+## 1b. Concept Deep Dive — gl_Position, Sky Depth, and Pipeline Variants
+
+### How scene.vert writes depth-relevant clip coordinates
+
+For ordinary meshes, clip output is the standard perspective transform:
+
+```glsl
+// shaders/scene.vert (lines 105–111)
+vec4 clip = ubo.viewProj * vec4(worldPos, 1.0);
+if (push.skyMode != 0) {
+    float zw = max(clip.w, 1e-5);
+    gl_Position = vec4(clip.x, clip.y, zw * (1.0 - 1e-4), zw);
+} else {
+    gl_Position = clip;
+}
+```
+
+After the GPU perspective divide, fragment depth comes from `gl_Position.z / gl_Position.w`. Spark does **not** write `gl_FragDepth` in `scene.frag` — depth policy is entirely fixed-function pipeline state plus this vertex-side sky nudge.
+
+### Why sky needs a clip-space hack
+
+Sky draws use `push.skyMode != 0` and a dedicated pipeline with depth test disabled. The Z nudge pushes NDC depth toward **1.0** (Vulkan far plane) so that if depth testing is accidentally enabled on a mixed pass, sky pixels still lose to foreground geometry. Combined with `pipelineSky` (`depthTestEnable = FALSE`), the dome renders as an infinite backdrop.
+
+Opaque and transparent pipelines re-enable depth test with `VK_COMPARE_OP_LESS` and differ only in `depthWriteEnable` — transparent keeps test ON but write OFF so glass does not block draws behind it.
+
+### Push constants select pipeline branch at record time
+
+`VulkanSceneOpaquePass` switches pipelines based on draw item flags before binding:
+
+| Draw kind | Pipeline | Depth test | Depth write | Notes |
+|-----------|----------|------------|-------------|-------|
+| Opaque mesh | `pipelineLit` | ON | ON | Default forward path |
+| Sky | `pipelineSky` | OFF | OFF | Vertex Z hack active |
+| Transparent | `pipelineLitTransparent` | ON | OFF | Sorted back-to-front |
+
+`push.skyMode` must agree with the bound pipeline — binding the lit pipeline while `skyMode != 0` still runs the sky fragment early-out but depth state will be wrong.
+
+### Culling vs shader winding
+
+Face culling is **not** decided in GLSL. Spark defaults to `VK_CULL_MODE_BACK_BIT` with `VK_FRONT_FACE_CLOCKWISE` to match glTF imports after index reordering. If culling hides a mesh, verify winding in RenderDoc (triangle order) before editing `scene.vert` — the shader cannot fix inverted index buffers.
+
 ## 2. Core Concepts
 
 ### Depth buffer recap

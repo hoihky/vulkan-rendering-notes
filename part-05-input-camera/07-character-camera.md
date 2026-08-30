@@ -15,6 +15,56 @@ Action games need a camera tied to a **character** — not a free fly cam. First
 
 `CharacterCameraRig` is Spark's **standalone** character camera (non-ECS) used in `CharacterCameraDemo` and `Maze3DDemo`. It complements ECS `SpringArm3D` (Chapter 6) with tighter integration to walk input and skinned mesh facing.
 
+### Character camera vs fly camera (beginner)
+
+| | Fly camera | Character camera |
+|---|------------|------------------|
+| Position | You fly anywhere | Tied to avatar |
+| Look | Mouse aims view | Mouse aims **character facing** or orbit |
+| Movement | Camera-relative WASD | **Character** walks on ground; camera follows |
+
+**First person:** camera eye at head height — you see through the avatar's eyes. Walk input moves along **camera forward projected on XZ plane** (no flying up slopes unless coded).
+
+**Third person:** camera orbits behind a shoulder pivot — you see the character mesh. Walk input moves **character**, not camera; camera catches up.
+
+**glTF facing gotcha:** many rigs face **−Z** in bind pose. Spark applies `gltfFacingOffset` quaternion so "forward" in code matches artist intent — without it, W walks sideways.
+
+**Separate yaw:** store `characterYaw` (body rotation) and `cameraPitch` (look up/down) independently — standard third-person control.
+
+## 1b. Concept Deep Dive — CharacterCameraRig Modes
+
+### First vs third person fields
+
+```cpp
+// include/spark/scene/camera/CharacterCameraRig.hpp
+struct CharacterCameraRig {
+    CharacterCameraMode mode = CharacterCameraMode::ThirdPerson;
+    Vector3 characterPosition{};
+    float characterVisualYaw = 0.0F;
+    float characterFacingYawOffset = 0.0F;  // glTF bind fix
+    Quaternion characterRootBindOrientation{Quaternion::Identity};
+    Vector3 characterLocalForward{0.0F, 0.0F, -1.0F};
+    float thirdPersonDistance = 4.25F;
+    float firstPersonEyeHeight = 1.62F;
+    void ProcessWalk(IInput& input, float deltaSeconds) noexcept;
+    [[nodiscard]] Matrix4 ViewMatrix() const noexcept;
+};
+```
+
+First person: eye at feet + `firstPersonEyeHeight` + forward nudge along yaw. Third person: camera sits behind at `thirdPersonDistance`, looks at pivot height + `thirdPersonFocusAhead`.
+
+### Walk input differs by mode
+
+`ProcessWalk` in first person moves relative to **camera yaw** (strafe + forward). Third person moves W/S along **character facing** only — A/D are intentionally ignored; mouse yaw rotates the character. `CharacterCameraDemo` wires this to a skinned glTF avatar.
+
+### glTF facing offsets
+
+`characterFacingYawOffset` and `characterRootBindOrientation` align code forward with artist bind pose — without them, W walks sideways on −Z-facing rigs. Effective heading = wrapped sum of visual yaw + offset, then multiplied by bind orientation for third-person orbit.
+
+### Same UBO handoff as FlyCamera
+
+`ViewMatrix()` returns `LookAt(eye, target, up)` — demos assign `params.viewProjection = proj * rig.ViewMatrix()` identically to `ThreeDDemo`'s fly path. Input abstraction unchanged: `ProcessWalk` and `AddLook` take `IInput&`.
+
 ## 2. Core Concepts
 
 ### Modes

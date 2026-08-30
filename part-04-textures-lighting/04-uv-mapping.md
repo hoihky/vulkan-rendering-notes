@@ -15,6 +15,86 @@ A texture is a 2D image; a mesh surface is 3D. **UV mapping** assigns each verte
 
 Spark carries UVs from glTF and procedural meshes through a fixed interleaved vertex layout into the fragment shader. This chapter connects asset authoring, vertex buffer packing, and shader sampling — the geometric half of texturing (color space is Chapter 5).
 
+### UV mapping explained without jargon
+
+Imagine wrapping a gift box with patterned paper:
+
+- The **3D box** is your mesh surface.
+- The **2D wrapping paper** is your texture image.
+- **UV mapping** is the instruction that says "corner A of the box uses this corner of the paper."
+
+Each vertex stores a 2D coordinate `(u, v)`:
+
+- `u = 0` is the left edge of the texture; `u = 1` is the right edge.
+- `v = 0` is typically the bottom; `v = 1` is the top (conventions vary by DCC tool).
+
+The GPU **interpolates** UVs across each triangle. A pixel halfway between two vertices gets a UV halfway between those vertices' UVs. The fragment shader uses that UV to read a texel color.
+
+```text
+Vertex A: position (1,0,0), uv (0,0)  ─┐
+Vertex B: position (2,0,0), uv (1,0)   ├─ triangle → rasterizer → fragment uv ≈ (0.5, 0.2)
+Vertex C: position (1,1,0), uv (0,1)  ─┘
+                                              ↓
+                              texture(brick, uv) → orange pixel
+```
+
+Without UVs, `texture()` has no coordinates — every pixel would sample the same corner of the image (or undefined behavior if UVs are zero).
+
+### Where UVs are created vs where they are consumed
+
+| Stage | Who sets UV | Format |
+|-------|-------------|--------|
+| Blender / Maya | Artist unwraps mesh | Exported in glTF `TEXCOORD_0` |
+| glTF import | `AppendPrimitive` reads accessor | `Mesh::Vertex::texCoord` |
+| GPU upload | `VulkanCustomMeshPool` memcpy | Interleaved `VkBuffer` |
+| Vertex shader | Pass through | `out vec2 vTexCoord` |
+| Fragment shader | Sample | `texture(sceneTextures, vec3(vTexCoord, layer))` |
+
+If the brick pattern looks stretched, fix UVs in Blender — not in the fragment shader. If the pattern is missing entirely, debug the import → vertex layout → shader location chain.
+
+## 1b. Concept Deep Dive — Vertex UV Path to Shader
+
+### Authoritative CPU field
+
+Every rigid mesh stores UVs on the vertex record:
+
+```cpp
+// include/spark/scene/mesh/Mesh.hpp
+struct Vertex {
+    Vector3 position;
+    Vector3 normal;
+    Vector2 texCoord;   // primary UV set (glTF TEXCOORD_0)
+    Vector2 texCoord1;  // secondary set (lightmaps, detail)
+    Vector4 color;
+    Vector4 tangent;    // xyz + handedness for normal mapping
+};
+```
+
+glTF import writes `texCoord` from accessor index 0. Procedural meshes (`CreateQuad`, brick patterns) set UVs explicitly — `(0,0)`–`(1,1)` for a full texture wrap.
+
+### Vulkan vertex attribute location 2
+
+The scene pipeline declares `texCoord` at location 2, matching `scene.vert`:
+
+```glsl
+layout(location = 2) in vec2 inTexCoord;
+layout(location = 0) out vec2 vTexCoord;
+void main() {
+    vTexCoord = inTexCoord;
+    // ...
+}
+```
+
+If location numbers drift between C++ `VkVertexInputAttributeDescription` and GLSL, UVs appear as garbage while positions still draw correctly — a common "solid color mesh" bug.
+
+### Scene-layer UV scale after upload
+
+Large textures are fit into square GPU layers with letterboxing. `Texture2D::GetSceneLayerUvScale()` returns the occupied fraction; submit copies it to `SceneDrawItem::textureUvScale`. Shader code multiplies interpolated UVs so art fills the visible sub-rectangle of the layer, not the padded border.
+
+### Tangent fallback when w = 0
+
+When `tangent.xyz` is zero (no glTF tangents), `scene.frag` reconstructs TBN from screen-space derivatives of `vTexCoord` and world position — UV quality directly affects normal-map stability at grazing angles.
+
 ## 2. Core Concepts
 
 ### UV coordinates defined

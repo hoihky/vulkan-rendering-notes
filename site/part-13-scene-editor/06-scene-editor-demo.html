@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,34 @@
 <p>Parts XIII chapters 1–5 built serialization, async load, editor shell, and panels separately. <strong>SceneEditor3DDemo</strong> proves they work together — viewport, placement tools, hierarchy/inspector, <code>SceneSerializer</code> v4 output, <code>SceneManager</code> async finalize, and <code>FillStandardLitSceneFromWorld</code> HDR rendering in one executable.</p>
 <p>The demo encodes <strong>editor-specific policy</strong>: which entities save (placed props and user lights), how project-relative paths resolve through capture callbacks, and how load clears stale placed arrays before async apply. Treat the five-case regression matrix as a merge gate — silent serializer regressions lose artist work without compile errors.</p>
 <p>Milestone: place five props, save, reload async, verify transforms and mesh paths match within float tolerance.</p>
+<h2 id="b.concept-deep-dive-sceneeditor3ddemo-save-policy">1b. Concept Deep Dive — SceneEditor3DDemo Save Policy</h2>
+<h3 id="contentmodel-filters-what-gets-captured">ContentModel filters what gets captured</h3>
+<p>Not every bootstrap entity belongs in a level file. <code>SceneEditorContentModel</code> supplies the capture predicate and path context:</p>
+<pre><code class="language-cpp">// src/spark/demo/SceneEditor3DDemo.cpp
+void SceneEditor3DDemo::SaveSceneToFile(Spark::GameWorld&amp; w) {
+    SceneCaptureContext ctx = contentModel.BuildCaptureContext();
+    const auto includeEntity = [this](const GameObject* go) -&gt; bool {
+        return contentModel.ShouldCapture(go);
+    };
+
+    SceneSerializer serializer;
+    SceneDocument document = serializer.Capture(w, ctx, includeEntity);
+    document.header.assetsRoot = Utf8String(ScenePathResolver::AssetsRoot());
+    serializer.WriteToFile(document, path.CStr());
+}
+</code></pre>
+<p>Placed props and user lights save; editor gizmo shells and bootstrap scaffolding do not — policy lives in one place, not scattered <code>if</code> checks in the serializer.</p>
+<h3 id="async-load-integrates-through-scenemanager">Async load integrates through SceneManager</h3>
+<p>Load clears stale placed arrays, begins async apply, then finalizes when assets register:</p>
+<pre><code class="language-cpp">void SceneEditor3DDemo::FinalizeAsyncSceneLoad(Spark::GameWorld&amp; w) {
+    contentModel.IntegrateLoadedInstance(w, loadedSceneId, pendingLoadDocument, hooks);
+    instanceTracker.Register(loadedSceneId);
+    selectedObject = nullptr;  // rebind selection after graph swap
+}
+</code></pre>
+<p><code>Pump()</code> runs each Simulate tick; status line shows "Loading scene (async assets)…" until <code>IsSceneReady</code> returns true.</p>
+<h3 id="five-case-regression-matrix-as-merge-gate">Five-case regression matrix as merge gate</h3>
+<p>The demo encodes editor-specific invariants: create → edit transforms → save v4 → reload async → viewport matches. Silent serializer regressions lose artist work without compile errors — treat this demo like ParticleDemo's integration harness.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="vertical-slice-integration">Vertical slice integration</h3>
 <p><code>SceneEditor3DDemo</code> is Part XIII's <strong>regression harness</strong> — editor viewport, placement tools, hierarchy/inspector, save/load, async SceneManager, and standard HDR lit rendering in one executable. Same role as ParticleDemo (Part VIII) and Platformer2DDemo (Part XI).</p>
@@ -1250,6 +1284,22 @@ void SceneEditor3DDemo::FinalizeAsyncSceneLoad(Spark::GameWorld&amp; w) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sceneeditor3ddemo-save-policy">1b. Concept Deep Dive — SceneEditor3DDemo Save Policy</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#contentmodel-filters-what-gets-captured">ContentModel filters what gets captured</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#async-load-integrates-through-scenemanager">Async load integrates through SceneManager</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#five-case-regression-matrix-as-merge-gate">Five-case regression matrix as merge gate</a>
                         </li>
                         
                         <li class="toc-h2">

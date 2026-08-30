@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,22 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Large 2D worlds are stored as <strong>tile ID grids</strong>, not as giant preauthored meshes. Drawing every cell every frame destroys CPU budget. Production engines <strong>batch visible tiles</strong> into instance pools, cull off-screen chunks, and draw with few instanced calls.</p>
 <p>Spark's <code>SceneTilemapSubmitter</code> and <code>VulkanTilemapPass</code> implement this inside the HDR composite path alongside sprites. Milestone: render a multi-layer map in <code>TilemapShowcase2DDemo</code> with chunk culling — visible tile count drops when panning away, draw calls do not explode.</p>
+<h2 id="b.concept-deep-dive-grid-logic-on-cpu-instanced-quads-on-gpu">1b. Concept Deep Dive — Grid Logic on CPU, Instanced Quads on GPU</h2>
+<h3 id="logical-grid-vs-visible-instance-pool">Logical grid vs visible instance pool</h3>
+<p>A tilemap stores 2D tile IDs per layer — not pre-built meshes. Submit converts <strong>visible</strong> cells into <code>SceneTilemapTileInstance</code> records batched under <code>SceneTilemapDraw</code> headers with <code>[tileBegin, tileBegin + tileCount)</code> into a shared pool:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSpriteTileCull.cpp (lines 10–14)
+SceneSpriteTileCull::SceneSpriteTileCull(const Matrix4&amp; viewProjection) noexcept
+    : frustum(Frustum::FromColumnMajorViewProjection(viewProjection)) {}
+
+bool SceneSpriteTileCull::IsAxisAlignedBoxVisible(const Vector3&amp; boxMin, const Vector3&amp; boxMax) const noexcept {
+    return frustum.IntersectsAxisAlignedBox(boxMin, boxMax);
+}
+</code></pre>
+<p><code>CollectVisibleTiles</code> iterates 16×16 chunks, tests chunk AABB against frustum, then emits only in-chunk non-empty cells — CPU cost scales with visible area, not map dimensions.</p>
+<h3 id="same-unit-quad-as-sprites">Same unit quad as sprites</h3>
+<p><code>VulkanTilemapPass</code> expands each tile instance into the shared sprite quad index range (<code>spriteQuadFirstIndex</code>). One layer with 200 visible cells becomes one instanced draw, not 200 pipeline binds. Tile ID → atlas UV resolves from tileset margin/spacing at submit.</p>
+<h3 id="hdr-composite-pass-ordering">HDR composite pass ordering</h3>
+<p>Tilemaps record inside <code>composite2DPass</code> after opaque 3D geometry in the HDR subpass — they depth-test against terrain and write linear HDR color like world sprites. Pan TilemapShowcase2DDemo off-screen and log visible tile count dropping while draw call count stays flat.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="tile-grid-vs-draw-instances">Tile grid vs draw instances</h3>
 <p>A <strong>tilemap</strong> stores a 2D grid of <strong>tile IDs</strong> per layer — not pre-built meshes in the asset file. At submit, Spark converts visible cells into <code>SceneTilemapTileInstance</code> records <code>{gridX, gridY, tileId, transformFlags, tint}</code> batched under <code>SceneTilemapDraw</code> headers. Each draw references a contiguous range <code>[tileBegin, tileBegin + tileCount)</code> in the shared <code>params.tilemapTiles</code> pool.</p>
@@ -1311,6 +1333,22 @@ std::uint32_t SceneSpriteTileCull::CollectVisibleTiles(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-grid-logic-on-cpu-instanced-quads-on-gpu">1b. Concept Deep Dive — Grid Logic on CPU, Instanced Quads on GPU</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#logical-grid-vs-visible-instance-pool">Logical grid vs visible instance pool</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#same-unit-quad-as-sprites">Same unit quad as sprites</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hdr-composite-pass-ordering">HDR composite pass ordering</a>
                         </li>
                         
                         <li class="toc-h2">

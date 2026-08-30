@@ -17,6 +17,48 @@ You will trace `TransformSnapshotHandler` as the minimal template, then follow e
 
 Milestone: round-trip an entity with Transform + MeshComponent through Capture → Apply without WriteToFile; translation matches within epsilon 1e-4.
 
+## 1b. Concept Deep Dive — Registry Handlers in Spark
+
+### One handler pair per component kind
+
+`ComponentSnapshotRegistry` owns `IComponentSnapshotHandler` instances registered at startup. Core serializer code never switches on every component type — it asks the registry by kind on capture and by tag on restore:
+
+```cpp
+class TransformSnapshotHandler final : public IComponentSnapshotHandler {
+public:
+    [[nodiscard]] ComponentKind GetKind() const noexcept override { return ComponentKind::Transform; }
+    [[nodiscard]] const char* GetKindTag() const noexcept override { return "transform"; }
+
+    [[nodiscard]] bool TryCapture(
+            const GameObject& owner,
+            const SceneCaptureContext& /*ctx*/,
+            ComponentRecord& out) const override {
+        const TransformComponent* tr = owner.GetComponent<TransformComponent>();
+        // ... snprintf scale + translation + rotation into out.payload ...
+        out.kind = Utf8String(GetKindTag());
+        return true;
+    }
+
+    [[nodiscard]] bool TryRestore(
+            GameObject& owner,
+            const ComponentRecord& record,
+            GameWorld& /*world*/,
+            const SceneApplyContext& /*ctx*/) const override {
+        // ... sscanf payload → TransformComponent::SetLocalTransform ...
+    }
+};
+```
+
+The transform handler is the **minimal template**: fixed kind tag, space-separated numeric payload, no asset IO.
+
+### SceneCaptureContext for editor path mapping
+
+Editor save hooks supply `SceneCaptureContext` so mesh handlers write **project-relative** paths (`models/chair.glb`) instead of absolute temp paths from drag-import. Restore uses the same context via `SceneApplyContext::assetsRoot` + `assetLoader`.
+
+### Extensibility without touching core I/O
+
+Adding `SoundCueComponent` persistence means one new handler class + `RegisterHandler` call — not edits to line parser loops. Rendering handlers live in `ComponentSnapshotHandlersRendering.cpp`; gameplay handlers in `ComponentSnapshotHandlersGameplay.cpp`.
+
 ## 2. Core Concepts
 
 ### Registry pattern for extensibility

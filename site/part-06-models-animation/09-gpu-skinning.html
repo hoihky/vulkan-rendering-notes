@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,108 @@
 <li><code>push.useSkinning</code> and <code>push.jointCount</code> to branch rigid vs skinned paths</li>
 </ul>
 <p>This chapter connects Part VI animation (<code>jointPalette</code>) to Part III shader code (<code>scene.vert</code>) and the opaque pass upload in <code>VulkanSceneOpaquePass</code>.</p>
+<h3 id="gpu-skinning-for-beginners">GPU skinning for beginners</h3>
+<p><strong>CPU skinning</strong> (slow): for each vertex, blend 4 bone matrices, write new position — millions of ops per character per frame.</p>
+<p><strong>GPU skinning</strong> (Spark): upload up to <strong>128</strong> joint matrices once per draw; <strong>vertex shader</strong> blends per vertex in parallel:</p>
+<pre><code class="language-glsl">// Simplified LBS in scene.vert
+vec4 skinnedPos = vec4(0);
+for (int i = 0; i &lt; 4; ++i)
+  skinnedPos += jointPalette[joints[i]] * vec4(position, 1.0) * weights[i];
+gl_Position = ubo.viewProj * model * skinnedPos;
+</code></pre>
+<p><strong>Data path:</strong></p>
+<pre><code class="language-text">AnimatorComponent.jointPalette (CPU)
+→ SceneSubmit copies to draw item
+→ VulkanSceneOpaquePass uploads SSBO binding 2
+→ scene.vert reads jointPalette
+</code></pre>
+<p><strong>Debug silhouettes:</strong></p>
+<table class="table">
+<thead>
+<tr>
+<th>Look</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T-pose, correct</td>
+<td>Bind pose, skinning off or identity palette</td>
+</tr>
+<tr>
+<td>Exploded spaghetti</td>
+<td>Wrong weights or inverse binds</td>
+</tr>
+<tr>
+<td>Slides on floor, stiff legs</td>
+<td>Animation not updating or wrong clip</td>
+</tr>
+<tr>
+<td>Correct motion</td>
+<td>Full path working</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Shadows:</strong> skinned characters use same palette in <code>shadow_depth.vert</code> so shadow matches deformed mesh.</p>
+<h2 id="b.concept-deep-dive-full-gpu-skinning-path-in-spark">1b. Concept Deep Dive — Full GPU Skinning Path in Spark</h2>
+<h3 id="why-joints-are-packed-as-floats-in-the-vertex-buffer">Why joints are packed as floats in the vertex buffer</h3>
+<p>Vulkan vertex formats on some platforms (notably MoltenVK) are picky about integer attribute formats. Spark stores joint indices as <code>uint32</code> in <code>SkinnedMesh::Vertex</code> but <strong>bitcasts to float</strong> when interleaving for the GPU pool:</p>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanGpuMeshInterleaved.cpp
+interleaved.PushBack(std::bit_cast&lt;float&gt;(v.joints[0]));
+// ...
+interleaved.PushBack(v.weights[0]);
+</code></pre>
+<p>The vertex shader reverses this with <code>floatBitsToUint</code>:</p>
+<pre><code class="language-glsl">// shaders/scene.vert (lines 38–42)
+uvec4 inJoints = uvec4(
+        floatBitsToUint(inJointsPacked.x),
+        floatBitsToUint(inJointsPacked.y),
+        floatBitsToUint(inJointsPacked.z),
+        floatBitsToUint(inJointsPacked.w));
+</code></pre>
+<h3 id="complete-skinning-branch-in-scene.vert">Complete skinning branch in scene.vert</h3>
+<p>Spark uses one vertex shader for rigid and skinned draws — <code>push.useSkinning</code> selects the path:</p>
+<pre><code class="language-glsl">// shaders/scene.vert (lines 44–78)
+if (push.useSkinning != 0) {
+    vec4 sp = vec4(0.0);
+    mat3 acc = mat3(0.0);
+    for (int k = 0; k &lt; 4; k++) {
+        float w = inWeights[k];
+        if (w &lt;= 0.0) continue;
+        uint ji = inJoints[k];
+        if (int(ji) &gt;= push.jointCount) continue;
+        mat4 BM = skin.bones[ji];
+        sp += w * BM * vec4(inPosition, 1.0);
+        acc += w * mat3(BM);
+    }
+    vec3 nLin = acc * inNormal;
+    worldNrm = length(nLin) &gt; 1e-5 ? normalize(nLin) : normalize(inNormal);
+    // ... tangent skinning ...
+    vec4 wp = push.model * vec4(sp.xyz, 1.0);
+    worldPos = wp.xyz;
+    // ... normal matrix from push.model ...
+} else {
+    vec4 wp = push.model * vec4(inPosition, 1.0);
+    // ... rigid path ...
+}
+</code></pre>
+<p><strong>Order matters:</strong> skin matrix <code>BM</code> transforms bind-space position; <code>push.model</code> applies entity world transform <strong>after</strong> skinning.</p>
+<h3 id="per-draw-ssbo-upload-in-vulkansceneopaquepass">Per-draw SSBO upload in VulkanSceneOpaquePass</h3>
+<p>The skin SSBO is <strong>per frame slot</strong>, overwritten each skinned draw (sequential draws, not instanced palettes):</p>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneOpaquePass.cpp (concept)
+if (!d.jointPalette.IsEmpty() &amp;&amp; d.skinnedMesh) {
+    const std::uint32_t jc = static_cast&lt;std::uint32_t&gt;(d.jointPalette.GetSize());
+    push.useSkinning = 1;
+    push.jointCount = static_cast&lt;std::int32_t&gt;(jc);
+    std::memcpy(skinSsboMapped[frameIndex], d.jointPalette.GetData(),
+                jc * sizeof(Matrix4));
+}
+</code></pre>
+<h3 id="ssbo-sizing">SSBO sizing</h3>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanSceneDescriptors.hpp
+static constexpr std::uint32_t kMaxSkinJoints = 128;
+static constexpr VkDeviceSize kSkinSsboBytes = 8192;  // 128 × 64 bytes per mat4
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="linear-blend-skinning-math">Linear blend skinning math</h3>
 <p>For vertex position <strong>p</strong> in bind pose, bone indices <strong>jᵢ</strong> and weights <strong>wᵢ</strong> (Σwᵢ = 1):</p>
@@ -1119,8 +1227,8 @@
 } skin;
 </code></pre>
 <p>C++ allocation:</p>
-<pre><code class="language-cpp">static constexpr std::uint32_t kMaxSkinJoints = 64;
-static constexpr VkDeviceSize kSkinSsboBytes = 4096;  // 64 × 64 bytes
+<pre><code class="language-cpp">static constexpr std::uint32_t kMaxSkinJoints = 128;
+static constexpr VkDeviceSize kSkinSsboBytes = 8192;  // 128 × 64 bytes
 </code></pre>
 <p>One mapped SSBO per frame-in-flight; <strong>each skinned draw</strong> overwrites the buffer before <code>vkCmdDrawIndexed</code> (not persistent across draws).</p>
 <h3 id="packed-joint-indices-moltenvk">Packed joint indices (MoltenVK)</h3>
@@ -1223,6 +1331,30 @@ uvec4 inJoints = uvec4(
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#gpu-skinning-for-beginners">GPU skinning for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-full-gpu-skinning-path-in-spark">1b. Concept Deep Dive — Full GPU Skinning Path in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-joints-are-packed-as-floats-in-the-vertex-buffer">Why joints are packed as floats in the vertex buffer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#complete-skinning-branch-in-scenevert">Complete skinning branch in scene.vert</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#per-draw-ssbo-upload-in-vulkansceneopaquepass">Per-draw SSBO upload in VulkanSceneOpaquePass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ssbo-sizing">SSBO sizing</a>
                         </li>
                         
                         <li class="toc-h2">

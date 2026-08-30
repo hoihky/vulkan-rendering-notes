@@ -14,6 +14,43 @@ Wrong blend mode makes fire look like muddy alpha-cutout cards. Wrong depth sett
 
 Build along: read `CreateGraphicsPipeline` blend and depth structs in `VulkanParticlePass.cpp` and verify behavior in a scene with occluders (ParticleDemo reference cube).
 
+## 1b. Concept Deep Dive — Pipeline State in CreateGraphicsPipeline
+
+### Additive color blend (exact Spark values)
+
+```cpp
+// src/spark/render/sprites2d/VulkanParticlePass.cpp (lines 271–279)
+blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+blendAtt.blendEnable = VK_TRUE;
+blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+blendAtt.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+blendAtt.colorBlendOp = VK_BLEND_OP_ADD;
+blendAtt.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+blendAtt.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+```
+
+Formula: `out.rgb = src.rgb * src.a + dst.rgb`. Bright particles accumulate in the HDR buffer — fire sparks glow brighter where they overlap. Alpha channel is not written (no `A` bit in colorWriteMask).
+
+### Depth test ON, depth write OFF
+
+```cpp
+// lines 265–269
+ds.depthTestEnable = VK_TRUE;
+ds.depthWriteEnable = VK_FALSE;
+ds.depthCompareOp = VK_COMPARE_OP_LESS;
+```
+
+Particles respect the scene depth buffer (occluded by walls and the ParticleDemo ref cube) but do not modify depth themselves. Later transparent draws and sprites are unaffected; particles sort implicitly by draw order (single batch, no per-particle sort).
+
+### Contrast with opaque scene lit pipeline
+
+| State | Opaque lit | Particle pass |
+|-------|------------|---------------|
+| Blend | OFF | Additive (srcAlpha, ONE) |
+| Depth write | ON | OFF |
+| Cull mode | Back-face | NONE (billboards have no consistent facing) |
+| Push constants | model, material, skinning | None |
+
 ## 2. Core Concepts
 
 ### Additive color blend

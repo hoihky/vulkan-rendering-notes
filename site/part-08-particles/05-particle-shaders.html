@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,40 @@
 <p>Each particle is a <strong>camera-facing quad</strong>, but you want round fire and smoke — not cardboard squares. The shaders
 must reconstruct world positions from a center point and corner offset, then fade alpha radially.</p>
 <p>Build along: read particle.vert and particle.frag alongside the Record vertex pack loop.</p>
+<h2 id="b.concept-deep-dive-particle.vert-and-particle.frag">1b. Concept Deep Dive — particle.vert and particle.frag</h2>
+<h3 id="billboard-reconstruction-vertex-shader">Billboard reconstruction (vertex shader)</h3>
+<pre><code class="language-glsl">// shaders/particle.vert (lines 18–25)
+void main() {
+    vec3 right = normalize(cameraRight.xyz);
+    vec3 up = normalize(cameraUp.xyz);
+    vec3 worldPos = inPos + right * inCorner.x * inSize * 0.5
+                          + up   * inCorner.y * inSize * 0.5;
+    gl_Position = viewProj * vec4(worldPos, 1.0);
+    vColor = inColor;
+    vDisc = inCorner;
+}
+</code></pre>
+<p><code>inPos</code> is the particle center (same for all six verts). <code>inCorner</code> is the quad corner (−1..1) packed by Record. No model matrix — particles live in world space directly.</p>
+<h3 id="soft-disc-without-a-texture-fragment-shader">Soft disc without a texture (fragment shader)</h3>
+<pre><code class="language-glsl">// shaders/particle.frag (lines 8–15)
+void main() {
+    float d = length(vDisc);
+    float edge = 1.0 - smoothstep(0.82, 1.02, d);
+    if (edge &lt; 0.004) discard;
+    outColor = vec4(vColor.rgb, vColor.a * edge);
+}
+</code></pre>
+<p>Radial fade from center to edge approximates a round sprite. <code>discard</code> skips fully transparent fringe pixels — important for additive blend where alpha-zero fragments would still add zero but waste fill rate.</p>
+<h3 id="ubo-layout-matches-particleuniformgpu">UBO layout matches ParticleUniformGpu</h3>
+<pre><code class="language-cpp">// VulkanParticlePass.hpp (lines 34–39) ↔ particle.vert ParticleUBO std140
+struct ParticleUniformGpu {
+    float viewProj[16]{};
+    float cameraPos[4]{};
+    float cameraRight[4]{};
+    float cameraUp[4]{};
+};
+</code></pre>
+<p>256-byte UBO allocation per frame slot; Record memcpy's the struct before bind. No push constants — entire pass is one pipeline + one descriptor set.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="billboard-vertex-math">Billboard vertex math</h3>
 <p>Vertex shader places each corner at <code>center + right * corner.x * size * 0.5 + up * corner.y * size * 0.5</code> using normalized camera axes from the UBO.</p>
@@ -1234,6 +1274,22 @@ fragment alpha with additive blend. Future <strong>GPU Particles Roadmap</strong
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-particlevert-and-particlefrag">1b. Concept Deep Dive — particle.vert and particle.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#billboard-reconstruction-vertex-shader">Billboard reconstruction (vertex shader)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#soft-disc-without-a-texture-fragment-shader">Soft disc without a texture (fragment shader)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ubo-layout-matches-particleuniformgpu">UBO layout matches ParticleUniformGpu</a>
                         </li>
                         
                         <li class="toc-h2">

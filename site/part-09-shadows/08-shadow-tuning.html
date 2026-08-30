@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,55 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Shadow maps discretize continuous geometry into texels. <strong>Acne</strong> and <strong>Peter panning</strong> come from depth precision and texel quantization. <strong>Seams</strong> appear at cascade boundaries when splits or biases disagree.</p>
 <p>Tuning is half math, half art — you need a systematic debug workflow with ImGui sliders and false-color modes.</p>
+<h2 id="b.concept-deep-dive-shadowparams-bias-in-scene.frag">1b. Concept Deep Dive — shadowParams Bias in scene.frag</h2>
+<h3 id="slope-scaled-depth-bias-before-compare">Slope-scaled depth bias before compare</h3>
+<pre><code class="language-glsl">// shaders/scene.frag — sampleSunShadowAtCascade (lines 160–163)
+float g = sunGracing;  // grazing angle factor from N·L
+float depthBias = max(ubo.shadowParams.x, 1e-5) * (1.0 + 6.25 * g);
+depthBias += ubo.shadowParams.y * 0.22 * g;
+float refZ = clamp(proj.z - depthBias, 0.0, 1.0);
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>UBO field</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shadowParams.x</code></td>
+<td>Constant bias — fixes acne on flat surfaces</td>
+</tr>
+<tr>
+<td><code>shadowParams.y</code></td>
+<td>Slope-scaled bias — scales with grazing angle</td>
+</tr>
+<tr>
+<td><code>shadowParams.z</code></td>
+<td>Texel size (1/resolution) — PCF kernel step</td>
+</tr>
+<tr>
+<td><code>shadowParams.w</code></td>
+<td>Master enable (&gt;0.5 = shadows on)</td>
+</tr>
+</tbody>
+</table>
+<p>Subtracting bias from receiver depth before compare pushes the test point slightly toward the light — curing self-shadow acne without moving the shadow map.</p>
+<h3 id="penumbra-widens-at-grazing-sun-angles">Penumbra widens at grazing sun angles</h3>
+<pre><code class="language-glsl">float penumbraScale = clamp(1.0 + 2.75 * g, 1.0, 2.85);
+float sh = sampleSunShadowPcf(shadowMap, uv, refZ, texel, penumbraScale, rot01);
+return pow(clamp(sh, 0.0, 1.0), 1.08);
+</code></pre>
+<p>Low sun elevation (large <code>g</code>) expands the PCF kernel — softer terminator at dawn/dusk. The final <code>pow(..., 1.08)</code> slightly darkens penumbra for visual contrast.</p>
+<h3 id="peter-panning-vs-acne-tradeoff">Peter panning vs acne tradeoff</h3>
+<p>Increasing <code>shadowParams.x/y</code> reduces acne but lifts shadows off contact points (Peter panning). Spark snaps cascade projections to texel grids (<code>ComputeWorldToShadowClip</code>) to reduce another shimmer source — tune bias <strong>after</strong> confirming stable cascade bounds in RenderDoc.</p>
+<h3 id="distance-fade-at-far-clip">Distance fade at far clip</h3>
+<pre><code class="language-glsl">// scene.frag (lines 521–524)
+float fadeStart = shadowFadeEnd * clamp(ubo.timeGlobal.y, 0.5, 0.98);
+float fade = smoothstep(fadeStart, shadowFadeEnd, distCam);
+</code></pre>
+<p>Shadows fade out near the far plane where cascade resolution is lowest — hides blocky distant shadows without extra cascades.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="shadow-acne">Shadow acne</h3>
 <p>Surface points sample a texel whose stored depth is slightly closer due to surface tilt → false self-shadowing. Fix with <strong>receiver bias</strong> before compare.</p>
@@ -1340,6 +1395,26 @@ return pow(clamp(sh, 0.0, 1.0), 1.08);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-shadowparams-bias-in-scenefrag">1b. Concept Deep Dive — shadowParams Bias in scene.frag</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#slope-scaled-depth-bias-before-compare">Slope-scaled depth bias before compare</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#penumbra-widens-at-grazing-sun-angles">Penumbra widens at grazing sun angles</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#peter-panning-vs-acne-tradeoff">Peter panning vs acne tradeoff</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#distance-fade-at-far-clip">Distance fade at far clip</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -15,6 +15,37 @@ Physics and rendering share **TransformComponent** as the bridge. If Simulate ru
 
 Milestone: log transform Y immediately after Simulate2D and at SceneSubmit entry — values must match same frame.
 
+## 1b. Concept Deep Dive — Transform as the Bridge
+
+### Implicit sync inside Simulate
+
+Spark does not expose separate SyncToPhysics / SyncFromPhysics passes. Integrators write `TransformComponent` directly after updating body state:
+
+```text
+RigidbodyIntegrator2D::Integrate
+  → read Rigidbody2DComponent velocity
+  → integrate position
+  → TransformComponent::SetTranslation(newPos)
+
+ContactResolver2D::Resolve
+  → adjust position on penetration
+  → TransformComponent updated in-place
+```
+
+Rendering reads Transform once Simulate returns — **if** Update ordering places Simulate before SceneSubmit.
+
+### Canonical frame tick
+
+```text
+Input → Gameplay pre-physics → Physics Simulate → Gameplay post-physics → Animation → SceneSubmit → Present
+```
+
+Platformer2DDemo sets velocity from input, calls `physics.Simulate2D`, then combat reads `playerTr->GetLocalTransform().translation`. Editor edit mode skips Simulate entirely — designer transforms are authoritative until play mode runs physics.
+
+### One-frame lag diagnosis
+
+Log transform Y immediately after `Simulate2D` and at SceneSubmit entry in the **same frame**. If values differ, Simulate runs too late or gameplay writes transform again after physics. Move Simulate earlier in Update; do not add a second sync pass unless you introduce an external physics engine with its own body store.
+
 ## 2. Core Concepts
 
 ### Canonical Update order

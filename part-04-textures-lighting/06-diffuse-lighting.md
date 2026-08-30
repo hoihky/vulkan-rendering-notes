@@ -15,6 +15,73 @@ Textured albedo tells you **surface color**; lighting tells you **how much** of 
 
 Spark's lit path goes further — Cook-Torrance specular, metallic energy split, wrapped diffuse for outdoor sun, cascaded shadow attenuation, hemisphere ambient, then punctual lights (Chapter 9). This chapter focuses on the **directional sun** and the `evalBRDF` core that punctual lights reuse.
 
+### Lighting for complete beginners
+
+Without lighting, every pixel shows **flat albedo color** — like a sticker under office fluorescent lights with no direction. Real surfaces look brighter where light hits them head-on and darker in grooves facing away.
+
+The simplest lighting model uses three vectors at each pixel:
+
+| Symbol | Name | Points toward |
+|--------|------|---------------|
+| **N** | Surface normal | "Up" from the surface |
+| **L** | Light direction | The sun or lamp |
+| **V** | View direction | The camera |
+
+**Lambert diffuse** (matte surfaces):
+
+```text
+brightness = max(dot(N, L), 0) × lightColor × albedo
+```
+
+- `dot(N, L) = 1` when surface faces the light directly (brightest).
+- `dot(N, L) = 0` when surface is perpendicular (terminator line).
+- Negative dot → surface faces away → clamp to 0 (no back-lighting on opaque).
+
+**Specular** (shiny highlights) adds a second term based on **reflection** toward the camera — Spark uses GGX microfacet model in `evalBRDF`.
+
+```text
+Fragment shader pipeline (simplified):
+  sample albedo texture
+  build N from normal map
+  Lo = evalBRDF(N, V, L, albedo, metallic, roughness)
+  Lo *= shadow visibility (Part IX)
+  outColor = Lo  (HDR linear)
+```
+
+Start debugging lighting with **no textures** — solid gray albedo and a single directional light. If diffuse works, add textures, then shadows, then PBR maps.
+
+## 1b. Concept Deep Dive — evalBRDF and Sun UBO Fields
+
+### Directional sun lives in SceneUniformGpu
+
+The frame UBO packs sun direction and color for every lit draw:
+
+```cpp
+// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};      // xyz = normalized direction toward sun
+    float cameraPos[4]{};
+    float lightColor[4]{};    // linear RGB
+    float ambientColor[4]{};
+    // ...
+};
+```
+
+`VulkanSceneUniformWriter::Write` copies `scene.lightDirectionWorld` and `scene.lightColor * scene.lightIntensity` from `SceneRenderParams`. Punctual lights are **not** in this struct — they use SSBO binding 4.
+
+### evalBRDF combines diffuse and specular
+
+`scene.frag` calls `evalBRDF(N, V, L, albedo, metallic, roughness, ...)` for the sun and reuses the same function inside punctual loops. The GGX specular term shares Fresnel and geometry masking with the Lambert diffuse branch — metallic surfaces zero out diffuse and tint specular with albedo.
+
+### Wrapped diffuse for outdoor sun
+
+Outdoor profile enables a wrap term on directional diffuse — surfaces facing slightly away from the sun still receive fill, reducing harsh terminator lines on terrain. This is profile-driven through `ResolvedSceneLighting`, not a per-material toggle.
+
+### Shadow modulation before punctual lights
+
+Directional contribution multiplies by cascaded shadow visibility (Part IX) **before** point/spot loops accumulate. Debug diffuse-only by disabling shadow flags on the draw item — if shading looks flat gray, fix `lightDir` and normals first; if shadows are pure black, check cascade matrices in the UBO.
+
 ## 2. Core Concepts
 
 ### Vectors for shading

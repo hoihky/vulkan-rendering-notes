@@ -18,6 +18,79 @@ Without this boundary, every new feature leaks `VkBuffer` into demo headers. Wit
 
 Open `include/spark/engine/SceneRenderParams.hpp` while you read.
 
+## 1b. Concept Deep Dive — The SceneRenderParams Contract
+
+### Three layers, one handoff per frame
+
+Spark enforces a strict boundary between simulation, snapshot, and GPU backend. Game code never sees `VkBuffer`; the renderer never reads `TransformComponent` directly:
+
+```text
+Simulation (mutable ECS)     Snapshot (immutable copy)      GPU backend
+────────────────────────     ─────────────────────────      ───────────
+TransformComponent           SceneDrawItem.model            VkBuffer + pipeline
+MeshComponent                SceneMeshSlot / customMesh     vkCmdDrawIndexed
+Camera                       viewProjection                 SceneUBO write
+                             lightDirectionWorld            descriptor set 0
+```
+
+The snapshot is a **value document**: `SetSceneRenderParams` copies it into `VulkanRenderer::pendingScene` so the GPU can read last frame's data while the game builds the next one.
+
+### SceneDrawItem — flat struct, no Vulkan handles
+
+Every mesh draw is one row in `draws` or `transparentDraws`. Spark keeps pointers to **assets** (`SharedPtr<Mesh>`) but never to GPU objects:
+
+```cpp
+// include/spark/engine/SceneRenderParams.hpp (lines 174–180)
+struct SceneDrawItem {
+    SceneMeshSlot mesh = SceneMeshSlot::UnitCube;
+    SceneSkyMode skyMode = SceneSkyMode::None;
+    Matrix4 model = Matrix4::Identity;
+    Vector3 albedo{1.0F, 1.0F, 1.0F};
+    /** Index into SceneRenderParams::sceneTextures or sceneHdrTextures; -1 = no texture (albedo only). */
+    std::int32_t textureLayer = -1;
+```
+
+| Field category | Examples | Why not Vulkan? |
+|----------------|----------|-----------------|
+| Transform | `model` | Push constants at record time |
+| Geometry id | `mesh`, `customMesh` | Renderer resolves to buffer ranges |
+| Material | `albedo`, `textureLayer`, `metallic` | UBO + push constants + texture array |
+| Routing | `opacity`, `skyMode` | Opaque vs transparent vs sky pass |
+
+### SetSceneRenderParams — copy, merge textures, resolve lighting
+
+The renderer does more than a blind assign: it merges texture arrays (so snapshot pointers stay stable), clears custom mesh pool when no custom draws remain, and pre-resolves lighting for uniform writes:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 579–591)
+void VulkanRenderer::SetSceneRenderParams(const SceneRenderParams& params) {
+    if (!SceneHasCustomMeshDraws(params)) {
+        customMeshPool.ClearKnownMeshes();
+    }
+    mergedSceneTextures = params.sceneTextures;
+    mergedSceneHdrTextures = params.sceneHdrTextures;
+    pendingScene = params;
+    pendingScene.sceneTextures = mergedSceneTextures;
+    pendingScene.sceneHdrTextures = mergedSceneHdrTextures;
+    SceneSubmitDetail::ResolveIblEnvironmentLayer(pendingScene);
+    sceneParamsValid = true;
+    resolvedLighting = SceneLightingResolver::Resolve(pendingScene);
+}
+```
+
+`sceneParamsValid` gates all mesh passes — an empty or unset snapshot skips draws safely instead of reading stale GPU state.
+
+### Game code never includes VulkanRenderer.hpp
+
+Demos call through `IEngineContext::SetSceneRenderParams`, which forwards to `IFramePresenter`. The facade keeps Part II demos compilable without linking every Vulkan object:
+
+```text
+Demo OnRender → EngineContext::SetSceneRenderParams → VulkanRenderer::SetSceneRenderParams
+                                                      → pendingScene (copy)
+DrawFrame       → WriteUniformBuffer(pendingScene)
+               → sceneOpaquePass.Record(pendingScene.draws)
+```
+
 ## 2. Core Concepts
 
 ### Snapshot vs simulation state

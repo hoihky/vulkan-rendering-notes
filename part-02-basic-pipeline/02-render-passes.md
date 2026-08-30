@@ -14,6 +14,106 @@ Vulkan does not draw to the screen directly. You **begin a render pass** on a **
 
 If the render pass and framebuffer formats disagree, `vkCreateFramebuffer` fails. If you skip the render pass, no `vkCmdDraw` is valid. This chapter explains the objects Spark creates before any mesh draw — the canvas your pipelines paint on.
 
+### Render pass as a contract (beginner)
+
+Think of `VkRenderPass` as a **printed form** that says:
+
+- How many attachments (color, depth)?
+- What format is each attachment?
+- On pass **begin**: clear or load previous contents?
+- On pass **end**: store results or discard?
+- What **layout** must images be in for the next operation?
+
+A **framebuffer** is one filled-out form instance — actual `VkImageView` handles glued to each attachment slot for **this frame's resolution**.
+
+```text
+Render pass  = recipe for "color + depth target"
+Framebuffer  = specific images at 1920×1080 (or HDR float buffer)
+```
+
+You cannot draw without both. Pipelines are created **compatible** with a specific render pass — changing HDR format means recreating pipelines (Part X).
+
+### Load and store ops in plain English
+
+| Op | Beginner meaning |
+|----|------------------|
+| `LOAD_OP_CLEAR` | Fill attachment with clear color/depth at pass start |
+| `LOAD_OP_LOAD` | Keep existing pixels (transparent resume pass, Part X) |
+| `STORE_OP_STORE` | Write results to memory when pass ends |
+| `STORE_OP_DONT_CARE` | Discard — OK if fully overwritten (tonemap to full screen) |
+
+Spark's HDR pass clears color and depth at frame start. Transparent resume pass **loads** them so depth from opaque geometry is preserved.
+
+## 1b. Concept Deep Dive — Spark's Two-Tier Render Passes
+
+### Template vs instance — why both objects exist
+
+Vulkan separates the **recipe** (`VkRenderPass`) from the **ingredients** (`VkFramebuffer`). Spark creates render pass objects once (when formats are known) and rebuilds framebuffers when swapchain extent or image count changes:
+
+```text
+VkRenderPass (HDR)          VkFramebuffer[frameInFlight]
+  attachment 0: HDR color  ←→  hdrColorImageView[frame]
+  attachment 1: depth      ←→  sceneDepthImageView[frame]
+
+VkRenderPass (Present)      VkFramebuffer[swapchainImage]
+  attachment 0: swapchain  ←→  swapchainImageView[i]
+  attachment 1: depth (opt)←→  presentDepthView[i]
+```
+
+Pipelines are created **compatible** with a specific render pass handle — changing HDR format without recreating pipelines triggers validation errors on draw.
+
+### Present pass attachment descriptions
+
+`VulkanPresentRenderPass::Create` builds the swapchain-facing pass. Color clears on begin, stores on end, transitions to `PRESENT_SRC_KHR`:
+
+```cpp
+// src/spark/render/present/VulkanPresentRenderPass.cpp (lines 11–19)
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = swapchainImageFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+```
+
+Depth is optional (`depthFormat == VK_FORMAT_UNDEFINED` for tonemap-only passes). When present, load/store ops differ: depth may use `STORE_OP_DONT_CARE` if nothing reads it after the pass.
+
+### HDR scene pass begin — where Part II draws happen
+
+Scene geometry records inside `RecordSceneCommandBuffer` after uploads and shadow maps. Spark clears HDR color (black or `worldClearColor`) and depth to 1.0:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 263–290)
+    VkClearValue clearColors[2]{};
+    clearColors[0].color.float32[0] = 0.0F;
+    // ... optional worldClearColor from pendingScene ...
+    clearColors[1].depthStencil.depth = 1.0F;
+
+    VkRenderPassBeginInfo renderPassBeginInfo{};
+    renderPassBeginInfo.renderPass = hdrTonemapPass.HdrRenderPass();
+    renderPassBeginInfo.framebuffer = hdrTonemapPass.Flight(frameIndex).framebuffer;
+    renderPassBeginInfo.renderArea.extent = presentSwapchain().extent;
+    renderPassBeginInfo.clearValueCount = 2;
+    renderPassBeginInfo.pClearValues = clearColors;
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+```
+
+All `vkCmdDraw*` calls for opaque meshes occur **between** this begin and the matching `vkCmdEndRenderPass`.
+
+### Load/store ops across Spark's frame graph
+
+| Pass | Color load | Color store | Depth load | Notes |
+|------|------------|-------------|------------|-------|
+| HDR scene (first) | CLEAR | STORE | CLEAR | Opaque + sky + 2D composite |
+| HDR resume (transparent) | LOAD | STORE | LOAD | Preserves opaque depth |
+| Present (tonemap) | CLEAR or LOAD | STORE | optional | Outputs to swapchain |
+
+Part II focuses on the first HDR begin/end pair. Part X adds transparent resume and tonemap passes that reuse the same render pass object with different load ops.
+
 ## 2. Core Concepts
 
 ### Render pass = contract for attachments

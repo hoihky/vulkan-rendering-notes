@@ -18,6 +18,43 @@ You will trace bootstrap, confirm submit matches ThreeDDemo, and wire EditorCont
 
 Milestone: launch editor — HDR lit viewport with ground, sun, sample cube, and working WASD + RMB fly camera before save menu wiring.
 
+## 1b. Concept Deep Dive — EditorApplication Update Loop
+
+### Same engine loop, extra UI canvases
+
+`EditorApplication` does not fork a second renderer. It implements the same `OnUpdate` / `OnRender` hooks as ThreeDDemo, layering dock panels and selection on top:
+
+```cpp
+// src/spark/editor/EditorApplication.cpp
+void EditorApplication::OnUpdate(const FrameTiming& timing, Scene& scene, IEngineContext& engineContext) {
+    context.world = &scene.GetWorld();
+    context.selection = &selection;
+    context.viewport = &viewport;
+    // ... wire EditorContext for panels ...
+
+    ProcessUiCanvasesInput(scene, engineContext.GetInput(), fbW, fbH, ...);
+    PumpSceneLoads(scene.GetWorld());
+
+    const bool editingEnabled = !playSession.IsActive();
+    if (editingEnabled) {
+        HandleEditModeInput(engineContext, scene.GetWorld());
+    }
+
+    viewport.Simulate(timing, scene, engineContext, selection, worldViewport, ...);
+    TickPanels(timing, scene, engineContext);
+}
+```
+
+**Key ordering:** UI input first (panels capture pointer), then async scene pump, then viewport camera, then panel ticks.
+
+### EditorContext replaces globals
+
+Panels receive a shared `EditorContext` each frame — world pointer, selection, command stack, viewport, content model. No static singletons holding stale entity copies; inspector reads live `TransformComponent` through this context.
+
+### Submit path matches runtime demos
+
+`OnRender` builds `SceneRenderParams` via the same `FillStandardLitSceneFromWorld` path as ThreeDDemo. The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.
+
 ## 2. Core Concepts
 
 ### Editor vs runtime game loop

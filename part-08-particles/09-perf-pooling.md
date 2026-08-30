@@ -14,6 +14,42 @@ Unbounded particles destroy frame time — thousands of spawns allocate heap mem
 
 Build along: profile `ParticleDemo` at max settings and document headroom against `MaxParticles` and vertex buffer size.
 
+## 1b. Concept Deep Dive — Budget Constants and Pool Mechanics
+
+### Hard caps in Spark
+
+```cpp
+// include/spark/engine/SceneRenderParams.hpp
+static constexpr std::uint32_t MaxParticles = 8192;
+
+// VulkanParticlePass.cpp
+constexpr VkDeviceSize kParticleVertexBytes = 10 * 1024 * 1024;
+constexpr std::uint32_t kParticleFloatsPerVertex = 10;
+```
+
+Submit stops collecting at 8192. Record further clamps to `vertexCapacityBytes / (40 * 4)` ≈ 65 536 verts / 6 ≈ 10 922 particles — the lower of the two limits wins in practice (8192).
+
+### Per-frame upload cost estimate
+
+```text
+bytes/frame = particleCount × 6 verts × 10 floats × 4 bytes
+8192 particles → 8192 × 240 = ~1.97 MB memcpy per frame
+```
+
+CPU cost is linear in alive count: `OnUpdate` walks all slots O(maxParticles) per emitter, `CollectInstances` walks alive slots, Record expands and memcpy's. Profile with four emitters at max settings before shipping VFX-heavy scenes.
+
+### SetMaxParticles clears the pool
+
+```cpp
+// ParticleEmitterComponent.cpp (lines 16–19)
+void ParticleEmitterComponent::SetMaxParticles(std::uint32_t n) noexcept {
+    maxParticles = std::max(1u, n);
+    slots.Clear();  // all particles die on resize — no stale alive flags
+}
+```
+
+Resizing is destructive by design. Gameplay code should set `maxParticles` once at load, not every frame.
+
 ## 2. Core Concepts
 
 ### Slot pool vs allocation

@@ -15,6 +15,105 @@ ASCII OBJ remains useful for quick props and debugging importers. Before glTF, y
 
 Build along: load one `.obj` through the cache, assign `SceneMeshSlot::Custom`, and see it on the ground plane.
 
+### OBJ format for beginners
+
+**OBJ** is a text file artists export from Blender/Maya. Key lines:
+
+| Line | Meaning |
+|------|---------|
+| `v x y z` | Vertex position |
+| `vn x y z` | Vertex normal (optional) |
+| `vt u v` | Texture coordinate (optional) |
+| `f i j k` | Triangle corner indices (1-based!) |
+
+Example face: `f 1/1/1 2/2/2 3/3/3` means three corners, each referencing position/texcoord/normal index.
+
+**Why expansion happens:** one OBJ position can appear in multiple faces with **different UVs** — Spark expands each unique `(v, vt, vn)` triple into one GPU vertex (same strategy as many engines).
+
+```text
+OBJ file (indexed pools)     Spark Mesh (interleaved)
+  v[0], v[1], v[2]      →    Vertex { pos, normal, uv }
+  vt[0], vt[1]               one row per corner
+  f 1/1 2/2 3/1
+```
+
+**Workflow:** place `rock.obj` in assets → `GameWorld::LoadMesh("rock.obj")` → cache returns shared `Mesh*` → assign to `MeshRendererComponent` with `SceneMeshSlot::Custom`.
+
+OBJ lacks materials/PBR — use for graybox props; glTF (Chapter 3) for production assets.
+
+## 1b. Concept Deep Dive — How Spark Parses OBJ
+
+### Three separate pools, one interleaved output
+
+Wavefront OBJ was designed for exporters, not GPUs. A single corner on a cube face might reference `position 5`, `texcoord 12`, `normal 3` — three different indices into three different arrays. Spark's loader reads each pool independently, then **expands** every face corner into one `Mesh::Vertex`:
+
+```text
+File pools (1-based indices):          Spark output (interleaved):
+  positions[1..N]                        vertices[0] = { pos[5], normal[3], uv[12] }
+  texCoords[1..M]                        vertices[1] = { pos[6], normal[3], uv[13] }
+  normals[1..K]                          indices = [0, 1, 2, 0, 2, 3, ...]
+```
+
+This is why a cube with per-face UVs has 24 vertices, not 8 — each face corner is unique even when positions repeat.
+
+### ParseFaceCorner handles all slash formats
+
+Spark's helper parses `1`, `1/2`, `1//3`, and `1/2/3` corners, including **negative indices** (relative to end of pool — Blender sometimes exports these):
+
+```cpp
+// src/spark/scene/mesh/Mesh.cpp — ParseFaceCorner (concept)
+// "12/5/8"  → vi=12, ti=5, ni=8
+// "12//8"   → vi=12, ti=0 (no UV), ni=8
+// "-1"      → last position in pool
+```
+
+### Fan triangulation for n-gons
+
+Quads and n-gons are not GPU-native. Spark fans from corner 0:
+
+```cpp
+// src/spark/scene/mesh/Mesh.cpp (lines 477–523)
+        } else if (tag == "f") {
+            // ... collect faceV, faceT, faceN per corner ...
+            const std::size_t n = faceV.GetSize();
+            if (n < 3) {
+                continue;
+            }
+            for (std::size_t k = 2; k < n; ++k) {
+                outMesh.indices.PushBack(cornerIndices[0]);
+                outMesh.indices.PushBack(cornerIndices[k - 1]);
+                outMesh.indices.PushBack(cornerIndices[k]);
+            }
+        }
+```
+
+A quad `f 1 2 3 4` becomes triangles `(1,2,3)` and `(1,3,4)` — winding follows file order, which matters for back-face culling.
+
+### Cache integration — one load, many instances
+
+After parse, `GameWorldAssetCache::LoadMesh` stores the result by path key:
+
+```cpp
+// src/spark/scene/assets/GameWorldAssetCache.cpp (lines 154–171)
+SharedPtr<Mesh> GameWorldAssetCache::LoadMesh(const char* path) {
+    if (IsGltfPath(path)) {
+        return LoadGltf(path).mesh;  // .gltf/.glb routes to glTF loader
+    }
+    const Utf8String key(path);
+    if (const SharedPtr<Mesh>* cached = meshCache.Find(key)) {
+        return *cached;  // cache hit — no disk I/O
+    }
+    auto mesh = MakeShared<Mesh>(Utf8String(path));
+    if (!Mesh::TryLoadFromObj(path, *mesh)) {
+        return SharedPtr<Mesh>();
+    }
+    meshCache.Add(key, mesh);
+    return mesh;
+}
+```
+
+Spawn ten rocks with the same path → ten `MeshComponent`s, one `SharedPtr<Mesh>`, one pool slice at upload time.
+
 ## 2. Core Concepts
 
 ### OBJ as separate index pools

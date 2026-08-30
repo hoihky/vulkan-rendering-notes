@@ -13,6 +13,41 @@
 Individual Part XI features work in isolation until you **integrate** them: one update order, one submit function, one HDR→tonemap→UI present chain. This chapter is the **integration milestone** — not new GPU code, but the production-shaped loop that ships in Spark's 2D demos.
 
 Build along: run `TilemapShowcase2DDemo`, trace its `Render` submit call, then replicate the loop in your engine with your own map and player entity.
+
+## 1b. Concept Deep Dive — One Snapshot, Full HDR Frame Graph
+
+### SubmitStandardLitSceneFromWorld is the integration hub
+
+The 2D game pipeline is not a separate renderer — it assembles prior chapters into one `SceneRenderParams` fill and the existing HDR frame graph. Spark demos call one submit helper that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:
+
+```cpp
+// src/spark/demo/TilemapShowcase2DDemo.cpp (concept)
+Spark::SubmitStandardLitSceneFromWorld(
+        world, params, viewProj, lightDir, lightColor,
+        /* fog, particles, sprite sort mode, ... */);
+```
+
+Gameplay **Update** runs physics, animators, and FSM; **Render/Submit** only reads components. Vulkan appears exclusively inside `PresentFrame`.
+
+### Reference demos as regression targets
+
+| Demo | Integration highlights |
+|------|------------------------|
+| `TilemapShowcase2DDemo` | Layers, autotile, chunk cull, Y-sort submit |
+| `Platformer2DDemo` | Combat, Kenney atlases, health HUD, anim FSM |
+| `RenderLayers2DDemo` | Lighting modes + layer overlap |
+
+If showcase breaks after an engine change, bisect submit (empty arrays?) vs renderer record (pass order?) before blaming GPU drivers.
+
+### Frame graph invariants for 2D + 3D hybrid
+
+```text
+Shadow passes → HDR scene (terrain + sprites + tilemaps + particles)
+  → SSAO? → tonemap → screenUi → ImGui → present
+```
+
+Violating UI-before-tonemap makes HUD exposure-scaled. Sprites in HDR pass depth-test against terrain from Part XII — integration bugs often show as z-fighting or missing draws, not shader compile failures.
+
 ## 2. Core Concepts
 
 ### Integration snapshot model

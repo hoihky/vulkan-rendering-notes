@@ -17,6 +17,40 @@ You will author colliders on player and tilemap, tune materials, and verify debu
 
 Milestone: player box collider feet align with tilemap floor; ground ray gates jump reliably.
 
+## 1b. Concept Deep Dive — Collider Bake Strategies
+
+### ECS components → flat collider arrays
+
+Simulation never reads `BoxCollider2DComponent` directly. Each frame, `ColliderBakePipeline2D::Rebuild` walks active entities and runs registered strategies:
+
+```cpp
+// src/spark/physics/colliders/ColliderBakePipeline2D.cpp
+void ColliderBakePipeline2D::Rebuild(
+        GameWorld& world, const float cellWorldSize,
+        Array<Collider2D>& outColliders, SpatialHashGrid2D& outGrid) {
+    outColliders.Clear();
+    outGrid.SetCellSize(cellWorldSize);
+    ColliderBakeContext2D context{outColliders, outGrid};
+    world.ForEachActiveGameObject([&](GameObject* object) {
+        for (each registered strategy) {
+            if (strategy.Contributes(*object)) {
+                strategy.Bake(*object, context);
+            }
+        }
+    });
+}
+```
+
+Each strategy handles one component kind — box, circle, tilemap grid — emitting world-space AABBs with category bits and material indices.
+
+### Strategy pattern keeps Simulate generic
+
+Adding `PolygonCollider2DComponent` means a new `IColliderBakeStrategy2D` + register call — not edits to contact resolver loops. Tilemap strategy expands solid tiles into many static boxes; player box strategy reads local offset + entity world matrix.
+
+### Queries reuse the same baked grid
+
+`PhysicsQueries2D` shares broad-phase cell size with simulate. Ground checks and overlap tests query the **same** collider array rebuilt at simulate start — no duplicate bake pass for raycasts.
+
 ## 2. Core Concepts
 
 ### Collider components vs baked colliders

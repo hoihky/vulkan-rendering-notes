@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,58 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Real shaders outgrow single files quickly. Shadow passes need the same UBO layout as the scene pass. Fragment lighting shares BRDF helpers with post-processing color transforms. Copy-pasting <code>struct Light</code> into five files guarantees drift within a week.</p>
 <p>Spark uses <strong>GLSL includes</strong> with a flat <code>shaders/</code> directory and CMake dependency tracking. This chapter covers the include mechanism, Spark's file roles, and build hygiene — the glue that keeps a multi-pass renderer maintainable.</p>
+<h3 id="why-split-shaders-into-multiple-files-beginner">Why split shaders into multiple files? (beginner)</h3>
+<p>Imagine <code>scene.frag</code> grew to 5,000 lines — lighting, shadows, sky, glTF extensions, fog, all in one file. Changing sun color would mean scrolling past particle math. <strong>Includes</strong> let you organize like C++ headers:</p>
+<pre><code class="language-text">scene.frag
+#include "scene_ubo.glsl"      ← camera + lights layout (must match C++)
+#include "ibl.glsl"            ← environment reflections
+#include "clustered_lights.glsl" ← punctual light loops
+#include "gltf_pbr_extensions.glsl"
+</code></pre>
+<p>Each <code>.glsl</code> file is still compiled <strong>together</strong> into one SPIR-V module — <code>#include</code> is textual paste at compile time, not a runtime link.</p>
+<p><strong>Rules for beginners:</strong></p>
+<ol>
+<li><strong>Shared layouts live in includes</strong> — <code>scene_ubo.glsl</code> must match <code>SceneUniformGpu</code> byte-for-byte.</li>
+<li><strong>Edit an include → rebuild dependents</strong> — CMake tracks <code>DEPENDS</code> so <code>scene.frag.spv</code> rebuilds when <code>clustered_lights.glsl</code> changes.</li>
+<li><strong>No circular includes</strong> — keep a DAG: ubo → lighting → main shader.</li>
+</ol>
+<p>If glslang reports "undefined identifier <code>ubo</code>", an include is missing or in wrong order.</p>
+<h2 id="b.concept-deep-dive-scene-pass-include-graph-and-cmake-depends">1b. Concept Deep Dive — scene Pass Include Graph and CMake DEPENDS</h2>
+<h3 id="scene.vert-minimal-include-tree">scene.vert — minimal include tree</h3>
+<p>The vertex stage only needs frame and per-draw layouts — no lighting headers:</p>
+<pre><code class="language-text">scene.vert
+├── scene_ubo.glsl      → layout(set=0,binding=0) SceneUBO ubo
+└── scene_push.glsl     → layout(push_constant) Push push
+</code></pre>
+<p>Both files use include guards (<code>SPARK_SCENE_UBO_GLSL</code>, <code>SPARK_SCENE_PUSH_GLSL</code>) so double-inclusion from nested headers cannot redefine bindings.</p>
+<h3 id="scene.frag-layered-include-stack">scene.frag — layered include stack</h3>
+<p>The fragment stage pulls shared layouts first, then feature modules:</p>
+<pre><code class="language-glsl">// shaders/scene.frag (lines 19–29)
+#include "scene_ubo.glsl"
+#include "scene_push.glsl"
+#include "clustered_lights.glsl"
+#include "color_space.glsl"
+#include "ibl.glsl"
+#include "gltf_map_uv.glsl"
+</code></pre>
+<p>Nested includes expand further — <code>clustered_lights.glsl</code> expects <code>ubo.clusterGrid</code> from the UBO header; <code>ibl.glsl</code> reads <code>ubo.iblParams</code> and samplers declared in the main file. Order matters: UBO and push must precede any file that references <code>ubo</code> or <code>push</code>.</p>
+<h3 id="cmake-depends-mirrors-the-transitive-graph">CMake DEPENDS mirrors the transitive graph</h3>
+<p>Spark lists shared headers on every custom command so any edit invalidates dependent SPIR-V:</p>
+<pre><code class="language-cmake"># CMakeLists.txt (line 436)
+DEPENDS ${SHADER}
+        ${SHADER_DIR}/clustered_lights.glsl
+        ${SHADER_DIR}/equirect.glsl
+        ${SHADER_DIR}/ibl.glsl
+        ${SHADER_DIR}/punctual_shadows.glsl
+        ${SHADER_DIR}/scene_push.glsl
+        ${SHADER_DIR}/scene_ubo.glsl
+        ${SHADER_DIR}/post_common.glsl
+</code></pre>
+<p>Note that <code>scene.frag</code> includes <code>punctual_shadows.glsl</code> transitively but CMake still lists it explicitly — Ninja cannot infer <code>#include</code> edges from GLSL text. When you add a new shared file (e.g. <code>gltf_pbr_extensions.glsl</code>), add it to <strong>every</strong> <code>add_custom_command</code> DEPENDS that includes it, or stale <code>.spv</code> files will ship.</p>
+<h3 id="compile-time-paste-not-runtime-linking">Compile-time paste, not runtime linking</h3>
+<p>All <code>#include</code> directives expand to one translation unit before <code>glslangValidator</code> emits SPIR-V. There is no separate link step for <code>.glsl</code> files — a typo in an include breaks every shader that pulls it. Manual compile helps isolate which file failed:</p>
+<pre><code class="language-bash">glslangValidator -V --target-env vulkan1.0 -Ishaders shaders/scene.frag -o /tmp/scene.frag.spv
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="enabling-includes-in-vulkan-glsl">Enabling includes in Vulkan GLSL</h3>
 <pre><code class="language-glsl">#version 450
@@ -1241,6 +1299,30 @@ vec3 heatmap(float t) { return vec3(t, 1.0 - t, 0.0); }
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-split-shaders-into-multiple-files-beginner">Why split shaders into multiple files? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scene-pass-include-graph-and-cmake-depends">1b. Concept Deep Dive — scene Pass Include Graph and CMake DEPENDS</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenevert-minimal-include-tree">scene.vert — minimal include tree</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenefrag-layered-include-stack">scene.frag — layered include stack</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cmake-depends-mirrors-the-transitive-graph">CMake DEPENDS mirrors the transitive graph</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#compile-time-paste-not-runtime-linking">Compile-time paste, not runtime linking</a>
                         </li>
                         
                         <li class="toc-h2">

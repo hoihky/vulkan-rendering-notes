@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1060,6 +1066,63 @@
 <pre><code class="language-text">Disk / glTF bytes  →  Texture2D (RGBA8)  →  SceneRenderParams::sceneTextures  →  GPU uploader
 </code></pre>
 <p>If this boundary is weak — mixed formats, no deduplication, flip chaos — every downstream chapter (upload, sampling, lighting) becomes unreliable. This chapter makes the CPU contract explicit: <strong>always RGBA8</strong>, named layers, fingerprinted for change detection, max 16 entries per frame.</p>
+<h3 id="textures-before-the-gpu-beginner">Textures before the GPU (beginner)</h3>
+<p>A <strong>texture file</strong> on disk (PNG, JPEG) is compressed image data. The GPU cannot sample PNG directly — you must <strong>decode</strong> to raw pixels:</p>
+<pre><code class="language-text">brick.png on disk
+→ stb_image / glTF decoder
+→ Texture2D: width, height, RGBA8 bytes[row-major]
+→ (later) vkCmdCopyBufferToImage → GPU sampler2DArray layer
+</code></pre>
+<p><code>Texture2D</code> in Spark is <strong>CPU-only</strong>. It has no <code>VkImage</code>. This separation means:</p>
+<ul>
+<li>Gameplay code loads textures without including Vulkan headers.</li>
+<li>Same texture can be referenced by many materials before any GPU upload.</li>
+<li>Unit tests can inspect pixels without a GPU.</li>
+</ul>
+<h3 id="rgba8-convention">RGBA8 convention</h3>
+<p>Spark normalizes to <strong>4 bytes per pixel: R, G, B, A</strong> in that order, 0–255 per channel:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Channel</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R, G, B</td>
+<td>Color (sRGB-encoded for albedo in files)</td>
+</tr>
+<tr>
+<td>A</td>
+<td>Opacity (0 = transparent, 255 = opaque)</td>
+</tr>
+</tbody>
+</table>
+<p>Grayscale PNGs expand to RGB with equal channels. Missing alpha defaults to 255.</p>
+<p><strong>Vertical flip:</strong> image file formats often store row 0 at top; Vulkan texture upload may expect bottom-first. Spark documents flip at load time — inconsistency here makes textures appear upside-down (fix once at import, not in every shader).</p>
+<h2 id="b.concept-deep-dive-texture2d-api-and-scene-layer-assignment">1b. Concept Deep Dive — Texture2D API and Scene Layer Assignment</h2>
+<h3 id="cpu-container-no-vulkan-headers">CPU container: no Vulkan headers</h3>
+<p><code>Texture2D</code> lives entirely in <code>spark/scene/</code> — gameplay and importers depend on it, not on <code>vulkan.h</code>:</p>
+<pre><code class="language-cpp">// include/spark/scene/texture/Texture2D.hpp (selected API)
+class Texture2D {
+public:
+    [[nodiscard]] std::uint32_t GetWidth() const noexcept;
+    [[nodiscard]] const Array&lt;std::uint8_t&gt;&amp; GetRgba() const noexcept;
+    void SetPixels(std::uint32_t w, std::uint32_t h, Array&lt;std::uint8_t&gt; bytes);
+    [[nodiscard]] static bool TryLoadFromFile(const char* path, Texture2D&amp; out, bool flipVerticalOnLoad = true);
+    [[nodiscard]] std::uint64_t GetContentFingerprint() const noexcept;
+    [[nodiscard]] std::int32_t GetGpuSceneLayer() const noexcept;
+    void EnsureGpuSceneLayer(std::int32_t&amp; nextFreeLayer) noexcept;
+};
+</code></pre>
+<p>HDR assets use <code>SetFloatPixels</code> / <code>IsHdrFloatPixels()</code> and land in <code>SceneRenderParams::sceneHdrTextures</code> instead of the LDR array — same dedup rules, separate 16-layer cap.</p>
+<h3 id="fingerprint-drives-dirty-upload-chapter-2">Fingerprint drives dirty upload (Chapter 2)</h3>
+<p><code>RefreshContentFingerprint()</code> runs whenever pixels change. <code>VulkanSceneTextureUploader</code> compares <code>GetContentFingerprint()</code> against <code>lastFingerprints[layer]</code> — unchanged layers skip staging memcpy that frame. This is why you mutate pixels through setters, not by reaching into private <code>rgba</code> arrays.</p>
+<h3 id="scene-layer-fit-and-atlas-binding">Scene layer fit and atlas binding</h3>
+<p>Before GPU copy, submit calls <code>PrepareSceneLayerUpload(layerSize, outRgba)</code> — uniform aspect-preserving fit into a square layer, updating <code>sceneLayerUvScale</code>. Sprite atlases use <code>SetAtlasBinding(atlas, uvRect)</code> so <code>ResolveAtlasUv</code> redirects sampling to a sub-rectangle of a parent texture without duplicating pixels.</p>
+<h3 id="dedup-at-submit-time">Dedup at submit time</h3>
+<p><code>SceneSubmitDetail::FindOrAddSceneTexture</code> scans <code>params.sceneTextures</code> for pointer equality — two materials sharing <code>SharedPtr&lt;Texture2D&gt;</code> get the same layer index. That stable index becomes <code>SceneDrawItem::textureLayer</code> and the push constant the fragment shader reads.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="texture2d-the-cpu-pixel-container">Texture2D: the CPU pixel container</h3>
 <p><code>Texture2D</code> lives in <code>spark/scene/</code> and includes <strong>no Vulkan headers</strong>:</p>
@@ -1298,6 +1361,34 @@ params.sceneTextures.PushBack(shared);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#textures-before-the-gpu-beginner">Textures before the GPU (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#rgba8-convention">RGBA8 convention</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-texture2d-api-and-scene-layer-assignment">1b. Concept Deep Dive — Texture2D API and Scene Layer Assignment</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#cpu-container-no-vulkan-headers">CPU container: no Vulkan headers</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#fingerprint-drives-dirty-upload-chapter-2">Fingerprint drives dirty upload (Chapter 2)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scene-layer-fit-and-atlas-binding">Scene layer fit and atlas binding</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#dedup-at-submit-time">Dedup at submit time</a>
                         </li>
                         
                         <li class="toc-h2">

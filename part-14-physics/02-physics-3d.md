@@ -17,6 +17,52 @@ Rendering never imports physics headers beyond gameplay systems — the bridge i
 
 Milestone: throw ball in PhysicsBallThrow3DDemo — bounces on ground, mesh position matches physics same frame.
 
+## 1b. Concept Deep Dive — Substepped 3D Simulation
+
+### Substeps for contact stability
+
+3D simulation divides frame time into `settings.substeps` integration passes — fast projectiles and stacked boxes stay stable:
+
+```cpp
+// src/spark/physics/PhysicsWorld3D.cpp
+void PhysicsWorld3D::Simulate(GameWorld& world, const FrameTiming& timing) {
+    const int substeps = std::max(1, settings.substeps);
+    const float h = dt / static_cast<float>(substeps);
+
+    ColliderBakePipeline3D::GetDefault().Rebuild(world, broadPhaseCellSize, colliders, broadPhase);
+    CollectDynamicBodies3D(world, bodies);
+
+    for (int s = 0; s < substeps; ++s) {
+        RigidbodyIntegrator3D::IntegrateSubstep(bodies, h, settings, colliders, broadPhase, ...);
+        ContactResolver3D::ApplyStaticNormalImpulses(...);
+        ContactResolver3D::ResolvePenetrations(...);
+        ContactResolver3D::ResolveDynamicPairVelocities(...);
+        JointSolver3D::SolveSubstep(world, h, settings);
+    }
+}
+```
+
+Each substep is a full integrate → impulse → penetration → joint cycle on the same baked collider set.
+
+### PhysicsSubsystem splits simulators by concern
+
+Base rigid bodies, character controllers, and trigger volumes run as separate passes:
+
+```cpp
+// src/spark/physics/PhysicsSubsystem.cpp
+void PhysicsSubsystem::SimulateAll3D(GameWorld& world, const FrameTiming& timing) {
+    world3D.Simulate(world, timing);
+    characterController3D.Simulate(world, timing);
+    triggerVolumes3D.Simulate(world, timing);
+}
+```
+
+Controllers override raw integration for player capsules; triggers emit overlap events without blocking motion. Rendering still only reads `TransformComponent`.
+
+### PhysicsBallThrow3DDemo as 3D baseline
+
+The demo configures restitution on ball and ground materials, calls `Simulate3D` in Update, then submits — mesh position matches physics body same frame when ordering is correct.
+
 ## 2. Core Concepts
 
 ### PhysicsWorld3D scope

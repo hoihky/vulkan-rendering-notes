@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,8 +1064,40 @@
 <p>An editor shell without panels is just a 3D viewport. <strong>Hierarchy</strong> navigates entity parent/child relationships; <strong>Inspector</strong> surfaces component data for the selection; <strong>Project</strong> browses assets on disk. Spark implements these as <code>IEditorPanel</code> plugins arranged by <code>EditorDockShell</code> — the same retained-mode UI stack from Part XI, not a separate Dear ImGui immediate-mode fork for panel content.</p>
 <p>The architectural test: edit a Transform in inspector, save scene (Chapter 1–2), reload (Chapter 3), and confirm the value round-trips. If inspector held a <strong>copy</strong>, save would persist stale data while the viewport showed the copy's values — a classic student bug. Spark's InspectorPanel reads live components; editable widgets must call <code>SetTranslation</code> on the actual <code>TransformComponent</code>.</p>
 <p>Milestone: select entity in hierarchy; inspector shows name and position; extend with editable FloatField and verify viewport moves same frame.</p>
-<h2 id="core-concepts">2. Core Concepts</h2>
+<h2 id="b.concept-deep-dive-live-ecs-editing">1b. Concept Deep Dive — Live ECS Editing</h2>
 <h3 id="ieditorpanel-plugin-contract">IEditorPanel plugin contract</h3>
+<p>Each dock region is an <code>IEditorPanel</code> — hierarchy, inspector, project browser share one interface:</p>
+<pre><code class="language-cpp">// include/spark/editor/IEditorPanel.hpp
+class IEditorPanel {
+    [[nodiscard]] virtual Utf8String GetPanelId() const = 0;
+    [[nodiscard]] virtual Utf8String GetDisplayName() const = 0;
+    [[nodiscard]] virtual Ui::IUiElement* GetRootElement() noexcept = 0;
+    virtual void OnAttach(EditorContext&amp; ctx) {}
+    virtual void OnTick(const FrameTiming&amp; timing, EditorContext&amp; ctx) {}
+};
+</code></pre>
+<p><code>EditorApplication</code> arranges panel roots in <code>EditorDockShell</code>; adding a profiler panel means a new class, not edits to hierarchy internals.</p>
+<h3 id="inspector-mutates-live-components">Inspector mutates live components</h3>
+<p><code>InspectorPanel::OnTick</code> rebuilds widget context from <code>EditorContext</code> each frame — it reads the <strong>selected entity's actual components</strong>, not cached copies:</p>
+<pre><code class="language-cpp">void InspectorPanel::OnTick(const FrameTiming&amp; /*timing*/, EditorContext&amp; ctx) {
+    const InspectorWidgetContext widgetCtx = BuildWidgetContext(ctx);
+    // FloatField commits call TransformComponent::SetTranslation on the live object
+}
+</code></pre>
+<p>If inspector held a copy, save would persist stale data while the viewport showed edited values — the classic student bug this architecture prevents.</p>
+<h3 id="hierarchy-rebuilds-on-scene-revision-hash">Hierarchy rebuilds on scene revision hash</h3>
+<p><code>HierarchyPanel::ComputeSceneRevision</code> XORs entity pointers, parent links, and names. When revision changes, the tree rebuilds without polling every node every frame:</p>
+<pre><code class="language-cpp">std::uint32_t HierarchyPanel::ComputeSceneRevision() const noexcept {
+    world-&gt;ForEachGameObject([&amp;](GameObject* obj) {
+        rev ^= static_cast&lt;std::uint32_t&gt;(reinterpret_cast&lt;std::uintptr_t&gt;(obj) &gt;&gt; 4U);
+        rev = rev * 16777619U + ... parent + name chars ...
+    });
+    return rev;
+}
+</code></pre>
+<p>Selection sync stays O(1) when the graph is stable; structural edits (rep parent, rename, spawn) invalidate once.</p>
+<h2 id="core-concepts">2. Core Concepts</h2>
+<h3 id="ieditorpanel-plugin-contract-1">IEditorPanel plugin contract</h3>
 <p>Each dock region implements <code>IEditorPanel</code>: <code>GetPanelId</code>, <code>GetDisplayName</code>, <code>GetRootElement</code>, lifecycle <code>OnAttach</code>/<code>OnDetach</code>/<code>OnTick</code>. Panels own their UI subtree; <code>EditorApplication</code> arranges roots in <code>EditorDockShell</code>. Adding a console or profiler panel means a new class — no edits to hierarchy internals.</p>
 <p><code>ReleaseRootElement</code> transfers ownership to dock layout during BuildEditorUi — factory pattern matches Part XI UI control creation.</p>
 <h3 id="hierarchy-panel-tree-rebuild">Hierarchy panel tree rebuild</h3>
@@ -1234,6 +1272,22 @@ void InspectorPanel::OnTick(const FrameTiming&amp; /*timing*/, EditorContext&amp
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-live-ecs-editing">1b. Concept Deep Dive — Live ECS Editing</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ieditorpanel-plugin-contract">IEditorPanel plugin contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#inspector-mutates-live-components">Inspector mutates live components</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#hierarchy-rebuilds-on-scene-revision-hash">Hierarchy rebuilds on scene revision hash</a>
                         </li>
                         
                         <li class="toc-h2">

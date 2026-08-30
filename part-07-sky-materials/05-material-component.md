@@ -16,6 +16,130 @@ expects — textures stay on CPU until submit registers layers into `SceneRender
 Build along: add MaterialComponent beside MeshComponent on a cube, bind brick + normal + ORM, and verify submit
 copies fields into SceneDrawItem.
 
+### What is a material? (beginner)
+
+A **mesh** answers: *what shape is it?* (triangles, vertices)  
+A **material** answers: *what is it made of?* (wood, metal, glass, emissive screen)
+
+In a game engine, a material is a **bundle of parameters** the shader reads when coloring pixels:
+
+| Parameter | Example | Visual effect |
+|-----------|---------|---------------|
+| Base color / albedo | Brick texture + white tint | Surface color pattern |
+| Metallic | 0.0 (wood) or 1.0 (steel) | Metals tint specular highlights |
+| Roughness | 0.1 (mirror) or 0.9 (chalk) | Sharp vs blurry reflections |
+| Normal map | Bumpy surface texture | Fake detail without extra geometry |
+| Emissive | Glowing panel texture | Bright areas for HDR / lights |
+| Opacity | 1.0 opaque, 0.5 glass | Transparent pass routing |
+
+Spark stores these on the **CPU** in `MaterialComponent`. The GPU never sees `MaterialComponent` directly — submit flattens it into `SceneDrawItem` + texture array layers + push constants.
+
+### Mesh + Material: two components, one entity
+
+```text
+GameObject "BrickCube"
+  ├── TransformComponent     (where in the world)
+  ├── MeshComponent          (which geometry — SharedPtr<Mesh>)
+  └── MaterialComponent      (how it looks — textures + PBR scalars)
+```
+
+At minimum you need **Transform + Mesh** to draw something. Without `MaterialComponent`, Spark uses a flat **albedo color** from `MeshComponent` and default metallic/roughness — fine for debug gray cubes, not for production assets.
+
+### PBR in plain language
+
+**PBR** (Physically Based Rendering) means the shader approximates how light behaves on real surfaces:
+
+- **Diffuse** — light scattered evenly (matte paint).
+- **Specular** — shiny highlights (plastic, polished wood).
+- **Metallic workflow** — metals have no diffuse; color comes from tinted reflections.
+
+Spark's `scene.frag` implements **GGX** specular + Lambert diffuse with metallic energy conservation. You do not write that math in gameplay code — you set `metallic`, `roughness`, and textures on `MaterialComponent`; submit copies them to the GPU.
+
+### What happens when you call SetBaseColorTexture
+
+```text
+1. You: mat->SetBaseColorTexture(brickTex);
+2. MaterialComponent stores SharedPtr<Texture2D> on CPU
+3. NotifyMaterialChanged() → MeshDirty signal (editor may refresh)
+4. Next frame: SceneSubmit calls FindOrAddSceneTexture(brickTex)
+5. Returns layer index 3 (example) — stored in SceneDrawItem.textureLayer
+6. VulkanSceneTextureUploader copies RGBA pixels to array layer 3
+7. Draw: push.textureLayer = 3
+8. Fragment shader: texture(sceneTextures, vec3(uv, 3.0))
+```
+
+The texture is **not** uploaded when you call the setter. Upload happens during command buffer record, batched with other textures that frame. This deferred pattern avoids stalling the GPU on every inspector tweak.
+
+## 1b. Concept Deep Dive — MaterialComponent Field Reference
+
+### Complete private field layout
+
+```cpp
+// include/spark/ecs/components/rendering/MaterialComponent.hpp (private section)
+    SharedPtr<Texture2D> baseColor, normalMap, metallicRoughness, emissiveMap, iridescenceThicknessMap;
+    Vector3 tint{Vector3::One};
+    float metallic = 0.0F, roughness = 0.45F;
+    float metallicFactor = 1.0F, roughnessFactor = 1.0F, occlusionStrength = 1.0F;
+    Vector3 emissiveColor{};
+    float emissiveIntensity = 0.0F;
+    Vector3 emissiveFactor{Vector3::One};
+    SceneShadingModel shadingModel = SceneShadingModel::LitPbr;
+    std::int32_t toonDiffuseBands = 3;
+    float toonRimIntensity = 0.35F, toonRimPower = 4.0F;
+    bool doubleSided = false;
+    float opacity = 1.0F;
+    float alphaCutoff = 0.5F;
+    bool alphaBlend = false;
+    MaterialUvMap baseColorUv, normalUv, metallicRoughnessUv, emissiveUv, iridescenceThicknessUv;
+    float normalScale = 1.0F;
+    GltfMaterialExtensions gltfExtensions;
+    MaterialLibraryBinding libraryBinding;
+```
+
+Every setter calls `NotifyMaterialChanged()` → `EmitSignal(SignalId::MeshDirty)` for editor refresh.
+
+### glTF import → MaterialComponent
+
+```cpp
+// src/spark/scene/material/GltfMaterial.cpp — ApplyTo (concept)
+void GltfMaterial::ApplyTo(MaterialComponent& material) const {
+    material.SetBaseColorTexture(baseColor);
+    material.SetTint(baseColorFactor);
+    material.SetNormalTexture(normalMap);
+    material.SetNormalScale(normalScale);
+    if (metallicRoughness) {
+        material.SetMetallicRoughnessTexture(metallicRoughness);
+        material.SetMetallic(1.0F);   // sentinel: use map channels
+        material.SetRoughness(1.0F);
+        material.SetMetallicFactor(metallicFactor);
+        material.SetRoughnessFactor(roughnessFactor);
+    }
+    material.SetEmissive(emissiveColor, emissiveIntensity);
+    material.SetOpacity(alphaMode == Mask ? 1.0f : baseColorFactor.w);
+    material.SetGltfExtensions(extensions);
+}
+```
+
+When ORM map is bound, `metallic=1.0` and `roughness=1.0` are **sentinels** telling `scene.frag` to read G/B channels from the texture instead of scalar push values.
+
+### Submit flattening — ApplyMaterialComponentToSceneDrawItemImpl
+
+```cpp
+// src/spark/scene/submit/SceneSubmitMaterial.cpp (lines 18–45)
+void ApplyMaterialComponentToSceneDrawItemImpl(SceneDrawItem& item, const MaterialComponent* mat) {
+    item.metallic = mat->GetMetallic();
+    item.roughness = mat->GetRoughness();
+    item.shadingModel = mat->GetShadingModel();
+    item.toonDiffuseBands = mat->GetToonDiffuseBands();
+    item.opacity = mat->GetOpacity();
+    item.baseColorUv = mat->GetBaseColorUvMap();
+    item.normalUv = mat->GetNormalUvMap();
+    item.metallicRoughnessUv = mat->GetMetallicRoughnessUvMap();
+    item.gltfExtensions = mat->GetGltfExtensions();
+    // texture layers assigned separately via FindOrAddSceneTexture
+}
+```
+
 ## 2. Core Concepts
 
 ### PBR parameter bundle
@@ -36,6 +160,33 @@ Every setter calls `NotifyMaterialChanged` → `EmitSignal(MeshDirty)` so future
 ### Pair with MeshComponent at submit
 
 Submit reads optional `MaterialComponent` when gathering mesh drawables — missing material → mesh albedo only with default metallic/roughness.
+
+### MultiMaterialComponent for glTF multi-primitive meshes
+
+When a `Mesh` has multiple `MeshSubmesh` entries (Part VI), a single `MaterialComponent` is insufficient — each submesh may reference a different glTF material index. `MultiMaterialComponent` stores one **slot per material index**:
+
+```cpp
+// include/spark/ecs/components/rendering/MultiMaterialComponent.hpp (concept)
+// Indexed by glTF material index (MeshSubmesh::materialIndex).
+// Each slot: baseColor, normal, ORM, emissive textures + PBR scalars.
+```
+
+`BindFromGltfAsset` sizes slots to the imported material table and registers library keys:
+
+```text
+slot[i].materialAssetKey = "models/chair.glb#material/i"
+```
+
+At submit, `PushRigidMeshDraws` emits **one draw item per submesh**, looking up `multiMat->GetSlot(materialIndex)` for that primitive's PBR parameters. Variant materials (`KHR_materials_variants`) resolve through `MeshSubmesh::ResolveMaterialIndex(activeVariant)` before slot lookup.
+
+**When to use which component:**
+
+| Mesh submesh count | Component | Draw items per entity |
+|--------------------|-----------|----------------------|
+| 0 or 1 (full mesh) | `MaterialComponent` | 1 |
+| 2+ | `MultiMaterialComponent` | 1 per submesh |
+
+Both components store **CPU** `SharedPtr<Texture2D>` handles. GPU layer indices are assigned during submit, not at import time.
 
 ## 3. Design Decisions
 

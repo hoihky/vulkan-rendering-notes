@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,68 @@
 <p>Importing skinned glTF is not enough — ECS must connect mesh, skeleton, and animator so submit builds draw items
 the renderer recognizes as <strong>skinned</strong> rather than rigid.</p>
 <p>Build along: load a Khronos sample character, spawn the component trio, verify bind-pose render on Custom slot.</p>
+<h3 id="skinned-gltf-pipeline-for-beginners">Skinned glTF pipeline for beginners</h3>
+<p>Importing a character is three connected pieces:</p>
+<pre><code class="language-text">SkinnedGltfAsset (shared data)
+  ├─ Mesh with joint indices/weights per vertex
+  ├─ Skeleton (joint hierarchy + inverse binds)
+  └─ Animation clips (walk, idle, ...)
+
+Per-entity components:
+  SkinnedMeshComponent  → which asset, which mesh slot
+  AnimatorComponent     → which clip, current time
+  TransformComponent    → where in the world
+</code></pre>
+<p><strong>Bind pose:</strong> first frame with no animation — joints at rest, mesh looks like Blender export. If T-pose explodes, weights or inverse binds are wrong.</p>
+<p><strong>Submit path:</strong></p>
+<pre><code class="language-text">SceneSubmit sees SkinnedMeshComponent
+→ SceneDrawItem with useSkinning = true
+→ jointPalette from AnimatorComponent
+→ opaque pass uploads Skin SSBO + draws
+</code></pre>
+<p><strong>Not the same as rigid glTF:</strong> rigid uses 4 weights of 0; skinned needs <code>scene.vert</code> skinning branch (<code>push.useSkinning</code>).</p>
+<h2 id="b.concept-deep-dive-skinned-import-and-ecs-wiring">1b. Concept Deep Dive — Skinned Import and ECS Wiring</h2>
+<h3 id="skinnedmeshvertex-rigid-layout-plus-joints">SkinnedMesh::Vertex — rigid layout plus joints</h3>
+<pre><code class="language-cpp">// include/spark/scene/mesh/SkinnedMesh.hpp
+struct Vertex {
+    Vector3 position;
+    Vector3 normal;
+    Vector2 texCoord;
+    Vector2 texCoord1;
+    Vector4 color;
+    Vector4 tangent;
+    std::uint32_t joints[4]{0, 0, 0, 0};
+    float weights[4]{1.0F, 0.0F, 0.0F, 0.0F};
+};
+</code></pre>
+<p>Importer normalizes weights when glTF data does not sum to 1.0. Joint indices reference <code>Skeleton</code> joint array order from glTF skin.</p>
+<h3 id="tryloadskinnedcharacterfromgltf-find-skin-node-build-mesh-skeleton">TryLoadSkinnedCharacterFromGltf — find skin node, build mesh + skeleton</h3>
+<pre><code class="language-cpp">// src/spark/scene/mesh/skinned_mesh_gltf.cpp (concept)
+// 1. cgltf_parse file
+// 2. Scan scene for first node with mesh + skin
+// 3. GltfSkinNodeLoader::TryBuildSkinNode → SkinnedMesh + Skeleton
+// 4. Load materials via GltfMaterialLoader
+// 5. Auto-detect walkClipIndex from clip name containing "walk"
+</code></pre>
+<h3 id="ecs-component-trio-on-spawn">ECS component trio on spawn</h3>
+<pre><code class="language-cpp">// Typical character spawn (ThreeDDemo / CharacterCameraDemo pattern)
+auto asset = world.GetAssetCache().LoadSkinnedGltf("characters/hero.glb");
+auto* go = world.CreateGameObject();
+go-&gt;AddComponent&lt;TransformComponent&gt;()-&gt;SetTranslation(spawnPos);
+go-&gt;AddComponent&lt;SkinnedMeshComponent&gt;(asset.mesh, asset.skeleton);
+go-&gt;AddComponent&lt;Character3DAnimFsmComponent&gt;()-&gt;ConfigureLocomotionFromSkeleton(
+        *asset.skeleton, asset.walkClipIndex);
+go-&gt;AddComponent&lt;AnimatorComponent&gt;(asset.skeleton, asset.walkClipIndex);
+</code></pre>
+<p><code>SkinnedMeshComponent</code> holds <code>SharedPtr&lt;SkinnedMesh&gt;</code> + optional <code>SharedPtr&lt;Skeleton&gt;</code> for bind pose when no animator runs.</p>
+<h3 id="scenesubmit-skinned-gather">SceneSubmit skinned gather</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (concept)
+baseItem.mesh = SceneMeshSlot::Custom;
+baseItem.skinnedMesh = smc.GetMesh();
+baseItem.jointPalette.Resize(jointCount);
+SkinnedMeshPalette::TryFill(smc, anim, baseItem.jointPalette.GetData(), Skeleton::MaxJoints);
+</code></pre>
+<p><code>SkinnedMeshPalette::TryFill</code> prefers <code>AnimatorComponent::ComputeJointPalette</code>; falls back to <code>skeleton-&gt;BuildBindPosePalette</code> when no animator is present.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="skinnedmesh-vertex-layout">SkinnedMesh vertex layout</h3>
 <p>Extends rigid attributes with <strong>four joint indices and weights</strong>, plus optional tangent for normal maps. Weights should sum to 1; importer normalizes when glTF data drifts.</p>
@@ -1414,6 +1482,30 @@ if (charAnimFsm != nullptr) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skinned-gltf-pipeline-for-beginners">Skinned glTF pipeline for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-skinned-import-and-ecs-wiring">1b. Concept Deep Dive — Skinned Import and ECS Wiring</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skinnedmeshvertex-rigid-layout-plus-joints">SkinnedMesh::Vertex — rigid layout plus joints</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#tryloadskinnedcharacterfromgltf-find-skin-node-build-mesh-skeleton">TryLoadSkinnedCharacterFromGltf — find skin node, build mesh + skeleton</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ecs-component-trio-on-spawn">ECS component trio on spawn</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scenesubmit-skinned-gather">SceneSubmit skinned gather</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1063,6 +1069,66 @@
 <li><strong>vkCmdBindDescriptorSets</strong> — attaches set to pipeline layout at draw time</li>
 </ol>
 <p>Spark's scene pass uses <strong>set 0</strong> with ten bindings — binding 1 is the material texture array. This chapter focuses on that binding and how it fits the wider layout shaders in Part III already declared.</p>
+<h3 id="what-is-a-texture-beginner">What is a texture? (beginner)</h3>
+<p>A <strong>texture</strong> is a 2D image stored on the GPU. Instead of painting every pixel of a brick wall by hand in code, you:</p>
+<ol>
+<li>Load a photo of bricks into memory (<code>Texture2D</code> on CPU in Spark).</li>
+<li>Assign <strong>UV coordinates</strong> to each mesh vertex (Part IV Chapter 4).</li>
+<li>In the fragment shader, look up the photo at the interpolated UV: <code>texture(sampler, uv)</code>.</li>
+</ol>
+<p>The GPU's texture units are optimized for this lookup — millions of pixels per frame sample textures with filtering (blending neighboring texels for smooth minification).</p>
+<h3 id="why-vulkan-needs-descriptors">Why Vulkan needs descriptors</h3>
+<p>The fragment shader declares:</p>
+<pre><code class="language-glsl">layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+</code></pre>
+<p>That is only a <strong>declaration</strong>. At runtime you must tell Vulkan:</p>
+<ul>
+<li><strong>Which VkImage</strong> holds the texels</li>
+<li><strong>Which VkImageView</strong> interprets the memory as a 2D array</li>
+<li><strong>Which VkSampler</strong> defines filtering (linear vs nearest) and wrapping (repeat vs clamp)</li>
+</ul>
+<p>A <strong>descriptor set</strong> packages these handles. <code>vkCmdBindDescriptorSets</code> attaches the package to the pipeline before drawing.</p>
+<p><strong>Beginner analogy:</strong> The shader is a function signature. The descriptor set is the argument you pass when calling the function.</p>
+<h3 id="why-spark-uses-a-texture-array-instead-of-one-texture-per-material">Why Spark uses a texture <em>array</em> instead of one texture per material</h3>
+<p>Naive approach: bind a different texture before every draw call. Problems:</p>
+<ul>
+<li>Descriptor binding is expensive when done thousands of times per frame.</li>
+<li>Vulkan has limits on descriptor updates per frame.</li>
+</ul>
+<p>Spark's approach:</p>
+<ol>
+<li>Upload <strong>all</strong> scene textures into layers of one <code>sampler2DArray</code> (up to <code>MaxSceneTextures</code> layers).</li>
+<li>Bind the array <strong>once</strong> per frame (descriptor set 0, binding 1).</li>
+<li>Per draw, pass a <strong>layer index</strong> in push constants (<code>textureLayer</code>, <code>normalMapLayer</code>, etc.).</li>
+</ol>
+<pre><code class="language-text">Draw chair seat:  push.textureLayer = 2, push.metallicRoughnessMapLayer = 5
+Draw chair legs:  push.textureLayer = 3, push.metallicRoughnessMapLayer = 6
+Same bound descriptor set for both draws — only push constants change.
+</code></pre>
+<p>This is the core of Spark's <strong>material pipeline</strong>: CPU assigns layers during submit; GPU samples by index during shade.</p>
+<h2 id="b.concept-deep-dive-descriptor-binding-and-layer-indices">1b. Concept Deep Dive — Descriptor Binding and Layer Indices</h2>
+<h3 id="one-array-many-materials">One array, many materials</h3>
+<p>Scene descriptor set 0 binding 1 is a combined <code>sampler2DArray</code>. The uploader exposes handles the writer binds once per frame:</p>
+<pre><code class="language-text">VulkanSceneTextureUploader::ArrayView()  →  VkDescriptorImageInfo.imageView
+VulkanSceneTextureUploader::Sampler()    →  VkDescriptorImageInfo.sampler
+layout = SHADER_READ_ONLY_OPTIMAL
+</code></pre>
+<p>Every opaque draw shares this binding; per-draw variation comes from push constants, not rebinding textures.</p>
+<h3 id="layer-index-flow-from-materialcomponent">Layer index flow from MaterialComponent</h3>
+<p><code>SceneSubmitMaterial.cpp</code> resolves each map through <code>FindOrAddSceneTexture</code>:</p>
+<pre><code class="language-cpp">item.textureLayer = FindOrAddSceneTexture(params, mat-&gt;GetBaseColorTexture(), ...);
+item.normalMapLayer = FindOrAddSceneTexture(params, mat-&gt;GetNormalTexture(), ...);
+item.metallicRoughnessMapLayer = FindOrAddSceneTexture(params, mat-&gt;GetMetallicRoughnessTexture(), ...);
+</code></pre>
+<p><code>-1</code> means "no texture" — the shader branches to flat tint or default ORM values. HDR emissive layers index <code>sceneHdrTextures</code> with a separate push field (<code>textureIsHdrLinear</code> on the draw item).</p>
+<h3 id="glsl-sampling-contract">GLSL sampling contract</h3>
+<pre><code class="language-glsl">layout(set = 0, binding = 1) uniform sampler2DArray sceneTextures;
+// push.textureLayer selects the array slice:
+vec4 albedo = texture(sceneTextures, vec3(sparkMapUv(0), float(push.textureLayer)));
+</code></pre>
+<p><code>sparkMapUv</code> applies atlas UV scale/offset from the draw item — the same layer index works for differently tiled materials when submit stored per-draw UV transforms.</p>
+<h3 id="why-push-constants-instead-of-per-material-descriptors">Why push constants instead of per-material descriptors</h3>
+<p>Vulkan limits descriptor updates per frame. Spark binds set 0 once, then changes only push constants (<code>textureLayer</code>, <code>normalMapLayer</code>, <code>metallicRoughnessMapLayer</code>, …) between draws — thousands of meshes, one texture array binding.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="combined-image-sampler">Combined image sampler</h3>
 <p>Vulkan merges image and sampler into one descriptor type:</p>
@@ -1260,6 +1326,20 @@ pipelineLayout,
 0, nullptr);    // dynamic offsets
 </code></pre>
 <p>Must occur after pipeline bind, before draws using <code>scene.frag</code>. Wrong set → validation error or wrong texture.</p>
+<h3 id="how-binding-1-connects-to-the-material-pipeline">How binding 1 connects to the material pipeline</h3>
+<p>Texture binding is not an isolated Vulkan exercise — it is the <strong>GPU side</strong> of Spark's material pipeline. The CPU path looks like this:</p>
+<pre><code class="language-text">MaterialComponent / MultiMaterialComponent
+→ SceneSubmit::FindOrAddSceneTexture(SharedPtr&lt;Texture2D&gt;)
+     returns layer index (0 … MaxSceneTextures-1)
+→ SceneDrawItem.textureLayer / normalMapLayer / metallicRoughnessMapLayer
+→ VulkanSceneTextureUploader::PrepareUploads (staging → GPU array layer)
+→ VulkanSceneDescriptors writes binding 1 (LDR) and binding 11 (HDR float)
+→ VulkanSceneOpaquePass push constants → scene.frag samples by layer
+</code></pre>
+<p><code>FindOrAddSceneTexture</code> deduplicates by <code>SharedPtr</code> identity — ten draws sharing one brick albedo map reuse the same layer index. Different maps (albedo vs normal vs ORM) occupy <strong>different layers in the same array</strong>, selected by separate push constant fields.</p>
+<p>glTF import decodes PNG/JPEG into CPU <code>Texture2D</code> pixels in <code>GltfMaterialLoader::TryLoadTexturesFromMaterial</code>. GPU upload happens later at frame record via <code>deferredUploadBatch.Record</code> — the ECS never holds <code>VkImage</code> handles.</p>
+<p>For HDR emissive maps (<code>RGBA32F</code>), <code>ApplyAlbedoTexture</code> sets <code>item.textureIsHdrLinear</code> and the uploader routes pixels to <code>sceneHdrTextures</code> (binding 11). The fragment shader branches: LDR albedo uses <code>sparkSrgbToLinear</code> on <code>sceneTextures</code>; HDR layers skip sRGB decode.</p>
+<p>When building your engine, implement <strong>layer assignment on the CPU</strong> during scene gather, not descriptor rebinding per draw. Vulkan rewards one array + push constant layers over hundreds of descriptor sets.</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="one-array-many-material-maps">One array, many material maps</h3>
@@ -1352,6 +1432,38 @@ pipelineLayout,
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
                         </li>
                         
+                        <li class="toc-h3">
+                          <a href="#what-is-a-texture-beginner">What is a texture? (beginner)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-vulkan-needs-descriptors">Why Vulkan needs descriptors</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-spark-uses-a-texture-array-instead-of-one-texture-per-material">Why Spark uses a texture array instead of one texture per material</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-descriptor-binding-and-layer-indices">1b. Concept Deep Dive — Descriptor Binding and Layer Indices</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#one-array-many-materials">One array, many materials</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#layer-index-flow-from-materialcomponent">Layer index flow from MaterialComponent</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#glsl-sampling-contract">GLSL sampling contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-push-constants-instead-of-per-material-descriptors">Why push constants instead of per-material descriptors</a>
+                        </li>
+                        
                         <li class="toc-h2">
                           <a href="#2-core-concepts">2. Core Concepts</a>
                         </li>
@@ -1382,6 +1494,10 @@ pipelineLayout,
                         
                         <li class="toc-h3">
                           <a href="#bind-at-draw-time">Bind at draw time</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#how-binding-1-connects-to-the-material-pipeline">How binding 1 connects to the material pipeline</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -16,6 +16,72 @@ environment — ideally the same equirect visible as the sky — so specular ref
 Build along: assign an equirect to sky MaterialComponent, let submit resolve `iblEnvironmentLayer`, and enable
 `ubo.iblParams.w` on a metallic test sphere.
 
+## 1b. Concept Deep Dive — Split-Sum IBL in Spark
+
+### What IBL approximates
+
+**Image-based lighting** replaces flat ambient with radiance sampled from an environment map. Spark implements the **split-sum approximation**:
+
+```text
+Specular IBL ≈ prefiltered_env(N, R, roughness) × (F0 × brdf_lut.x + brdf_lut.y)
+Diffuse IBL  ≈ irradiance(N) × baseColor × (1 - metallic)
+```
+
+Diffuse samples the environment along the **surface normal**; specular along the **reflection vector** `R = reflect(-V, N)` with roughness-dependent blur.
+
+### ibl.glsl entry points
+
+```glsl
+// shaders/ibl.glsl (concept)
+vec3 sparkEvalSpecularIbl(sampler2DArray ldrTex, sampler2DArray hdrTex,
+        vec3 n, vec3 v, vec3 baseColor, float metallic, float roughness, float occlusion) {
+    if (ubo.iblParams.w < 0.5) return vec3(0.0);  // IBL disabled
+    int layer = int(round(ubo.iblParams.x));
+    // importance-sample GGX hemisphere, accumulate prefiltered radiance
+    // sample BRDF LUT at (NdotV, roughness)
+    return prefiltered * (f0 * brdf.x + brdf.y) * intensity * occlusion;
+}
+
+vec3 sparkEvalDiffuseIbl(...) {
+    vec3 irradiance = sparkSampleEnvironment(ldrTex, hdrTex, n, layer, ...);
+    return irradiance * baseColor * (1.0 - metallic) * intensity * occlusion;
+}
+```
+
+### Auto-resolve environment from sky draw
+
+```cpp
+// src/spark/scene/submit/SceneSubmitMaterial.cpp (lines 126–147)
+void ResolveIblEnvironmentLayer(SceneRenderParams& params) noexcept {
+    if (params.iblEnvironmentLayer >= 0) return;  // explicit override
+    for (each draw d in params.draws) {
+        if (d.skyMode != SceneSkyMode::None && d.textureLayer >= 0) {
+            params.iblEnvironmentLayer = d.textureLayer;
+            params.iblEnvironmentIsHdr = d.textureIsHdrLinear;
+            params.iblEnvironmentUvScale = d.textureUvScale;
+            return;
+        }
+    }
+    params.iblEnvironmentLayer = -1;  // procedural env in shader
+}
+```
+
+Assign equirect once on sky `MaterialComponent` — metals on props automatically reflect the same HDR without duplicating layer setup.
+
+### UBO packing each frame
+
+```cpp
+// src/spark/render/scene/VulkanSceneUniformWriter.cpp (concept)
+u.iblParams[0] = (float)scene.iblEnvironmentLayer;
+u.iblParams[1] = scene.iblIntensity * (scene.iblEnvironmentIsHdr ? 0.4f : 1.0f);
+u.iblParams[2] = scene.iblEnvironmentIsHdr ? 1.0f : 0.0f;
+u.iblParams[3] = scene.iblEnabled ? 1.0f : 0.0f;
+```
+
+### Offline BRDF LUT (binding 12)
+
+`VulkanIblBrdfLut` bakes a 512×512 Hammersley + GGX integration texture at init — fragment shader samples it for the `F0 × A + B` split-sum term without runtime Monte Carlo per pixel.
+
 ## 2. Core Concepts
 
 ### Split-sum IBL preview

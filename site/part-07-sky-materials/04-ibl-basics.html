@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,54 @@
 environment — ideally the same equirect visible as the sky — so specular reflections match the background.</p>
 <p>Build along: assign an equirect to sky MaterialComponent, let submit resolve <code>iblEnvironmentLayer</code>, and enable
 <code>ubo.iblParams.w</code> on a metallic test sphere.</p>
+<h2 id="b.concept-deep-dive-split-sum-ibl-in-spark">1b. Concept Deep Dive — Split-Sum IBL in Spark</h2>
+<h3 id="what-ibl-approximates">What IBL approximates</h3>
+<p><strong>Image-based lighting</strong> replaces flat ambient with radiance sampled from an environment map. Spark implements the <strong>split-sum approximation</strong>:</p>
+<pre><code class="language-text">Specular IBL ≈ prefiltered_env(N, R, roughness) × (F0 × brdf_lut.x + brdf_lut.y)
+Diffuse IBL  ≈ irradiance(N) × baseColor × (1 - metallic)
+</code></pre>
+<p>Diffuse samples the environment along the <strong>surface normal</strong>; specular along the <strong>reflection vector</strong> <code>R = reflect(-V, N)</code> with roughness-dependent blur.</p>
+<h3 id="ibl.glsl-entry-points">ibl.glsl entry points</h3>
+<pre><code class="language-glsl">// shaders/ibl.glsl (concept)
+vec3 sparkEvalSpecularIbl(sampler2DArray ldrTex, sampler2DArray hdrTex,
+        vec3 n, vec3 v, vec3 baseColor, float metallic, float roughness, float occlusion) {
+    if (ubo.iblParams.w &lt; 0.5) return vec3(0.0);  // IBL disabled
+    int layer = int(round(ubo.iblParams.x));
+    // importance-sample GGX hemisphere, accumulate prefiltered radiance
+    // sample BRDF LUT at (NdotV, roughness)
+    return prefiltered * (f0 * brdf.x + brdf.y) * intensity * occlusion;
+}
+
+vec3 sparkEvalDiffuseIbl(...) {
+    vec3 irradiance = sparkSampleEnvironment(ldrTex, hdrTex, n, layer, ...);
+    return irradiance * baseColor * (1.0 - metallic) * intensity * occlusion;
+}
+</code></pre>
+<h3 id="auto-resolve-environment-from-sky-draw">Auto-resolve environment from sky draw</h3>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmitMaterial.cpp (lines 126–147)
+void ResolveIblEnvironmentLayer(SceneRenderParams&amp; params) noexcept {
+    if (params.iblEnvironmentLayer &gt;= 0) return;  // explicit override
+    for (each draw d in params.draws) {
+        if (d.skyMode != SceneSkyMode::None &amp;&amp; d.textureLayer &gt;= 0) {
+            params.iblEnvironmentLayer = d.textureLayer;
+            params.iblEnvironmentIsHdr = d.textureIsHdrLinear;
+            params.iblEnvironmentUvScale = d.textureUvScale;
+            return;
+        }
+    }
+    params.iblEnvironmentLayer = -1;  // procedural env in shader
+}
+</code></pre>
+<p>Assign equirect once on sky <code>MaterialComponent</code> — metals on props automatically reflect the same HDR without duplicating layer setup.</p>
+<h3 id="ubo-packing-each-frame">UBO packing each frame</h3>
+<pre><code class="language-cpp">// src/spark/render/scene/VulkanSceneUniformWriter.cpp (concept)
+u.iblParams[0] = (float)scene.iblEnvironmentLayer;
+u.iblParams[1] = scene.iblIntensity * (scene.iblEnvironmentIsHdr ? 0.4f : 1.0f);
+u.iblParams[2] = scene.iblEnvironmentIsHdr ? 1.0f : 0.0f;
+u.iblParams[3] = scene.iblEnabled ? 1.0f : 0.0f;
+</code></pre>
+<h3 id="offline-brdf-lut-binding-12">Offline BRDF LUT (binding 12)</h3>
+<p><code>VulkanIblBrdfLut</code> bakes a 512×512 Hammersley + GGX integration texture at init — fragment shader samples it for the <code>F0 × A + B</code> split-sum term without runtime Monte Carlo per pixel.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="split-sum-ibl-preview">Split-sum IBL preview</h3>
 <p><strong>Image-based lighting</strong> approximates infinite environment radiance from a texture. Spark's <code>ibl.glsl</code> implements diffuse irradiance via environment lookup along <strong>N</strong>, and specular via importance-sample prefilter + analytic BRDF approximation (split-sum).</p>
@@ -1234,6 +1288,30 @@ feeds split-sum specular. Part <strong>VI</strong> ambient UBO fields become pro
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-split-sum-ibl-in-spark">1b. Concept Deep Dive — Split-Sum IBL in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-ibl-approximates">What IBL approximates</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#iblglsl-entry-points">ibl.glsl entry points</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#auto-resolve-environment-from-sky-draw">Auto-resolve environment from sky draw</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#ubo-packing-each-frame">UBO packing each frame</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#offline-brdf-lut-binding-12">Offline BRDF LUT (binding 12)</a>
                         </li>
                         
                         <li class="toc-h2">

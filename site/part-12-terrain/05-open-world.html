@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,20 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Single-patch <strong>TerrainMeshGenerator</strong> suffices for demos; shipping open worlds need <strong>streaming</strong> height tiles, LOD rings, and async IO. This chapter maps the production extension path without requiring full implementation in the learning engine.</p>
 <p>Milestone: written chunk/LOD plan plus baseline vertex count and RegenerateMesh timing from TerrainDemo.</p>
+<h2 id="b.concept-deep-dive-from-single-patch-to-streaming-design">1b. Concept Deep Dive — From Single Patch to Streaming Design</h2>
+<h3 id="terraindemo-is-the-non-streaming-regression-baseline">TerrainDemo is the non-streaming regression baseline</h3>
+<p>Spark ships one <code>TerrainMeshGenerator</code> patch — sufficient for Parts IX–XII integration. Memory and vertex cost grow with subdiv²; a 2048² grid is millions of triangles in one draw. Open worlds partition XZ into <strong>fixed-size chunks</strong>, each with independent height arrays and draw items:</p>
+<pre><code class="language-text">Per chunk (production extension):
+heightSamples[] for cell resolution
+MeshHandle / Custom slot registration
+disk path (optional compressed R16)
+lastUsed frame for LRU eviction
+</code></pre>
+<p>Master single-patch brush/regenerate/cull in TerrainDemo before implementing clipmaps — streaming doubles debug surface area.</p>
+<h3 id="lod-rings-need-skirt-geometry">LOD rings need skirt geometry</h3>
+<p>Discrete chunk LOD (near 128², far 32² vertices) or GPU clipmap rings both require <strong>skirt indices</strong> or vertical strips between mismatched edge vertex counts — without skirts, T-junction cracks leak sunlight at ring boundaries. Load radius vs unload radius hysteresis prevents chunk thrashing at cell borders.</p>
+<h3 id="async-io-stays-off-the-gameplay-thread">Async IO stays off the gameplay thread</h3>
+<p>Height tile decode on a worker thread → main thread registers mesh into Custom pool → GPU sees new draw item next frame. Physics colliders must align with streamed height — rebasing world origin when the camera roams far from spawn avoids floating-point jitter at large coordinates.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="single-patch-vs-open-world">Single-patch vs open world</h3>
 <p>Spark <strong>TerrainDemo</strong> is one <strong>TerrainMeshGenerator</strong> patch — sufficient for learning Parts IX–XII integration. Shipping open worlds cannot hold full-resolution heightfields for entire continents in memory. <strong>Streaming</strong> loads height <strong>tiles</strong> near the player and unloads distant tiles under a memory budget.</p>
@@ -1205,6 +1225,22 @@ std::size_t TerrainMeshGenerator::HeightSampleCount(const TerrainGeneratorSettin
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-from-single-patch-to-streaming-design">1b. Concept Deep Dive — From Single Patch to Streaming Design</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#terraindemo-is-the-non-streaming-regression-baseline">TerrainDemo is the non-streaming regression baseline</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lod-rings-need-skirt-geometry">LOD rings need skirt geometry</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#async-io-stays-off-the-gameplay-thread">Async IO stays off the gameplay thread</a>
                         </li>
                         
                         <li class="toc-h2">

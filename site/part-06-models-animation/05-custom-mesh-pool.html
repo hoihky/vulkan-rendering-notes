@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,55 @@
 <p>Imported glTF props cannot each own a permanent device buffer if scenes churn at edit time. Spark packs every
 <code>SceneMeshSlot::Custom</code> mesh into <strong>shared dynamic buffers</strong>, uploading when the set of unique meshes changes.</p>
 <p>Build along: spawn two glTF trees on Custom slots and confirm one pooled vertex/index buffer in RenderDoc.</p>
+<h3 id="mesh-pool-for-beginners">Mesh pool for beginners</h3>
+<p>Each <code>VkBuffer</code> creation costs driver time. If every imported prop got its own vertex buffer, loading a city would allocate thousands of buffers.</p>
+<p><strong>Pool = one big buffer, many sub-ranges:</strong></p>
+<pre><code class="language-text">VulkanCustomMeshPool
+  vertexBuffer: [ meshA verts | meshB verts | meshC verts ... ]
+  indexBuffer:  [ meshA idx  | meshB idx  | meshC idx  ... ]
+
+Draw mesh B:
+  vkCmdBindVertexBuffers(pool.vertexBuffer)
+  vkCmdDrawIndexed(indexCount, ..., firstIndex = B.offset, ...)
+</code></pre>
+<p><strong>Fingerprint:</strong> when scene's set of custom meshes changes (add/remove prop), pool <strong>repacks</strong> and re-uploads. Unchanged scenes skip upload.</p>
+<p><strong>SceneMeshSlot::Custom</strong> tells submit "vertices live in pool slice X" — not the built-in cube/sphere primitives.</p>
+<p><strong>RenderDoc check:</strong> two different props should show <strong>same</strong> <code>VkBuffer</code> handle, different <code>firstIndex</code> / vertex offsets.</p>
+<h2 id="b.concept-deep-dive-interleaved-pack-and-slice-tables">1b. Concept Deep Dive — Interleaved Pack and Slice Tables</h2>
+<h3 id="custommeshgpuslice-draw-time-lookup">CustomMeshGpuSlice — draw-time lookup</h3>
+<pre><code class="language-cpp">// include/spark/render/scene/VulkanCustomMeshPool.hpp (concept)
+struct CustomMeshGpuSlice {
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t vertexOffset = 0;
+};
+HashMap&lt;const Mesh*, CustomMeshGpuSlice&gt; rigidSlices;
+HashMap&lt;const SkinnedMesh*, CustomMeshGpuSlice&gt; skinnedSlices;
+</code></pre>
+<p>At record time, <code>VulkanSceneOpaquePass</code> resolves <code>d.customMesh.Get()</code> → slice → <code>vkCmdDrawIndexed(indexCount, 1, firstIndex, vertexOffset, 0)</code>.</p>
+<h3 id="skinned-interleave-joints-as-float-bit-pattern">Skinned interleave — joints as float bit pattern</h3>
+<pre><code class="language-cpp">// src/spark/render/gpu/VulkanGpuMeshInterleaved.cpp (lines 42–70)
+void AppendSkinnedVertexToInterleaved(const SkinnedMesh::Vertex&amp; v, Array&lt;float&gt;&amp; out) {
+    // position, normal, texCoord0/1, tangent, color ...
+    out.PushBack(std::bit_cast&lt;float&gt;(v.joints[0]));
+    out.PushBack(std::bit_cast&lt;float&gt;(v.joints[1]));
+    out.PushBack(std::bit_cast&lt;float&gt;(v.joints[2]));
+    out.PushBack(std::bit_cast&lt;float&gt;(v.joints[3]));
+    out.PushBack(v.weights[0]);
+    out.PushBack(v.weights[1]);
+    out.PushBack(v.weights[2]);
+    out.PushBack(v.weights[3]);
+}
+</code></pre>
+<p>Rigid meshes write zero joint indices and weight 1.0 on bone 0 — same vertex stride, <code>push.useSkinning = 0</code> skips SSBO read.</p>
+<h3 id="clearknownmeshes-on-demo-teardown">ClearKnownMeshes on demo teardown</h3>
+<p>When leaving a scene, call <code>customMeshPool.ClearKnownMeshes()</code> so destroyed CPU <code>Mesh*</code> pointers are not hashed in the next session's fingerprint — prevents use-after-free in slice maps.</p>
+<h3 id="frame-timeline">Frame timeline</h3>
+<pre><code class="language-text">UpdateFromScene(scene)     → fingerprint changed? pack + memcpy staging
+RecordUploads(cmd)         → vkCmdCopyBuffer + barriers
+OpaquePass draw loop       → bind pool VB/IB, draw per slice
+ReleaseRetiredBuffers()    → after fence wait, free old device buffers
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="why-a-pool-exists">Why a pool exists</h3>
 <p>Creating/destroying <code>VkBuffer</code> per imported prop each frame causes allocation churn. <code>VulkanCustomMeshPool</code> packs <strong>all Custom-slot meshes</strong> into shared vertex/index buffers, uploading only when the scene fingerprint changes.</p>
@@ -1315,6 +1370,30 @@ skinned interleaved layout and joint attributes. Built-in UnitCube/GroundPlane s
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#mesh-pool-for-beginners">Mesh pool for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-interleaved-pack-and-slice-tables">1b. Concept Deep Dive — Interleaved Pack and Slice Tables</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#custommeshgpuslice-draw-time-lookup">CustomMeshGpuSlice — draw-time lookup</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#skinned-interleave-joints-as-float-bit-pattern">Skinned interleave — joints as float bit pattern</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#clearknownmeshes-on-demo-teardown">ClearKnownMeshes on demo teardown</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frame-timeline">Frame timeline</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -17,6 +17,47 @@ The demo encodes **editor-specific policy**: which entities save (placed props a
 
 Milestone: place five props, save, reload async, verify transforms and mesh paths match within float tolerance.
 
+## 1b. Concept Deep Dive — SceneEditor3DDemo Save Policy
+
+### ContentModel filters what gets captured
+
+Not every bootstrap entity belongs in a level file. `SceneEditorContentModel` supplies the capture predicate and path context:
+
+```cpp
+// src/spark/demo/SceneEditor3DDemo.cpp
+void SceneEditor3DDemo::SaveSceneToFile(Spark::GameWorld& w) {
+    SceneCaptureContext ctx = contentModel.BuildCaptureContext();
+    const auto includeEntity = [this](const GameObject* go) -> bool {
+        return contentModel.ShouldCapture(go);
+    };
+
+    SceneSerializer serializer;
+    SceneDocument document = serializer.Capture(w, ctx, includeEntity);
+    document.header.assetsRoot = Utf8String(ScenePathResolver::AssetsRoot());
+    serializer.WriteToFile(document, path.CStr());
+}
+```
+
+Placed props and user lights save; editor gizmo shells and bootstrap scaffolding do not — policy lives in one place, not scattered `if` checks in the serializer.
+
+### Async load integrates through SceneManager
+
+Load clears stale placed arrays, begins async apply, then finalizes when assets register:
+
+```cpp
+void SceneEditor3DDemo::FinalizeAsyncSceneLoad(Spark::GameWorld& w) {
+    contentModel.IntegrateLoadedInstance(w, loadedSceneId, pendingLoadDocument, hooks);
+    instanceTracker.Register(loadedSceneId);
+    selectedObject = nullptr;  // rebind selection after graph swap
+}
+```
+
+`Pump()` runs each Simulate tick; status line shows "Loading scene (async assets)…" until `IsSceneReady` returns true.
+
+### Five-case regression matrix as merge gate
+
+The demo encodes editor-specific invariants: create → edit transforms → save v4 → reload async → viewport matches. Silent serializer regressions lose artist work without compile errors — treat this demo like ParticleDemo's integration harness.
+
 ## 2. Core Concepts
 
 ### Vertical slice integration

@@ -16,6 +16,122 @@ If C++ struct packing disagrees with GLSL `std140`, the GPU reads garbage — li
 
 Spark's scene UBO is **656 bytes** with nested `mat4` arrays for cascaded shadows. This chapter teaches std140 mechanics on that real layout, not a toy `vec4 color` example.
 
+### Uniform buffers for beginners
+
+A **uniform buffer** is a chunk of GPU memory the shader reads as `layout(binding = 0) uniform SceneUBO { ... } ubo;`. It is ideal for data **shared by many draws in one frame**:
+
+- Camera `viewProj` matrix
+- Sun direction and color
+- Shadow cascade matrices
+- Exposure, ambient, fog parameters
+
+You update it on the CPU once per frame (`WriteUniformBuffer`), bind descriptor set 0 once, and every draw in that frame sees the same camera and lights.
+
+**Contrast with push constants:** push constants change **per draw** (model matrix, texture layer). UBO changes **per frame** (camera). Using a UBO for every object's transform would waste memory and descriptor updates.
+
+### Why layout must match exactly (std140)
+
+The GPU reads raw bytes — it does not know your C++ struct names. GLSL and C++ must agree on:
+
+- **Order** of fields
+- **Size** of each field
+- **Padding** between fields
+
+Example pitfall:
+
+```cpp
+// WRONG — vec3 followed by float may pad differently than you expect
+struct Bad { Vector3 a; float b; };
+```
+
+std140 rules require `vec3` to align to 16 bytes. Spark uses `static_assert(sizeof(SceneUniformGpu) == 656)` and matching GLSL in `scene_ubo.glsl` — when you add a field, update **both** sides and re-run the assert.
+
+**Symptom cheat sheet:**
+
+| Symptom | Likely UBO mismatch |
+|---------|---------------------|
+| Whole scene tinted wrong color | `vec4` offset wrong — reading wrong bytes as color |
+| Shadows shear / slide | `mat4` array alignment wrong |
+| Lights flicker randomly | Writing UBO while GPU still reads last frame (sync issue, not layout) |
+
+## 1b. Concept Deep Dive — scene_ubo.glsl and SceneUniformGpu Field Map
+
+### The GLSL block both stages include
+
+`scene.vert` and `scene.frag` share one std140 uniform at set 0 binding 0:
+
+```glsl
+// shaders/scene_ubo.glsl
+layout(std140, set = 0, binding = 0) uniform SceneUBO {
+    mat4 viewProj;
+    vec4 lightDir;
+    vec4 cameraPos;
+    vec4 lightColor;
+    vec4 ambientColor;
+    vec4 ambientSky;
+    vec4 ambientProbe;
+    mat4 invViewProj;
+    vec4 viewportSize;
+    vec4 timeGlobal;
+    mat4 worldToShadowClip[4];
+    vec4 cascadeSplits;
+    vec4 cascadeAtlas[4];
+    vec4 shadowParams;
+    vec4 clusterGrid;
+    vec4 clusterDepth;
+    vec4 iblParams;
+} ubo;
+```
+
+Every field is accessed as `ubo.viewProj`, `ubo.lightDir.xyz`, etc. — the include guard `SPARK_SCENE_UBO_GLSL` prevents double definition when multiple headers pull the same layout.
+
+### C++ mirror with size proof
+
+Spark's CPU writer struct matches byte-for-byte:
+
+```cpp
+// include/spark/render/scene/VulkanSceneUniformGpu.hpp
+struct SceneUniformGpu {
+    float viewProj[16]{};
+    float lightDir[4]{};
+    float cameraPos[4]{};
+    float lightColor[4]{};
+    float ambientColor[4]{};
+    float ambientSky[4]{};
+    float ambientProbe[4]{};
+    float invViewProj[16]{};
+    float viewportSize[4]{};
+    float timeGlobal[4]{};
+    float worldToShadowClip[4][16]{};
+    float cascadeSplits[4]{};
+    float cascadeAtlas[4][4]{};
+    float shadowParams[4]{};
+    float clusterGrid[4]{};
+    float clusterDepth[4]{};
+    float iblParams[4]{};
+};
+static_assert(sizeof(SceneUniformGpu) == 656);
+```
+
+When you add a field, update **both** files and re-run the assert. A single misaligned `vec4` shifts every field after it — shadows shear while camera matrices still look correct.
+
+### Where each field group is consumed
+
+| Field group | Primary consumer | Role |
+|-------------|------------------|------|
+| `viewProj`, `cameraPos` | `scene.vert` | Clip transform; `V` vector in fragment lighting |
+| `invViewProj`, `viewportSize` | `scene.frag` sky branch | Per-pixel view-ray reconstruction |
+| `lightDir`, `lightColor`, `ambient*` | `scene.frag` | Directional sun + hemispheric fill |
+| `worldToShadowClip`, `cascadeSplits`, `shadowParams` | `scene.frag` | CSM PCF shadow sampling |
+| `clusterGrid`, `clusterDepth` | `clustered_lights.glsl` | Punctual light iteration guard |
+| `iblParams` | `ibl.glsl` | Environment probe enable + layer |
+
+Large punctual light **arrays** live in SSBOs (bindings 3+), not the UBO — std140 would pad each array element to 16-byte boundaries and waste kilobytes per frame.
+
+### Vertex vs fragment UBO reads
+
+The vertex shader uses `ubo.viewProj` (and sky-related clip output). The fragment shader reads most remaining fields — sun direction, shadow matrices, cluster metadata, IBL params. Because both stages declare the same include, pipeline layout exposes binding 0 to `VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT` once; no duplicate UBO slots.
+
 ## 2. Core Concepts
 
 ### UBO vs push constants vs SSBO

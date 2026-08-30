@@ -20,6 +20,111 @@ You want pixels on screen at 60+ frames per second. A **real-time rendering engi
 
 Merge steps (2) and (3) — for example calling `vkCmdDraw` from gameplay — and you drown in platform details. Spark inserts a **render snapshot** (`SceneRenderParams`) that `VulkanRenderer` consumes without knowing game rules. Part I builds step (3)'s infrastructure; Part II connects the snapshot to draw calls.
 
+### The rendering loop in one sentence
+
+Every real-time game repeats forever:
+
+```text
+simulate world → describe what to draw → GPU draws it → show on screen → repeat
+```
+
+If you are completely new to graphics programming, memorize those four verbs. Everything in this book expands one of them:
+
+| Verb | Parts in this book | Spark example |
+|------|-------------------|---------------|
+| Simulate | V, XIV, XV | `OnUpdate`, physics, input |
+| Describe | VI–VII, XIII | `SceneSubmit`, components |
+| Draw | I–III, IV, IX–XI | `VulkanRenderer`, shaders |
+| Show | I, X | swapchain, tonemap, present |
+
+Vulkan lives entirely in **draw**. C++ gameplay lives in **simulate** and **describe**. Keeping them separate is the single most important architectural decision you will make.
+
+## 1b. Concept Deep Dive — The Snapshot Contract Between Game and GPU
+
+### Why a plain struct beats a live scene pointer
+
+Chapter 1's four verbs collapse into three code layers in Spark: gameplay mutates ECS state, `SceneSubmit` flattens that state into `SceneRenderParams`, and `VulkanRenderer` consumes the snapshot during command recording. The renderer never walks `GameObject` lists because the GPU timeline lags the CPU by one or more frames — if the backend held a pointer to a game-owned vector, a resize during `vkQueueSubmit` would be a use-after-free.
+
+Spark therefore **copies** params once per frame into `pendingScene`. While the GPU executes frame *N*, the CPU may already be writing frame *N+1* into a different logical slot (Chapter 10 adds per-flight buffers). The snapshot is the **immutable contract** for the submission about to be recorded: draw items, lights, clear color, and texture layer indices are frozen at `SetSceneRenderParams` time.
+
+The presenter interface keeps Vulkan types out of game headers. `IEngineContext::SetSceneRenderParams` forwards to `IFramePresenter::SetSceneRenderParams`; demos call the facade from `OnRender`, never from `OnUpdate`. That ordering guarantees simulation finished before the describe step runs.
+
+### Data flow through Spark (one frame)
+
+```text
+OnUpdate (ECS)          OnRender / SceneSubmit           DrawFrame (Vulkan)
+     │                         │                                │
+     │  mutate transforms      │  FillStandardLitSceneFromWorld │
+     │  run physics            │  → SceneRenderParams           │
+     │                         │  → SetSceneRenderParams        │
+     │                         │         │                      │
+     │                         │         ▼                      │
+     │                         │    pendingScene (copy) ───────►│ RecordSceneCommandBuffer
+     │                         │                                │ vkQueueSubmit → Present
+```
+
+| Stage | Spark owner | Vulkan headers? |
+|-------|-------------|-----------------|
+| Simulate | `IGame::OnUpdate`, ECS | No |
+| Describe | `SceneSubmit`, `OnRender` | No |
+| Execute | `VulkanRenderer::DrawFrame` | Yes |
+
+### Frontend submit — params then forward
+
+Demos build the snapshot on the CPU side and push it through the engine facade; they never touch `VulkanRenderer` directly:
+
+```cpp
+// src/spark/scene/submit/SceneSubmit.cpp (lines 617–632)
+    SceneRenderParams params{};
+    FillStandardLitSceneFromWorld(world,
+            context,
+            viewProjection,
+            cameraPositionWorld,
+            lightDirectionWorld,
+            lightColor,
+            lightIntensity,
+            ambientColor,
+            enableParticles,
+            particleCameraRight,
+            particleCameraUp,
+            sceneTimeSeconds,
+            params,
+            spriteSortMode);
+    context.SetSceneRenderParams(params);
+```
+
+### Facade forwards without exposing the backend
+
+```cpp
+// src/spark/engine/EngineContext.cpp (lines 41–43)
+void EngineContext::SetSceneRenderParams(const SceneRenderParams& params) {
+    presenter.SetSceneRenderParams(params);
+}
+```
+
+### Backend copy and lighting resolve
+
+The renderer stores its own copy, merges texture layers, and pre-resolves lighting so record passes read stable data:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 579–590)
+void VulkanRenderer::SetSceneRenderParams(const SceneRenderParams& params) {
+    if (!SceneHasCustomMeshDraws(params)) {
+        customMeshPool.ClearKnownMeshes();
+    }
+    mergedSceneTextures = params.sceneTextures;
+    mergedSceneHdrTextures = params.sceneHdrTextures;
+    pendingScene = params;
+    pendingScene.sceneTextures = mergedSceneTextures;
+    pendingScene.sceneHdrTextures = mergedSceneHdrTextures;
+    SceneSubmitDetail::ResolveIblEnvironmentLayer(pendingScene);
+    sceneParamsValid = true;
+    resolvedLighting = SceneLightingResolver::Resolve(pendingScene);
+}
+```
+
+Every Part I chapter builds infrastructure for the right side of this diagram; Part II connects real draw calls to `pendingScene`.
+
 ## 2. Core Concepts
 
 ### Frame budget and the 16 ms wall

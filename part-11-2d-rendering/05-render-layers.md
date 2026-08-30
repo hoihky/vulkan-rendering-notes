@@ -13,6 +13,39 @@
 Alpha-blended 2D draws need **predictable ordering**. Depth buffer alone fails for coplanar quads and transparent overlap. **Render layers** are integer priorities computed at submit, combined with optional world-Y tie-breaks, and applied via stable sorts before `VulkanSpritePass` records instances.
 
 Spark centralizes resolution in `DrawableSortResolver` — your milestone: two overlapping sprites on different layers always composite the same way, with no frame-to-frame flicker.
+
+## 1b. Concept Deep Dive — Sort Keys Beat Depth for Alpha Overlap
+
+### Vulkan submission order is the compositing order for alpha
+
+Depth buffer alone fails for coplanar quads and transparent overlap. Spark assigns each 2D drawable a resolved sort key at submit — layer order, order within layer, optional world-Y tie-break — then stable-sorts before GPU record:
+
+```cpp
+// src/spark/scene/submit/DrawableSortResolver.cpp (lines 81–94)
+ResolvedDrawableSort DrawableSortResolver::Resolve(const GameObject& drawable, const std::int32_t nativeOrder) noexcept {
+    const SortingGroupComponent* sortingGroup = FindNearestSortingGroup(drawable);
+    resolved.key.sortingLayerOrder = ResolveLayerSortingOrder(drawable, sortingGroup);
+    const std::int32_t localOrder = ResolveLocalOrderInLayer(drawable, nativeOrder);
+    if (sortingGroup != nullptr) {
+        const std::int64_t combined =
+                static_cast<std::int64_t>(sortingGroup->GetSortingOrder()) + static_cast<std::int64_t>(localOrder);
+        resolved.key.sortingOrder = SaturateSortingOrder(combined);
+    } else {
+        resolved.key.sortingOrder = localOrder;
+    }
+    resolved.worldYAnchor = ResolveWorldYAnchor(drawable, sortingGroup);
+    return resolved;
+}
+```
+
+### SortingGroupComponent batches character parts
+
+Walking the parent chain finds the nearest enabled sorting group — hat, body, and weapon on a platformer character sort as a unit against the tilemap while preserving internal order. `RenderLayerRegistry` maps named layer IDs to global integers at startup.
+
+### Stable sort prevents frame-to-frame flicker
+
+Equal keys preserve submission order from the prior sort — critical for reproducible overlap when two sprites share layer and sortOrder. `SceneSpriteSortMode::SortOrderThenWorldY` adds world-Y anchor for top-down games where layer alone is insufficient.
+
 ## 2. Core Concepts
 
 ### Why sort keys exist

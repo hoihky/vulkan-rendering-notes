@@ -15,6 +15,56 @@
 
 This chapter covers standalone `Camera2D` math, ECS wrapper, and `Camera2DRigComponent` modes — the 2D parallel to Chapters 5–8 in 3D.
 
+### 2D camera in plain language (beginner)
+
+2D games draw on the **XY plane** (side-scroller) or **XZ** (top-down). The camera still needs:
+
+- **Position** — which part of the world is centered on screen
+- **Zoom** — `halfExtentY` controls how many world units fit vertically (bigger = zoomed out)
+- **Rotation** — usually 0; slight Z rotation for isometric tilt
+
+**Orthographic projection** means parallel lines stay parallel — no perspective foreshortening. A coin at the back of the scene is the same size as one in front (correct for Mario-style platformers).
+
+```text
+World units: player at (100, 50)
+Camera at (100, 50) → player centered
+Camera at (90, 50)  → player appears right of center (camera lag behind)
+```
+
+**Follow rig with bounds:** `Camera2DRigComponent` clamps camera so you never show void outside the level — `minX/maxX` keep the view inside designed tilemap edges.
+
+**Y-flip note:** Vulkan clip space Y may point down; Spark's `OrthographicVulkan` matches sprite batching — if sprites appear upside down, check projection sign vs texture V coordinate (Part XI).
+
+## 1b. Concept Deep Dive — Camera2D Orthographic Path
+
+### Standalone struct for 2D math
+
+```cpp
+// include/spark/scene/camera/Camera2D.hpp
+struct Camera2D {
+    Vector3 position{};
+    float rotationRad = 0.0F;
+    float halfExtentY = 5.0F;
+    float clipNearZ = -500.0F;
+    float clipFarZ = 500.0F;
+    [[nodiscard]] Matrix4 ViewProjection(float fbW, float fbH) const noexcept;
+};
+```
+
+`halfExtentY` is half the visible world height — halving it zooms in. Width follows aspect: `halfExtentX = halfExtentY * (fbW / fbH)`.
+
+### ViewProjection composition
+
+`ViewMatrix()` applies inverse pan + Z rotation; `ViewProjection` multiplies `OrthographicVulkan(halfExtentY, aspect, clipNear, clipFar) * view`. Result goes directly to `SceneRenderParams::viewProjection` — same field 3D cameras use.
+
+### ECS Camera2DComponent + rig
+
+`Camera2DComponent` mirrors projection fields on a `GameObject`. `Camera2DRigComponent` adds follow modes and level bounds — `Platformer2DDemo` clamps camera X/Y so the view never shows void outside the tilemap. Rig ticks in ECS update; submit reads resolved component matrices.
+
+### Sprite sort interaction
+
+Top-down 2D scenes set `SceneSpriteSortMode::SortOrderThenWorldY` on submit so characters with equal sort order occlude by world Y (+Y-up). The orthographic camera's `position` and `halfExtentY` define which slice of world Y is visible for that occlusion test.
+
 ## 2. Core Concepts
 
 ### Camera2D state

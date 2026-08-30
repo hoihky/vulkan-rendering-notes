@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,53 @@
 <p>Fragment shaders need pixels to shade, so "infinite" skies still need <strong>mesh shells</strong> or fullscreen coverage.
 The art is choosing topology and transform rules so coverage is complete while parallax stays imperceptible.</p>
 <p>Build along: create <code>CreateSkySphere</code>, parent it under a sky entity, and follow the camera like <code>SkyDemo::UpdateSkyTransform</code>.</p>
+<h2 id="b.concept-deep-dive-sky-mesh-geometry-in-spark">1b. Concept Deep Dive — Sky Mesh Geometry in Spark</h2>
+<h3 id="createskysphere-uv-sphere-tessellation">CreateSkySphere — UV sphere tessellation</h3>
+<p>Spark generates a latitude/longitude sphere with outward normals and equirect-friendly UVs:</p>
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 329–371, concept)
+Mesh Mesh::CreateSkySphere(float radius, int latitudeSegments, int longitudeSegments) {
+    Mesh m(Utf8String("SkySphere"));
+    for (int iy = 0; iy &lt;= latitudeSegments; ++iy) {
+        const float theta = (float)iy / latitudeSegments * Pi;
+        for (int ix = 0; ix &lt;= longitudeSegments; ++ix) {
+            const float phi = (float)ix / longitudeSegments * TwoPi;
+            Vector3 pos{ sin(theta)*cos(phi), cos(theta), sin(theta)*sin(phi) };
+            pos *= radius;
+            Vector3 n = pos.Normalized();
+            Vector2 uv{ (float)ix / longitudeSegments, 1.0f - (float)iy / latitudeSegments };
+            m.vertices.PushBack({pos, n, uv});
+        }
+    }
+    // index pairs into quads → two triangles each
+    return m;
+}
+</code></pre>
+<p><strong>Why sphere not cube?</strong> Cube skyboxes show face-edge seams when sampling equirect HDR — a tessellated sphere gives smoother raster coverage for per-pixel ray reconstruction.</p>
+<h3 id="createskybillboardplane-procedural-plane-mode">CreateSkyBillboardPlane — procedural Plane mode</h3>
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 374–387)
+Mesh Mesh::CreateSkyBillboardPlane(float halfWidth, float halfHeight) {
+    Mesh m(Utf8String("SkyPlane"));
+    m.vertices.PushBack({{-hw, -hh, 0}, {0,0,1}, {0,0}});
+    m.vertices.PushBack({{ hw, -hh, 0}, {0,0,1}, {1,0}});
+    m.vertices.PushBack({{ hw,  hh, 0}, {0,0,1}, {1,1}});
+    m.vertices.PushBack({{-hw,  hh, 0}, {0,0,1}, {0,1}});
+    // CCW indices from +Z
+    return m;
+}
+</code></pre>
+<p>Plane mode uses <strong>mesh UV</strong> (<code>vTexCoord0.y</code>) for vertical gradient when no equirect texture is bound — the fragment shader does not reconstruct view rays for procedural Plane fallback.</p>
+<h3 id="sky-follows-camera-infinite-distance-illusion">Sky follows camera — infinite distance illusion</h3>
+<pre><code class="language-cpp">// SkyDemo::UpdateSkyTransform (concept)
+skyTransform-&gt;SetTranslation(cameraPosition);  // no rotation — shader handles direction
+skyTransform-&gt;SetScale({500.0f, 500.0f, 500.0f});  // large enough to fill frustum
+</code></pre>
+<p>Vertex shader pushes sky to <strong>far plane</strong> depth so it draws behind all geometry:</p>
+<pre><code class="language-glsl">// shaders/scene.vert (lines 105–111)
+if (push.skyMode != 0) {
+    float zw = max(clip.w, 1e-5);
+    gl_Position = vec4(clip.x, clip.y, zw * (1.0 - 1e-4), zw);
+}
+</code></pre>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="rasterization-still-needs-geometry">Rasterization still needs geometry</h3>
 <p>Even when the fragment shader reconstructs view rays, the GPU must <strong>rasterize triangles</strong>. Spark uses a low-poly <strong>sky sphere</strong> (<code>Mesh::CreateSkySphere</code>) uploaded through the <strong>custom mesh pool</strong>, or a <strong>billboard plane</strong> for procedural Plane mode.</p>
@@ -1255,6 +1308,22 @@ whether fragments use equirect rays or UV gradients. Part <strong>VIII</strong> 
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-sky-mesh-geometry-in-spark">1b. Concept Deep Dive — Sky Mesh Geometry in Spark</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#createskysphere-uv-sphere-tessellation">CreateSkySphere — UV sphere tessellation</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#createskybillboardplane-procedural-plane-mode">CreateSkyBillboardPlane — procedural Plane mode</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#sky-follows-camera-infinite-distance-illusion">Sky follows camera — infinite distance illusion</a>
                         </li>
                         
                         <li class="toc-h2">

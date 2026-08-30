@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1058,6 +1064,46 @@
 <p>Until Part XII you authored worlds by recompiling C++ or spawning entities in demo <code>Load()</code> functions. Production pipelines persist <strong>ECS descriptions</strong> to disk and rebuild GPU state on load. Spark's <code>SceneSerializer</code> captures <code>GameWorld</code> into <code>SceneDocument</code> and writes <code>spark_scene_v4</code> text files — you will follow that contract end-to-end.</p>
 <p>The core rule: GPU objects are never portable. Save stable ids, component fields, and project-relative asset paths. Let <code>GameWorldAssetLoader</code> and <code>SceneSubmit</code> reconstruct visuals the same way runtime spawning does. Treat <code>SceneRenderParams</code> as a per-frame derivative, not a save target.</p>
 <p>Milestone: create Ground + Sun + one cube in the editor, save, and verify <code>scene.txt</code> lists three <code>E</code> lines with transform and mesh/light <code>C</code> lines.</p>
+<h2 id="b.concept-deep-dive-scenedocument-vs-gpu-state">1b. Concept Deep Dive — SceneDocument vs GPU State</h2>
+<h3 id="versioned-interchange-not-a-gpu-dump">Versioned interchange, not a GPU dump</h3>
+<p><code>SceneDocument</code> is the in-memory contract between disk and <code>GameWorld</code>. The magic string and entity records carry <strong>only</strong> gameplay data:</p>
+<pre><code class="language-cpp">// include/spark/scene/serialization/SceneDocument.hpp
+struct SceneDocument {
+    static constexpr const char* kMagic = "spark_scene_v4";
+    SceneDocumentHeader header;
+    Array&lt;EntityRecord&gt; entities;
+};
+
+struct EntityRecord {
+    std::uint64_t id = 0;
+    Utf8String name;
+    std::int64_t parentId = -1;
+    Array&lt;ComponentRecord&gt; components;  // kind tag + opaque payload
+};
+</code></pre>
+<p>Each <code>ComponentRecord</code> is one <code>C</code> line on disk — <code>transform</code>, <code>mesh</code>, <code>gltf_scene</code>, etc. No <code>VkBuffer</code>, no descriptor set handles, no per-frame render params.</p>
+<h3 id="captureapply-symmetry-through-sceneserializer">Capture/Apply symmetry through SceneSerializer</h3>
+<p><code>SceneSerializer::Capture</code> walks live entities and asks the registry for payloads; <code>SceneDeserializer::Apply</code> creates <code>GameObject</code>s, restores components, then links parents in a third pass:</p>
+<pre><code class="language-cpp">// include/spark/scene/serialization/SceneSerializer.hpp
+class SceneSerializer {
+    [[nodiscard]] SceneDocument Capture(
+            const GameWorld&amp; world,
+            const SceneCaptureContext&amp; ctx,
+            const std::function&lt;bool(const GameObject*)&gt;&amp; includeEntity) const;
+    [[nodiscard]] bool WriteToFile(const SceneDocument&amp; document, const char* path) const;
+};
+
+class SceneDeserializer {
+    [[nodiscard]] bool Apply(
+            const SceneDocument&amp; document,
+            GameWorld&amp; world,
+            const SceneApplyContext&amp; ctx,
+            HashMap&lt;std::uint64_t, GameObject*&gt;* outIdToObject = nullptr) const;
+};
+</code></pre>
+<p><strong>Why three-pass Apply?</strong> Parent links need stable entity ids. Pass 1 creates objects; pass 2 restores components (some need asset loader); pass 3 wires <code>SetParent</code> from <code>parentId</code>.</p>
+<h3 id="assetsroot-ties-relative-paths-to-runtime-roots">assetsRoot ties relative paths to runtime roots</h3>
+<p>The header stores a project-relative assets root. On load, <code>SceneApplyContext::assetsRoot</code> resolves <code>"models/chair.glb"</code> against the same directory the editor used at save time — so capture and apply share one path vocabulary regardless of where the executable runs from.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="what-to-serialize">What to serialize</h3>
 <p>Scene persistence stores <strong>gameplay state</strong> — entity hierarchy, transforms, mesh asset paths, light parameters, collider dimensions. It never stores <strong>GPU resources</strong>: <code>VkBuffer</code>, pipeline handles, descriptor sets, or per-frame <code>SceneRenderParams</code>.</p>
@@ -1361,6 +1407,22 @@ bool SceneDeserializer::ReadFromString(const char* text, SceneDocument&amp; out)
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-scenedocument-vs-gpu-state">1b. Concept Deep Dive — SceneDocument vs GPU State</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#versioned-interchange-not-a-gpu-dump">Versioned interchange, not a GPU dump</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#captureapply-symmetry-through-sceneserializer">Capture/Apply symmetry through SceneSerializer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#assetsroot-ties-relative-paths-to-runtime-roots">assetsRoot ties relative paths to runtime roots</a>
                         </li>
                         
                         <li class="toc-h2">

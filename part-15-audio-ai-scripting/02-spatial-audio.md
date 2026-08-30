@@ -16,6 +16,52 @@ Spark keeps Vulkan out of audio entirely. You will wire `ProcessAudioListeners` 
 
 Milestone: torch loop fades with distance as you walk away; pickup cue plays centered (mono).
 
+## 1b. Concept Deep Dive — Listener Resolution
+
+### ProcessAudioListeners before FlushTo
+
+Spatial pan and attenuation need a frame-local listener pose. Spark resolves it once per tick before cue flush:
+
+```cpp
+// src/spark/audio/SoundSubsystem.cpp
+void ProcessSoundCues(GameWorld& world, IEngineContext& context) {
+    ProcessAudioListeners(world);
+    ProcessAmbientZones(world);
+    SoundEngine* audio = context.TryGetSoundEngine();
+    world.ForEachActiveGameObject([audio](GameObject* o) {
+        SoundCueComponent* sc = o->GetComponent<SoundCueComponent>();
+        if (sc != nullptr) {
+            sc->FlushTo(audio);  // spatialBlend + distance → pan/volume
+        }
+    });
+}
+```
+
+**Order matters:** listener pose must be current before any cue computes relative direction.
+
+### Priority-based AudioListenerComponent
+
+```cpp
+// src/spark/audio/AudioSpatial.cpp
+void ProcessAudioListeners(const GameWorld& world) noexcept {
+    world.ForEachActiveGameObject([&](GameObject* o) {
+        const AudioListenerComponent* listener = o->GetComponent<AudioListenerComponent>();
+        if (listener == nullptr || !listener->IsEnabled()) return;
+        if (!found || listener->GetPriority() > bestPriority) {
+            gFrameListener.position = {worldM.m[12], worldM.m[13], worldM.m[14]};
+            gFrameListener.right/up/forward from world matrix columns;
+        }
+    });
+    // Fallback: main 3D camera pose when no explicit listener
+}
+```
+
+Attach listener to fly camera; split-screen can add a higher-priority listener on the active player camera.
+
+### spatialBlend mixes 2D and 3D
+
+`spatialBlend = 0` → centered mono (UI pickup chime). `spatialBlend = 1` → full world attenuation and stereo pan (torch loop). Vulkan stays out of this path entirely.
+
 ## 2. Core Concepts
 
 ### Listener pose resolution

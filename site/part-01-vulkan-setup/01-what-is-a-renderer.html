@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1062,6 +1068,129 @@
 <li><strong>Executes</strong> GPU work to turn that description into pixels and presents them.</li>
 </ol>
 <p>Merge steps (2) and (3) — for example calling <code>vkCmdDraw</code> from gameplay — and you drown in platform details. Spark inserts a <strong>render snapshot</strong> (<code>SceneRenderParams</code>) that <code>VulkanRenderer</code> consumes without knowing game rules. Part I builds step (3)'s infrastructure; Part II connects the snapshot to draw calls.</p>
+<h3 id="the-rendering-loop-in-one-sentence">The rendering loop in one sentence</h3>
+<p>Every real-time game repeats forever:</p>
+<pre><code class="language-text">simulate world → describe what to draw → GPU draws it → show on screen → repeat
+</code></pre>
+<p>If you are completely new to graphics programming, memorize those four verbs. Everything in this book expands one of them:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Verb</th>
+<th>Parts in this book</th>
+<th>Spark example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simulate</td>
+<td>V, XIV, XV</td>
+<td><code>OnUpdate</code>, physics, input</td>
+</tr>
+<tr>
+<td>Describe</td>
+<td>VI–VII, XIII</td>
+<td><code>SceneSubmit</code>, components</td>
+</tr>
+<tr>
+<td>Draw</td>
+<td>I–III, IV, IX–XI</td>
+<td><code>VulkanRenderer</code>, shaders</td>
+</tr>
+<tr>
+<td>Show</td>
+<td>I, X</td>
+<td>swapchain, tonemap, present</td>
+</tr>
+</tbody>
+</table>
+<p>Vulkan lives entirely in <strong>draw</strong>. C++ gameplay lives in <strong>simulate</strong> and <strong>describe</strong>. Keeping them separate is the single most important architectural decision you will make.</p>
+<h2 id="b.concept-deep-dive-the-snapshot-contract-between-game-and-gpu">1b. Concept Deep Dive — The Snapshot Contract Between Game and GPU</h2>
+<h3 id="why-a-plain-struct-beats-a-live-scene-pointer">Why a plain struct beats a live scene pointer</h3>
+<p>Chapter 1's four verbs collapse into three code layers in Spark: gameplay mutates ECS state, <code>SceneSubmit</code> flattens that state into <code>SceneRenderParams</code>, and <code>VulkanRenderer</code> consumes the snapshot during command recording. The renderer never walks <code>GameObject</code> lists because the GPU timeline lags the CPU by one or more frames — if the backend held a pointer to a game-owned vector, a resize during <code>vkQueueSubmit</code> would be a use-after-free.</p>
+<p>Spark therefore <strong>copies</strong> params once per frame into <code>pendingScene</code>. While the GPU executes frame <em>N</em>, the CPU may already be writing frame <em>N+1</em> into a different logical slot (Chapter 10 adds per-flight buffers). The snapshot is the <strong>immutable contract</strong> for the submission about to be recorded: draw items, lights, clear color, and texture layer indices are frozen at <code>SetSceneRenderParams</code> time.</p>
+<p>The presenter interface keeps Vulkan types out of game headers. <code>IEngineContext::SetSceneRenderParams</code> forwards to <code>IFramePresenter::SetSceneRenderParams</code>; demos call the facade from <code>OnRender</code>, never from <code>OnUpdate</code>. That ordering guarantees simulation finished before the describe step runs.</p>
+<h3 id="data-flow-through-spark-one-frame">Data flow through Spark (one frame)</h3>
+<pre><code class="language-text">OnUpdate (ECS)          OnRender / SceneSubmit           DrawFrame (Vulkan)
+│                         │                                │
+│  mutate transforms      │  FillStandardLitSceneFromWorld │
+│  run physics            │  → SceneRenderParams           │
+│                         │  → SetSceneRenderParams        │
+│                         │         │                      │
+│                         │         ▼                      │
+│                         │    pendingScene (copy) ───────►│ RecordSceneCommandBuffer
+│                         │                                │ vkQueueSubmit → Present
+</code></pre>
+<table class="table">
+<thead>
+<tr>
+<th>Stage</th>
+<th>Spark owner</th>
+<th>Vulkan headers?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simulate</td>
+<td><code>IGame::OnUpdate</code>, ECS</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Describe</td>
+<td><code>SceneSubmit</code>, <code>OnRender</code></td>
+<td>No</td>
+</tr>
+<tr>
+<td>Execute</td>
+<td><code>VulkanRenderer::DrawFrame</code></td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<h3 id="frontend-submit-params-then-forward">Frontend submit — params then forward</h3>
+<p>Demos build the snapshot on the CPU side and push it through the engine facade; they never touch <code>VulkanRenderer</code> directly:</p>
+<pre><code class="language-cpp">// src/spark/scene/submit/SceneSubmit.cpp (lines 617–632)
+SceneRenderParams params{};
+FillStandardLitSceneFromWorld(world,
+        context,
+        viewProjection,
+        cameraPositionWorld,
+        lightDirectionWorld,
+        lightColor,
+        lightIntensity,
+        ambientColor,
+        enableParticles,
+        particleCameraRight,
+        particleCameraUp,
+        sceneTimeSeconds,
+        params,
+        spriteSortMode);
+context.SetSceneRenderParams(params);
+</code></pre>
+<h3 id="facade-forwards-without-exposing-the-backend">Facade forwards without exposing the backend</h3>
+<pre><code class="language-cpp">// src/spark/engine/EngineContext.cpp (lines 41–43)
+void EngineContext::SetSceneRenderParams(const SceneRenderParams&amp; params) {
+    presenter.SetSceneRenderParams(params);
+}
+</code></pre>
+<h3 id="backend-copy-and-lighting-resolve">Backend copy and lighting resolve</h3>
+<p>The renderer stores its own copy, merges texture layers, and pre-resolves lighting so record passes read stable data:</p>
+<pre><code class="language-cpp">// src/spark/render/core/VulkanRenderer.cpp (lines 579–590)
+void VulkanRenderer::SetSceneRenderParams(const SceneRenderParams&amp; params) {
+    if (!SceneHasCustomMeshDraws(params)) {
+        customMeshPool.ClearKnownMeshes();
+    }
+    mergedSceneTextures = params.sceneTextures;
+    mergedSceneHdrTextures = params.sceneHdrTextures;
+    pendingScene = params;
+    pendingScene.sceneTextures = mergedSceneTextures;
+    pendingScene.sceneHdrTextures = mergedSceneHdrTextures;
+    SceneSubmitDetail::ResolveIblEnvironmentLayer(pendingScene);
+    sceneParamsValid = true;
+    resolvedLighting = SceneLightingResolver::Resolve(pendingScene);
+}
+</code></pre>
+<p>Every Part I chapter builds infrastructure for the right side of this diagram; Part II connects real draw calls to <code>pendingScene</code>.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="frame-budget-and-the-16-ms-wall">Frame budget and the 16 ms wall</h3>
 <p>At 60 FPS you have <strong>16.7 ms</strong> of wall-clock time per frame. Both CPU and GPU compete for that budget:</p>
@@ -1469,6 +1598,34 @@ void VulkanRenderer::SetSceneRenderParams(const SceneRenderParams&amp; params) {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#the-rendering-loop-in-one-sentence">The rendering loop in one sentence</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-the-snapshot-contract-between-game-and-gpu">1b. Concept Deep Dive — The Snapshot Contract Between Game and GPU</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#why-a-plain-struct-beats-a-live-scene-pointer">Why a plain struct beats a live scene pointer</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#data-flow-through-spark-one-frame">Data flow through Spark (one frame)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#frontend-submit-params-then-forward">Frontend submit — params then forward</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#facade-forwards-without-exposing-the-backend">Facade forwards without exposing the backend</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#backend-copy-and-lighting-resolve">Backend copy and lighting resolve</a>
                         </li>
                         
                         <li class="toc-h2">

@@ -1,6 +1,6 @@
 # Skeleton and Bones
 
-> **Build-Along Milestone:** Bind-pose skin palette evaluated for imported character with ≤64 joints.
+> **Build-Along Milestone:** Bind-pose skin palette evaluated for imported character with ≤128 joints.
 
 **You will learn:**
 
@@ -14,6 +14,109 @@ Skinned meshes deform with a **bone hierarchy** and bind-pose inverses. Without 
 animation clips cannot target joints and the GPU cannot blend vertices.
 
 Build along: import a skinned glTF (next chapter), inspect joint count and clip names, evaluate bind-pose palette.
+
+### Skeleton and skinning for beginners
+
+A **rigid mesh** moves as one piece. A **skinned mesh** (character) deforms — elbows bend, cloth wrinkles — because vertices follow **bones**.
+
+**Skeleton = tree of joints:**
+
+```text
+Root (hips)
+  ├─ Spine
+  │    └─ Head
+  └─ Leg_L
+       └─ Foot_L
+```
+
+Each joint has:
+
+- **Local transform** — position/rotation relative to parent
+- **Inverse bind matrix** — undoes the mesh's pose at export time so animation can re-apply
+
+**Skin weights:** each vertex stores up to 4 bone indices + weights (sum to 1.0):
+
+```text
+Vertex on elbow influenced 70% by "Forearm" bone, 30% by "UpperArm"
+```
+
+**Palette:** each frame, compute one 4×4 matrix per joint → upload to GPU (Chapter 9).
+
+**MaxJoints limit (128 in Spark):** glTF with more than 128 joints fails import — check `Skeleton::MaxJoints` and `VulkanSceneDescriptors::kMaxSkinJoints` when import errors mention joint count.
+
+## 1b. Concept Deep Dive — Bind Pose, Animation, and the Skin Matrix
+
+### Why inverse bind matrices exist
+
+When an artist rigs a character in Blender, vertices are stored in **bind pose** (usually T-pose or A-pose). Animation moves joints in a hierarchy. To deform a vertex correctly, the GPU must:
+
+1. Transform the vertex from bind space into **joint local space** (`inverseBind`)
+2. Apply the **animated joint transform** (`worldJoint`)
+3. Apply any **scene-graph correction** (`jointGlobalPrefix` — glTF armature offset)
+
+Spark combines these into one palette matrix per joint:
+
+```text
+palette[j] = jointGlobalPrefix[j] × worldJoint[j] × inverseBind[j]
+```
+
+The vertex shader then blends four such matrices by weight — **linear blend skinning (LBS)**.
+
+### jointGlobalPrefix — the glTF armature gotcha
+
+glTF skins often live under a scene node with non-identity transform. Spark bakes that into `inverseBind` at import (`GltfSkinNodeLoader`) and may also store `jointGlobalPrefix` so animation clips authored in joint-local space still align with the mesh in world space:
+
+```cpp
+// src/spark/scene/assets/gltf/GltfSkinNodeLoader.cpp (lines 99–105)
+    cgltf_node_transform_world(skinNode, wm);
+    const Matrix4 bakeWorld = Matrix4FromCgltf(wm);
+    Matrix4 invBake{};
+    if (!bakeWorld.TryInvert(invBake)) {
+        invBake = Matrix4::Identity;
+    }
+    // inverseBind[i] = ibm * invBake  — adjusts IBM for skin-node world transform
+```
+
+Without this bake, characters appear offset, scaled, or rotated relative to their collision capsule.
+
+### BuildPaletteFromPose — the CPU heart of skinning
+
+Every frame (or bind pose), Spark converts joint **local poses** → **world matrices** → **skin palette**:
+
+```cpp
+// src/spark/animation/Skeleton.cpp (lines 255–276)
+void Skeleton::BuildPaletteFromPose(
+        const Array<Transform>& pose,
+        Matrix4* outPalette,
+        std::uint32_t paletteMax) const {
+    Array<Matrix4> locals;
+    locals.Resize(jointCount);
+    for (std::uint32_t j = 0; j < jointCount; ++j) {
+        locals[j] = pose[j].ToMatrix4();
+    }
+    Array<Matrix4> world;
+    ComputeJointWorldMatrices(jointCount, jointParents, locals, world);
+
+    const bool usePrefix = jointGlobalPrefix.GetSize() == jointCount;
+    for (std::uint32_t j = 0; j < jointCount; ++j) {
+        const Matrix4& pre = usePrefix ? jointGlobalPrefix[j] : Matrix4::Identity;
+        outPalette[j] = pre * world[j] * inverseBind[j];
+    }
+}
+```
+
+`ComputeJointWorldMatrices` walks the parent chain iteratively — glTF joint arrays are not guaranteed topologically sorted.
+
+### Joint cap: 128 everywhere
+
+| Location | Constant | Value |
+|----------|----------|-------|
+| CPU skeleton | `Skeleton::MaxJoints` | 128 |
+| GPU SSBO | `VulkanSceneDescriptors::kMaxSkinJoints` | 128 |
+| SSBO byte size | `kSkinSsboBytes` | 8192 (128 × 64-byte `mat4`) |
+| Import guard | `GltfSkinNodeLoader` | rejects `jointCount > 128` |
+
+Raising the cap requires coordinated changes in C++, SSBO allocation, and `scene.vert` `push.jointCount` guard.
 
 ## 2. Core Concepts
 
@@ -32,9 +135,9 @@ GPU palette entry: `skinMatrix[j] = jointGlobalPrefix[j] * worldJoint[j] * inver
 `ComputeJointWorldMatrices` resolves parent chains — parents must be ready before children. Spark uses iterative `SolveWorldMatrix` with a done[] guard for out-of-order joint lists.
 
 
-### MaxJoints = 64
+### MaxJoints = 128
 
-`Skeleton::MaxJoints` caps palette size for SSBO packing and push constant jointCount. glTF skins with >64 joints fail import early.
+`Skeleton::MaxJoints` caps palette size for SSBO packing and push constant `jointCount`. glTF skins with >128 joints fail import early in `GltfSkinNodeLoader`.
 
 
 ### Clip sampling
@@ -77,7 +180,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 ### Static cap at import and GPU
 
-**Concept:** MaxJoints = 64
+**Concept:** MaxJoints = 128
 
 **Decision:** Static cap at import and GPU
 
@@ -108,7 +211,7 @@ Spark is the reference implementation you can build, run, and diff against.
  */
 class Skeleton {
 public:
-    static constexpr std::uint32_t MaxJoints = 64;
+    static constexpr std::uint32_t MaxJoints = 128;
 
     Skeleton() = default;
 
@@ -269,7 +372,7 @@ local pose then calls BuildPaletteFromPose. **GPU Skinning** consumes the palett
 
 - **Wrong joint order** — parent indices must match glTF skin.joints array order.
 - **Missing inverse bind** — mesh collapses or explodes; verify inverseBindMatrices accessor loaded.
-- **>64 joints** — import fails; simplify skeleton or raise cap coherently in C++ and GLSL.
+- **>128 joints** — import fails; simplify skeleton or raise cap coherently in C++, SSBO size, and GLSL.
 - **Euler rotation keys** — Spark slerps quaternions; ensure glTF rotations are quaternion channels.
 
 ## 7. Exercises

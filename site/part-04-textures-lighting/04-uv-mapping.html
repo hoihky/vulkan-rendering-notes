@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1057,6 +1063,92 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>A texture is a 2D image; a mesh surface is 3D. <strong>UV mapping</strong> assigns each vertex a 2D coordinate <code>(u, v)</code> that indexes texels. Wrong UVs produce swimming, seams, or mirrored materials — often mistaken for shader or descriptor bugs.</p>
 <p>Spark carries UVs from glTF and procedural meshes through a fixed interleaved vertex layout into the fragment shader. This chapter connects asset authoring, vertex buffer packing, and shader sampling — the geometric half of texturing (color space is Chapter 5).</p>
+<h3 id="uv-mapping-explained-without-jargon">UV mapping explained without jargon</h3>
+<p>Imagine wrapping a gift box with patterned paper:</p>
+<ul>
+<li>The <strong>3D box</strong> is your mesh surface.</li>
+<li>The <strong>2D wrapping paper</strong> is your texture image.</li>
+<li><strong>UV mapping</strong> is the instruction that says "corner A of the box uses this corner of the paper."</li>
+</ul>
+<p>Each vertex stores a 2D coordinate <code>(u, v)</code>:</p>
+<ul>
+<li><code>u = 0</code> is the left edge of the texture; <code>u = 1</code> is the right edge.</li>
+<li><code>v = 0</code> is typically the bottom; <code>v = 1</code> is the top (conventions vary by DCC tool).</li>
+</ul>
+<p>The GPU <strong>interpolates</strong> UVs across each triangle. A pixel halfway between two vertices gets a UV halfway between those vertices' UVs. The fragment shader uses that UV to read a texel color.</p>
+<pre><code class="language-text">Vertex A: position (1,0,0), uv (0,0)  ─┐
+Vertex B: position (2,0,0), uv (1,0)   ├─ triangle → rasterizer → fragment uv ≈ (0.5, 0.2)
+Vertex C: position (1,1,0), uv (0,1)  ─┘
+                                              ↓
+                              texture(brick, uv) → orange pixel
+</code></pre>
+<p>Without UVs, <code>texture()</code> has no coordinates — every pixel would sample the same corner of the image (or undefined behavior if UVs are zero).</p>
+<h3 id="where-uvs-are-created-vs-where-they-are-consumed">Where UVs are created vs where they are consumed</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Stage</th>
+<th>Who sets UV</th>
+<th>Format</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Blender / Maya</td>
+<td>Artist unwraps mesh</td>
+<td>Exported in glTF <code>TEXCOORD_0</code></td>
+</tr>
+<tr>
+<td>glTF import</td>
+<td><code>AppendPrimitive</code> reads accessor</td>
+<td><code>Mesh::Vertex::texCoord</code></td>
+</tr>
+<tr>
+<td>GPU upload</td>
+<td><code>VulkanCustomMeshPool</code> memcpy</td>
+<td>Interleaved <code>VkBuffer</code></td>
+</tr>
+<tr>
+<td>Vertex shader</td>
+<td>Pass through</td>
+<td><code>out vec2 vTexCoord</code></td>
+</tr>
+<tr>
+<td>Fragment shader</td>
+<td>Sample</td>
+<td><code>texture(sceneTextures, vec3(vTexCoord, layer))</code></td>
+</tr>
+</tbody>
+</table>
+<p>If the brick pattern looks stretched, fix UVs in Blender — not in the fragment shader. If the pattern is missing entirely, debug the import → vertex layout → shader location chain.</p>
+<h2 id="b.concept-deep-dive-vertex-uv-path-to-shader">1b. Concept Deep Dive — Vertex UV Path to Shader</h2>
+<h3 id="authoritative-cpu-field">Authoritative CPU field</h3>
+<p>Every rigid mesh stores UVs on the vertex record:</p>
+<pre><code class="language-cpp">// include/spark/scene/mesh/Mesh.hpp
+struct Vertex {
+    Vector3 position;
+    Vector3 normal;
+    Vector2 texCoord;   // primary UV set (glTF TEXCOORD_0)
+    Vector2 texCoord1;  // secondary set (lightmaps, detail)
+    Vector4 color;
+    Vector4 tangent;    // xyz + handedness for normal mapping
+};
+</code></pre>
+<p>glTF import writes <code>texCoord</code> from accessor index 0. Procedural meshes (<code>CreateQuad</code>, brick patterns) set UVs explicitly — <code>(0,0)</code>–<code>(1,1)</code> for a full texture wrap.</p>
+<h3 id="vulkan-vertex-attribute-location-2">Vulkan vertex attribute location 2</h3>
+<p>The scene pipeline declares <code>texCoord</code> at location 2, matching <code>scene.vert</code>:</p>
+<pre><code class="language-glsl">layout(location = 2) in vec2 inTexCoord;
+layout(location = 0) out vec2 vTexCoord;
+void main() {
+    vTexCoord = inTexCoord;
+    // ...
+}
+</code></pre>
+<p>If location numbers drift between C++ <code>VkVertexInputAttributeDescription</code> and GLSL, UVs appear as garbage while positions still draw correctly — a common "solid color mesh" bug.</p>
+<h3 id="scene-layer-uv-scale-after-upload">Scene-layer UV scale after upload</h3>
+<p>Large textures are fit into square GPU layers with letterboxing. <code>Texture2D::GetSceneLayerUvScale()</code> returns the occupied fraction; submit copies it to <code>SceneDrawItem::textureUvScale</code>. Shader code multiplies interpolated UVs so art fills the visible sub-rectangle of the layer, not the padded border.</p>
+<h3 id="tangent-fallback-when-w-0">Tangent fallback when w = 0</h3>
+<p>When <code>tangent.xyz</code> is zero (no glTF tangents), <code>scene.frag</code> reconstructs TBN from screen-space derivatives of <code>vTexCoord</code> and world position — UV quality directly affects normal-map stability at grazing angles.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="uv-coordinates-defined">UV coordinates defined</h3>
 <table class="table">
@@ -1288,6 +1380,34 @@ outColor = vec4(vTexCoord.x, vTexCoord.y, 0.0, 1.0);   // raw UV
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#uv-mapping-explained-without-jargon">UV mapping explained without jargon</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#where-uvs-are-created-vs-where-they-are-consumed">Where UVs are created vs where they are consumed</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-vertex-uv-path-to-shader">1b. Concept Deep Dive — Vertex UV Path to Shader</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#authoritative-cpu-field">Authoritative CPU field</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vulkan-vertex-attribute-location-2">Vulkan vertex attribute location 2</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#scene-layer-uv-scale-after-upload">Scene-layer UV scale after upload</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#tangent-fallback-when-w-0">Tangent fallback when w = 0</a>
                         </li>
                         
                         <li class="toc-h2">

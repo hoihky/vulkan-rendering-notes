@@ -13,6 +13,57 @@
 Hybrid games render **3D meshes** and **2D billboards** in the same camera view. A world sprite is a textured quad transformed in world space — not a screen-space HUD element. It must respect HDR lighting headroom (Part X), depth occlusion against terrain and props, and the same texture array as PBR materials (Part IV).
 
 Spark implements world sprites as **instanced draws** over a baked unit quad, with per-sprite data in mapped SSBOs recorded by `VulkanSpritePass` inside the HDR subpass. Your build-along milestone: submit one textured sprite, capture a frame in RenderDoc, and confirm it draws into the float16 scene target with depth testing against a mesh occluder.
+
+### 2D sprites in a 3D world (beginner)
+
+A **sprite** here is a flat rectangle with a picture on it — like a cardboard cutout of a grass tuft or a character in a 2.5D game. It is placed at a **3D world position** but rendered as a quad that typically **billboards** (faces the camera).
+
+```text
+3D mesh tree     = full model with depth and lighting
+World sprite     = one quad + texture, often cheaper, always faces camera
+Screen UI        = drawn in 2D screen space AFTER tonemap (Part XI later chapter)
+```
+
+World sprites share the **HDR scene pass** with meshes so they:
+
+- Occlude correctly behind walls (depth test).
+- Receive scene lighting tint when using lit sprite path.
+- Accumulate HDR brightness for glowing effects.
+
+### Instancing: one quad, many sprites
+
+Instead of 100 draw calls for 100 grass sprites, Spark stores per-sprite data (position, UV rect, color) in a **storage buffer** and draws the shared unit quad **100 instances** in one or few draws. The vertex shader reads instance ID to fetch the correct transform and UV offset.
+
+## 1b. Concept Deep Dive — Instanced Quads in the HDR Subpass
+
+### SceneSpriteDraw is a flat snapshot, not live ECS
+
+Submit walks `SpriteComponent` entities and appends plain structs to `SceneRenderParams::sprites`. Gameplay never touches Vulkan — the renderer reads `pendingScene` once per frame slot:
+
+```cpp
+// src/spark/render/sprites2d/VulkanSpritePass.cpp (lines 18–39)
+void FillSpriteInstanceGpu(const SceneSpriteDraw& sprite, VulkanSpriteInstanceGpu& out) noexcept {
+    std::memcpy(out.model, sprite.model.m, sizeof(out.model));
+    out.uvRect[0] = sprite.uvRect.x;
+    out.uvRect[1] = sprite.uvRect.y;
+    out.uvRect[2] = sprite.uvRect.z;
+    out.uvRect[3] = sprite.uvRect.w;
+    out.textureLayer = sprite.textureLayer;
+    out.lightingMode = static_cast<std::int32_t>(sprite.lightingMode);
+    // ... lightingParam0/1 → lightingA/B ...
+}
+```
+
+One indexed draw with `gl_InstanceIndex` expands to N sprites — CPU cost is a memcpy loop, not N pipeline binds.
+
+### Shared unit quad, unique instance transforms
+
+Spark bakes four corners of a unit quad into the scene vertex buffer (`spriteQuadFirstIndex`, six indices). Each instance `model` matrix scales, rotates, and translates that template into world space. Tilemap draws share the same index range — corrupt quad upload breaks both systems.
+
+### HDR pass + depth test, not swapchain
+
+World sprites target RGBA16F inside the HDR subpass with depth write/read against terrain and props. They are **not** screen-space HUD (Chapter 6). Capture RenderDoc: sprite draws appear on float16 color attachment, occluded by closer opaque meshes.
+
 ## 2. Core Concepts
 
 ### SceneSpriteDraw snapshot record

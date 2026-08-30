@@ -14,6 +14,102 @@ A single triangle proved the pipeline works. Real scenes need **many objects** s
 
 This chapter is the first time `SceneRenderParams` becomes **visible geometry** — the payoff for Chapters 1–6.
 
+## 1b. Concept Deep Dive — SceneMeshSlot to vkCmdDrawIndexed
+
+### ResolveSceneMeshDrawRange — slot enum to index range
+
+The opaque pass never branches on mesh type inline. `ResolveSceneMeshDrawRange` maps `SceneDrawItem::mesh` to `firstIndex`, `indexCount`, and buffer binding:
+
+```cpp
+// src/spark/render/scene/VulkanSceneMeshDraw.cpp (lines 5–29)
+SceneMeshDrawRange ResolveSceneMeshDrawRange(
+        const SceneDrawItem& draw,
+        const std::size_t drawIndex,
+        const SceneMeshDrawBindings& bindings) noexcept {
+    if (draw.mesh == SceneMeshSlot::UnitCube || draw.mesh == SceneMeshSlot::GroundPlane) {
+        out.binding = SceneMeshGeometryBinding::StaticScene;
+        switch (draw.mesh) {
+        case SceneMeshSlot::UnitCube:
+            out.indexCount = bindings.cubeIndexCount;
+            out.firstIndex = 0;
+            out.vertexOffset = bindings.cubeVertexOffset;
+            break;
+        case SceneMeshSlot::GroundPlane:
+            out.indexCount = bindings.planeIndexCount;
+            out.firstIndex = bindings.planeFirstIndex;
+            out.vertexOffset = bindings.planeVertexOffset;
+            break;
+        // ...
+        }
+        out.drawable = out.indexCount > 0 && bindings.staticVertexBuffer != VK_NULL_HANDLE;
+        return out;
+    }
+```
+
+`Custom` meshes take a separate path through `customDrawPacked` — Part VI extends this without changing the opaque pass loop structure.
+
+### Per-draw model matrix via push constants
+
+Each `SceneDrawItem::model` copies into `ModelPushConstants` before the draw call. Descriptors stay bound for the whole pass — only push constants change per mesh:
+
+```cpp
+// src/spark/render/scene/VulkanSceneOpaquePass.cpp (lines 149–206)
+        std::memcpy(push.model, d.model.m, sizeof(push.model));
+        push.albedo[0] = d.albedo.x;
+        push.albedo[1] = d.albedo.y;
+        push.albedo[2] = d.albedo.z;
+        // ... texture layers, PBR scalars ...
+        vkCmdPushConstants(
+                commandBuffer,
+                ctx.pipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,
+                sizeof(ModelPushConstants),
+                &push);
+        vkCmdDrawIndexed(commandBuffer, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+```
+
+Vertex shader computes `gl_Position = viewProj * model * localPos`; fragment shader reads albedo from push constants when no texture is bound.
+
+### Mesh bindings flow from CreateSceneGeometry to record context
+
+`RecordSceneCommandBuffer` passes static buffer handles and subrange counts into the opaque pass context — populated once at init:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 304–316)
+                .meshBindings =
+                        {
+                                .staticVertexBuffer = vertexBuffer,
+                                .staticIndexBuffer = indexBuffer,
+                                .cubeIndexCount = cubeIndexCount,
+                                .planeIndexCount = planeIndexCount,
+                                .planeFirstIndex = planeFirstIndex,
+                                .cubeVertexOffset = cubeVertexOffset,
+                                .planeVertexOffset = planeVertexOffset,
+                                .customDrawPacked = &customDrawPacked,
+                        },
+```
+
+Two draw items with `UnitCube` and `GroundPlane` slots share one VB/IB bind — only push constants and index ranges differ.
+
+### End-to-end data path for one cube on the floor
+
+```text
+SceneDrawItem { mesh=UnitCube, model=Translation(0,0.5,0), albedo=red }
+SceneDrawItem { mesh=GroundPlane, model=Identity, albedo=gray }
+        │
+        ▼ SetSceneRenderParams
+pendingScene.draws[0..1]
+        │
+        ▼ RecordSceneCommandBuffer → sceneOpaquePass.Record
+  bind pipelineLit, descriptors, static VB/IB
+  draw[0]: push model, vkCmdDrawIndexed(cubeIndexCount, firstIndex=0)
+  draw[1]: push model, vkCmdDrawIndexed(6, firstIndex=planeFirstIndex)
+        │
+        ▼ tonemap → present
+Monitor shows red cube on gray ground
+```
+
 ## 2. Core Concepts
 
 ### SceneMeshSlot routing

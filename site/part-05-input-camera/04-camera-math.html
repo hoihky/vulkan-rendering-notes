@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1062,6 +1068,77 @@
 </ul>
 <p>Shaders multiply <code>viewProj * vec4(worldPos, 1)</code>. One transposed multiply spins the scene. One wrong clip Y flip inverts the image vertically. One OpenGL-style depth range breaks depth testing.</p>
 <p>Spark centralizes math in <code>Matrix4</code> with <strong>Vulkan-specific</strong> <code>*Vulkan</code> helpers. This chapter is the numeric foundation for every camera rig in Part V.</p>
+<h3 id="what-is-a-camera-in-3d-graphics">What is a camera in 3D graphics?</h3>
+<p>A <strong>camera</strong> is not a special engine object on the GPU. It is two matrices that transform 3D world points into 2D screen positions:</p>
+<pre><code class="language-text">world position  →  [VIEW]  →  camera-relative  →  [PROJECTION]  →  clip space
+</code></pre>
+<ul>
+<li><strong>View matrix</strong> — moves the world so the camera sits at origin looking down -Z (Vulkan convention).</li>
+<li><strong>Projection matrix</strong> — perspective (3D games) or orthographic (2D UI, shadow maps) — maps to clip cube.</li>
+</ul>
+<p>Every vertex shader does:</p>
+<pre><code class="language-glsl">gl_Position = viewProj * model * vec4(localPosition, 1.0);
+</code></pre>
+<p>If <code>viewProj</code> is wrong, the entire world renders incorrectly — not one mesh.</p>
+<h3 id="perspective-vs-orthographic-when-to-use-which">Perspective vs orthographic (when to use which)</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Projection</th>
+<th>Parallel lines</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Perspective</td>
+<td>Converge to horizon</td>
+<td>3D gameplay camera</td>
+</tr>
+<tr>
+<td>Orthographic</td>
+<td>Stay parallel</td>
+<td>2D games, shadow maps, editor top view</td>
+</tr>
+</tbody>
+</table>
+<p>Spark's <code>Matrix4::PerspectiveVulkan(fovY, aspect, near, far)</code> uses <strong>Vulkan depth range [0, 1]</strong> — not OpenGL's [-1, 1]. Using the wrong helper inverts or clips depth.</p>
+<h3 id="lookat-intuition">LookAt intuition</h3>
+<p><code>Matrix4::LookAt(eye, target, up)</code> builds a view matrix:</p>
+<ul>
+<li><strong>eye</strong> — camera world position (from <code>TransformComponent</code> or fly camera).</li>
+<li><strong>target</strong> — point the camera looks at (<code>eye + forward</code>).</li>
+<li><strong>up</strong> — usually world +Y; avoid parallel up and view direction (gimbal singularity).</li>
+</ul>
+<pre><code class="language-text">Fly camera:  eye moves with WASD, target = eye + forward vector from yaw/pitch
+Orbit cam:   eye circles target at fixed radius
+Follow cam:  eye behind player offset, target = player position
+</code></pre>
+<p>Part V implements each pattern on top of the same <code>viewProj</code> upload to the scene UBO.</p>
+<h2 id="b.concept-deep-dive-matrix4-vulkan-helpers">1b. Concept Deep Dive — Matrix4 Vulkan Helpers</h2>
+<h3 id="column-major-storage-matches-glsl">Column-major storage matches GLSL</h3>
+<p>Spark stores <code>Matrix4::m[16]</code> in <strong>column-major</strong> order — the same layout GLSL <code>mat4</code> expects. Vertex shaders multiply:</p>
+<pre><code class="language-glsl">gl_Position = ubo.viewProj * push.model * vec4(inPosition, 1.0);
+</code></pre>
+<p>Transposing on CPU (common when importing GLM with row-major habits) spins or mirrors the scene.</p>
+<h3 id="vulkan-specific-projection-helpers">Vulkan-specific projection helpers</h3>
+<pre><code class="language-cpp">// Typical 3D demo composition:
+const float aspect = static_cast&lt;float&gt;(fbW) / static_cast&lt;float&gt;(fbH);
+const Matrix4 proj = Matrix4::PerspectiveVulkan(
+        DegreesToRadians(60.0F), aspect, 0.12F, 400.0F);
+const Matrix4 view = flyCamera.ViewMatrix();
+const Matrix4 viewProj = proj * view;
+</code></pre>
+<p><code>PerspectiveVulkan</code> and <code>OrthographicVulkan</code> use depth range <strong>[0, 1]</strong> — OpenGL-style <code>Perspective</code> helpers exist but must not be mixed into Vulkan render passes.</p>
+<h3 id="lookat-builds-view-from-eye-and-forward">LookAt builds view from eye and forward</h3>
+<p><code>Matrix4::LookAt(eye, target, up)</code> inverts the camera's world transform. <code>FlyCamera::ViewMatrix</code> picks an alternate up vector when forward aligns with ±Y (gimbal-safe ground viewing):</p>
+<pre><code class="language-cpp">if (std::fabs(Vector3::Dot(f, Vector3::UnitY)) &gt; 0.92F) {
+    worldUp = Vector3::UnitZ;
+}
+return Matrix4::LookAt(position, position + f, worldUp);
+</code></pre>
+<h3 id="invviewproj-for-reconstruction">invViewProj for reconstruction</h3>
+<p><code>VulkanSceneUniformWriter</code> inverts <code>viewProj</code> on the CPU each frame into <code>SceneUniformGpu::invViewProj</code> — sky rays and debug visualizations reconstruct world position from depth using the same matrices the vertex path used.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="column-major-storage">Column-major storage</h3>
 <pre><code class="language-cpp">struct Matrix4 {
@@ -1258,6 +1335,38 @@ const float aspect = static_cast&lt;float&gt;(fbW) / std::max(fbH, 1);
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#what-is-a-camera-in-3d-graphics">What is a camera in 3D graphics?</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#perspective-vs-orthographic-when-to-use-which">Perspective vs orthographic (when to use which)</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lookat-intuition">LookAt intuition</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-matrix4-vulkan-helpers">1b. Concept Deep Dive — Matrix4 Vulkan Helpers</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#column-major-storage-matches-glsl">Column-major storage matches GLSL</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#vulkan-specific-projection-helpers">Vulkan-specific projection helpers</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lookat-builds-view-from-eye-and-forward">LookAt builds view from eye and forward</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#invviewproj-for-reconstruction">invViewProj for reconstruction</a>
                         </li>
                         
                         <li class="toc-h2">

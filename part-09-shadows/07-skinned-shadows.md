@@ -14,6 +14,47 @@ Animated characters share **skinned vertices** between lit and shadow passes. If
 
 The fix is the **same skinning math** — same SSBO, same joint indices/weights — in `shadow_depth.vert`.
 
+## 1b. Concept Deep Dive — Skinning in the Shadow Pass
+
+### Identical skinning branch to scene.vert
+
+```glsl
+// shaders/shadow_depth.vert (lines 31–50)
+if (sp.useSkinning != 0) {
+    vec4 spv = vec4(0.0);
+    for (int k = 0; k < 4; k++) {
+        float w = inWeights[k];
+        if (w <= 0.0) continue;
+        uint ji = inJoints[k];
+        if (int(ji) >= sp.jointCount) continue;
+        mat4 BM = skin.bones[ji];
+        spv += w * BM * vec4(inPosition, 1.0);
+    }
+    vec4 wp = sp.model * vec4(spv.xyz, 1.0);
+    worldPos = wp.xyz;
+}
+```
+
+Same four-weight limit, same joint index unpack from `inJointsPacked`. Only output differs: `lightViewProj * worldPos` instead of camera `viewProj`.
+
+### Per-draw SSBO upload in RecordShadowCastMeshes
+
+```cpp
+// VulkanShadowCastDraw.cpp (lines 77–87)
+if (!d.jointPalette.IsEmpty() && d.skinnedMesh && ctx.skinSsboMapped != nullptr) {
+    sh.useSkinning = 1;
+    sh.jointCount = static_cast<std::int32_t>(jc);
+    std::memcpy((*ctx.skinSsboMapped)[frameIndex], d.jointPalette.GetData(),
+                jc * sizeof(Matrix4));
+}
+```
+
+The skin SSBO at `set=0, binding=2` is overwritten per skinned draw — same pattern as `VulkanSceneOpaquePass`. Joint palette must match the lit pass frame-for-frame or shadow silhouettes drift from visible mesh.
+
+### Push constant parity
+
+Both lit and shadow passes set `useSkinning` and `jointCount` from the same `SceneDrawItem` fields. If shadow shows a T-pose while lit animates, check that `skinnedMesh` and `jointPalette` are populated at submit time for shadow casters.
+
 ## 2. Core Concepts
 
 ### Skinning recap

@@ -17,6 +17,139 @@ If vertex locations in GLSL disagree with C++ vertex layout, validation may pass
 
 Spark's `scene.vert` is a production-grade example: six vertex attributes, per-frame UBO, per-draw push constants, optional skinning, and nine varyings. This chapter walks through it line by line so your build-along engine can match Spark's contract.
 
+### What the vertex shader actually does (one paragraph)
+
+For **each vertex** of **each triangle** being drawn, the GPU runs `scene.vert` once. That program:
+
+1. Reads vertex attributes from the bound vertex buffer (position, normal, UV, …).
+2. Applies optional skinning (animated characters).
+3. Multiplies position by **model** matrix (object → world) and **viewProj** (world → clip).
+4. Writes `gl_Position` — the clip-space position the rasterizer needs.
+5. Passes normals, UVs, and other data to the fragment shader via **varying** outputs.
+
+The fragment shader does **not** know about individual vertices — only interpolated values across the triangle interior.
+
+### Matrix multiply order (the #1 beginner bug)
+
+Spark uses column-major matrices matching GLSL:
+
+```glsl
+vec4 worldPos = push.model * vec4(inPosition, 1.0);
+gl_Position = ubo.viewProj * worldPos;
+```
+
+Read right-to-left as math: first apply model, then viewProj. **Never** transpose one side "because DirectX did it differently" without verifying in RenderDoc.
+
+Wrong order symptoms:
+
+| Mistake | What you see |
+|---------|--------------|
+| `viewProj * model` swapped with model on wrong side | Objects orbit wrong axis |
+| Row-major C++ matrix without transpose | Sheared / collapsed mesh |
+| Forgot perspective w | Everything clips or vanishes |
+
+### Varyings: what they are
+
+**Varyings** (outputs from vertex shader, inputs to fragment shader) are **interpolated** across the triangle:
+
+```glsl
+// vertex shader
+out vec2 vTexCoord;
+vTexCoord = inTexCoord;
+
+// fragment shader
+in vec2 vTexCoord;  // smooth blend between three corner UVs
+```
+
+If `vTexCoord` is wrong at vertices, textures swim across the surface. Fix vertex layout and locations before debugging `texture()` in the fragment shader.
+
+## 1b. Concept Deep Dive — scene.vert Inputs, Skinning, and Clip Output
+
+### Vertex attribute contract (locations 0–7)
+
+Spark's production vertex shader binds a single interleaved stream matching `VulkanSceneVertexLayout`:
+
+```glsl
+// shaders/scene.vert (lines 4–11)
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inTexCoord;
+layout(location = 3) in vec4 inTangent;
+layout(location = 4) in vec4 inJointsPacked;
+layout(location = 5) in vec4 inWeights;
+layout(location = 6) in vec2 inTexCoord1;
+layout(location = 7) in vec4 inColor;
+```
+
+Rigid draws ignore locations 4–5; skinned draws decode joint indices with `floatBitsToUint` because MoltenVK historically mishandled integer vertex fetches. Every location must match `VkVertexInputAttributeDescription` stride **80 bytes** in `VulkanScenePipeline.cpp`.
+
+### Frame UBO vs per-draw push in the transform chain
+
+Shared layouts come from includes; the vertex stage reads both:
+
+```glsl
+#include "scene_ubo.glsl"   // set 0 binding 0 — viewProj, cameraPos, invViewProj
+#include "scene_push.glsl"  // push_constant — model, material, skyMode, useSkinning
+```
+
+The non-skinned path is deliberately minimal:
+
+```glsl
+// shaders/scene.vert (lines 79–87, rigid branch)
+vec4 wp = push.model * vec4(inPosition, 1.0);
+worldPos = wp.xyz;
+mat3 R = mat3(push.model);
+mat3 nMat = (abs(detR) > 1e-8) ? transpose(inverse(R)) : mat3(1.0);
+vNormal = normalize(nMat * inNormal);
+gl_Position = ubo.viewProj * vec4(worldPos, 1.0);
+```
+
+`ubo.viewProj` is written once per frame by `VulkanSceneUniformWriter`; `push.model` changes every draw via `vkCmdPushConstants`.
+
+### Skin SSBO and weighted palette lookup
+
+When `push.useSkinning != 0`, the shader blends up to four bone matrices from binding 2:
+
+```glsl
+// shaders/scene.vert (lines 17–19, 44–58)
+layout(std430, set = 0, binding = 2) readonly buffer SkinSSBO {
+    mat4 bones[];
+} skin;
+
+if (push.useSkinning != 0) {
+    for (int k = 0; k < 4; k++) {
+        float w = inWeights[k];
+        uint ji = inJoints[k];
+        if (int(ji) >= push.jointCount) continue;
+        mat4 BM = skin.bones[ji];
+        sp += w * BM * vec4(inPosition, 1.0);
+    }
+    vec4 wp = push.model * vec4(sp.xyz, 1.0);
+}
+```
+
+The CPU memcpy's the palette into mapped SSBO memory immediately before the skinned draw in `VulkanSceneOpaquePass.cpp`.
+
+### Eleven varyings and the sky clip hack
+
+Vertex outputs feed `scene.frag` — world position, perturbed normal/tangent, material scalars, and `flat int vTextureLayer`:
+
+```glsl
+// shaders/scene.vert (lines 95–111)
+vWorldPos = worldPos;
+vAlbedo = push.albedoTint.rgb;
+vTextureLayer = push.textureLayer;
+vec4 clip = ubo.viewProj * vec4(worldPos, 1.0);
+if (push.skyMode != 0) {
+    float zw = max(clip.w, 1e-5);
+    gl_Position = vec4(clip.x, clip.y, zw * (1.0 - 1e-4), zw);
+} else {
+    gl_Position = clip;
+}
+```
+
+Sky geometry nudges clip Z toward the far plane so dome pixels survive depth testing when other passes enable it. The fragment shader then reconstructs view rays from `ubo.invViewProj` — interpolated `vWorldPos` alone would swim on camera rotation (Chapter 3).
+
 ## 2. Core Concepts
 
 ### Coordinate spaces and the transform chain

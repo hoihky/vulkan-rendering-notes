@@ -914,6 +914,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-13-scene-editor/07-content-authoring-pipeline.html" class="nav-link">07 content authoring pipeline</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 14 physics</span>
@@ -1056,6 +1062,82 @@
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>The shadow pass does not need albedo, normals, or lighting — only <strong>correct clip-space depth</strong> from the light's view. Most bugs are pipeline mismatch (color writes left on) or matrix mismatch (different light projection than the sampling shader expects).</p>
 <p>Spark's <code>shadow_depth.vert</code> is the reference implementation you will mirror in your engine.</p>
+<h3 id="depth-only-pass-for-beginners">Depth-only pass for beginners</h3>
+<p>The shadow pass is simpler than the main lit pass:</p>
+<pre><code class="language-text">Main pass shader:     position + normals + UVs → color + depth
+Shadow pass shader:   position only           → depth ONLY (no color buffer)
+</code></pre>
+<p>There is <strong>no fragment shader</strong> (or an empty one) — the GPU writes depth automatically from the vertex shader's <code>gl_Position.z</code>.</p>
+<p>Pipeline differences:</p>
+<table class="table">
+<thead>
+<tr>
+<th>Setting</th>
+<th>Lit pipeline</th>
+<th>Shadow pipeline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Color attachment</td>
+<td>RGBA16F HDR</td>
+<td><strong>None</strong></td>
+</tr>
+<tr>
+<td>Depth attachment</td>
+<td>D32</td>
+<td>D32 shadow map</td>
+</tr>
+<tr>
+<td>Depth write</td>
+<td>ON</td>
+<td>ON</td>
+</tr>
+<tr>
+<td>Color write</td>
+<td>ON</td>
+<td><strong>OFF</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The vertex shader transforms position by <strong>light view-projection</strong> instead of camera <code>viewProj</code>:</p>
+<pre><code class="language-glsl">// shadow_depth.vert (concept)
+gl_Position = ubo.worldToShadowClip[cascade] * push.model * vec4(position, 1.0);
+</code></pre>
+<p>Same <code>push.model</code> and vertex buffer as the main pass — only the matrix changes. That is why winding and mesh layout must match.</p>
+<h2 id="b.concept-deep-dive-shadow_depth.vert-contract">1b. Concept Deep Dive — shadow_depth.vert Contract</h2>
+<h3 id="shared-vertex-input-with-lit-pass">Shared vertex input with lit pass</h3>
+<pre><code class="language-glsl">// shaders/shadow_depth.vert (lines 3–8)
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inTexCoord;
+layout(location = 3) in vec4 inTangent;
+layout(location = 4) in vec4 inJointsPacked;
+layout(location = 5) in vec4 inWeights;
+</code></pre>
+<p>Same locations as <code>scene.vert</code> — one interleaved vertex buffer serves both pipelines. Normals and UVs are unused in the shadow pass but must be present for attribute layout compatibility.</p>
+<h3 id="push-constants-model-lightviewproj-only">Push constants — model + lightViewProj only</h3>
+<pre><code class="language-glsl">// shadow_depth.vert (lines 14–21, 52)
+layout(push_constant) uniform ShadowPush {
+    mat4 model;
+    mat4 lightViewProj;
+    int useSkinning;
+    int jointCount;
+} sp;
+// ...
+gl_Position = sp.lightViewProj * vec4(worldPos, 1.0);
+</code></pre>
+<p>No material, no camera <code>viewProj</code>. <code>RecordShadowCastMeshes</code> memcpy's <code>d.model</code> and the cascade-specific light matrix per draw.</p>
+<h3 id="recordshadowcastmeshes-indexed-draws-from-scene-snapshot">RecordShadowCastMeshes — indexed draws from scene snapshot</h3>
+<pre><code class="language-cpp">// src/spark/render/shadow/VulkanShadowCastDraw.cpp (lines 43–98)
+for (std::size_t di = 0; di &lt; ctx.scene-&gt;draws.GetSize(); ++di) {
+    const SceneDrawItem&amp; d = ctx.scene-&gt;draws[di];
+    if (d.skyMode != SceneSkyMode::None) continue;
+    if ((d.shadowFlags &amp; kSceneShadowCast) == 0) continue;
+    // bind static or custom VB/IB, push constants, vkCmdDrawIndexed
+}
+</code></pre>
+<p>Sky draws are skipped. Only casters enter the depth pass. Static scene meshes (cube, plane) and custom dynamic meshes share the same shader — binding switches when geometry source changes.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="vertex-shader-contract">Vertex shader contract</h3>
 <p>The shadow pass only needs clip-space depth from the light's view:</p>
@@ -1369,6 +1451,26 @@ layout(push_constant) uniform ShadowPush {
                         
                         <li class="toc-h2">
                           <a href="#1-the-problem-we-are-solving">1. The Problem We Are Solving</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#depth-only-pass-for-beginners">Depth-only pass for beginners</a>
+                        </li>
+                        
+                        <li class="toc-h2">
+                          <a href="#1b-concept-deep-dive-shadowdepthvert-contract">1b. Concept Deep Dive — shadow_depth.vert Contract</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#shared-vertex-input-with-lit-pass">Shared vertex input with lit pass</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#push-constants-model-lightviewproj-only">Push constants — model + lightViewProj only</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#recordshadowcastmeshes-indexed-draws-from-scene-snapshot">RecordShadowCastMeshes — indexed draws from scene snapshot</a>
                         </li>
                         
                         <li class="toc-h2">

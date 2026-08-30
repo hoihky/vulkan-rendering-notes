@@ -21,6 +21,125 @@ Open these two headers side by side while you read:
 
 The difference in their `#include` lists is the architecture.
 
+### Four layers for beginners
+
+Spark organizes code into layers you should memorize early:
+
+```text
+┌─────────────────────────────────────────────┐
+│  Platform (GLFW, files, time)               │
+├─────────────────────────────────────────────┤
+│  Game / ECS (GameWorld, components, demos)  │
+├─────────────────────────────────────────────┤
+│  Render frontend (SceneSubmit, snapshots)   │
+├─────────────────────────────────────────────┤
+│  Render backend (VulkanRenderer, passes)    │
+└─────────────────────────────────────────────┘
+```
+
+| Layer | May include Vulkan headers? | Example |
+|-------|----------------------------|---------|
+| Platform | No | `Window`, `GlfwInput` |
+| Game | No | `CharacterCameraDemo`, `MeshComponent` |
+| Render frontend | No | `SceneSubmit`, `SceneRenderParams` |
+| Render backend | **Yes** | `VulkanRenderer`, `VulkanScenePipeline` |
+
+**Dependency rule:** upper layers call down; the backend never includes game demo headers. `IEngineContext` is the narrow API surface games use to push `SceneRenderParams` without linking every Vulkan pass.
+
+### One frame through the layers
+
+```text
+GLFW poll
+  → Engine::Run
+      → game->OnUpdate        (Game layer)
+      → game->OnRender        (Game builds scene via Submit — frontend)
+      → context.SetSceneRenderParams
+      → renderer->PresentFrame (VulkanRenderer — backend)
+          → DrawFrame → RecordSceneCommandBuffer
+```
+
+When you get lost in a 3,000-line file, ask: **which layer am I in?** If gameplay is calling `vkCmdDraw`, architecture has leaked.
+
+## 1b. Concept Deep Dive — How Spark Enforces Layer Boundaries
+
+### Interfaces as compile-time firewalls
+
+Spark's four layers are not just folder names — they are **include-graph constraints**. Open `IGame.hpp` and `VulkanRenderer.hpp` side by side: the game header lists ECS and math types; the renderer header pulls in a dozen pass classes and `<vulkan/vulkan.h>`. If a demo `#include`s the renderer directly, every gameplay `.cpp` recompiles when you touch a shadow pass, and circular dependencies appear within days.
+
+Dependency inversion solves this with two narrow ports: `IEngineContext` (what games call) and `IFramePresenter` (what the loop calls for GPU work). `EngineContext` is a **facade** that knows both `Window` and `IFramePresenter` but exposes neither Vulkan type nor internal pass objects. `VulkanRenderer` implements the presenter and owns composition — device context, frame sync, opaque pass, tonemap — rather than inheriting from game code.
+
+Construction order in `Engine::Impl` mirrors the dependency graph from the bottom up: window first (surface extensions), then renderer (which bootstraps Vulkan internally), then input and context wired to both. No Vulkan calls appear in `Engine.cpp`; the renderer constructor is the single entry that triggers instance/device setup.
+
+### One frame, four layers (includes implied)
+
+```text
+  Platform          Game              Frontend                 Backend
+  ────────          ────              ────────                 ───────
+  Window            IGame::OnUpdate   SceneSubmit              VulkanRenderer
+  GlfwInput         components        SceneRenderParams        VulkanDeviceContext
+       │                 │                   │                        │
+       └─ PollEvents ────┴─ timing ─────────┴─ SetSceneRenderParams ─┴─ DrawFrame
+```
+
+| Layer | `#include <vulkan/vulkan.h>`? | Calls into |
+|-------|------------------------------|------------|
+| Platform | No (GLFW surface ext only at link) | OS / GLFW |
+| Game | Never | `IEngineContext` |
+| Frontend | Never | `SceneRenderParams`, submit helpers |
+| Backend | Yes | `VkDevice`, passes, sync |
+
+### Engine wires subsystems in dependency order
+
+```cpp
+// src/Engine.cpp (lines 98–112)
+    explicit Impl(UniquePtr<IGame> ownedGame)
+        : window{}
+        , renderer(MakeUnique<VulkanRenderer>(window))
+        , input(MakeUnique<GlfwInput>(window.Handle()))
+        , engineContext(MakeUnique<EngineContext>(window, *renderer, *input, audio))
+        , game(MoveTemp(ownedGame)) {
+        input->WireToWindow(window);
+        renderer->GetImGuiLayer().InstallPlatformCallbacks(window);
+        engineContext->BindImGuiLayer(renderer->GetImGuiLayer());
+        // ...
+        window.SetFramebufferResizeCallback([this](int /*width*/, int /*height*/) {
+            renderer->NotifySwapchainResize();
+        });
+    }
+```
+
+### Game contract — simulation vs snapshot
+
+```cpp
+// include/spark/engine/IGame.hpp
+class IGame {
+public:
+    virtual ~IGame() = default;
+
+    virtual void OnAttach(IEngineContext& context) = 0;
+    virtual void OnDetach() = 0;
+    virtual void OnUpdate(const FrameTiming& timing, IEngineContext& context) = 0;
+    virtual void OnRender(IRenderFrame& frame, IEngineContext& context) = 0;
+};
+```
+
+### Renderer composes passes; device context is a member
+
+`VulkanRenderer` is not a monolith — it aggregates focused subsystems while delegating bootstrap to `VulkanDeviceContext`:
+
+```cpp
+// src/spark/render/core/VulkanRenderer.cpp (lines 43–49)
+VulkanRenderer::VulkanRenderer(Window& inAppWindow) : deviceContext(inAppWindow), boundWindow(&inAppWindow) {
+    shaderLoader.SetDevice(device());
+
+    CreateCommandPool();
+    CreatePersistentSceneResources();
+    RecreateSwapchain();
+    frameSync.Create(device());
+```
+
+When you add a feature later (particles, UI), add a pass object — do not grow a single renderer translation unit without bound.
+
 ## 2. Core Concepts
 
 ### Dependency inversion

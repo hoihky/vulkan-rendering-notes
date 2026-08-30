@@ -21,6 +21,73 @@ A free fly camera (Chapter 5) does not follow the player. Games need cameras tha
 
 This chapter explains each math model and update order — not just "lerp the camera" in one sentence.
 
+### Follow cameras for beginners
+
+**Fly camera** = you control position directly. **Follow camera** = camera chases something else (player, pivot).
+
+**Orbit (editor style):**
+
+```text
+Pivot at mesh center
+  Mouse drag → rotate camera on sphere around pivot
+  Scroll → zoom distance
+  Result: always looking at the object
+```
+
+**Spring arm (third-person games):**
+
+```text
+Character at origin
+  Arm extends backward from character forward
+  Camera at end of arm
+  Optional: shorten arm if wall blocks line of sight
+```
+
+**Smooth follow (simple tracking):**
+
+```text
+camera.position = lerp(camera.position, target.position + offset, smoothness * dt)
+camera looks at target
+```
+
+| Pattern | Who moves? | Spark |
+|---------|------------|-------|
+| Orbit | Camera on sphere | `OrbitFlyCameraAroundPivot` |
+| Spring arm | Camera behind ECS character | `SpringArm3DComponent` |
+| Smooth follow | Camera lerps to target | `CameraFollow3DComponent` |
+
+Pick orbit for tools, spring arm for action games, smooth follow for cutscenes or simple 2.5D.
+
+## 1b. Concept Deep Dive — Orbit, Spring Arm, and Smooth Follow
+
+### Editor orbit on FlyCamera
+
+`SceneEditor3DDemo` wraps `FlyCamera` with pivot orbit — Alt+drag rotates on a sphere around a world point while scroll adjusts radius. The fly camera struct stays the same; orbit math writes `position` from pivot + spherical coordinates each frame. Same `ViewMatrix()` path feeds `params.viewProjection`.
+
+### ECS SpringArm3DComponent
+
+Third-person characters attach `SpringArm3DComponent` to the player entity and a `CameraComponent` on a child camera object. Each tick the arm:
+
+- Extends backward from character forward by `armLength`
+- Optionally raycasts to shorten the arm when geometry blocks line of sight
+- Positions the child camera at the arm tip
+
+Transform hierarchy supplies world matrices — submit reads the camera child's `CameraComponent::ViewMatrix`.
+
+### CameraFollow3DComponent smooth tracking
+
+For simpler chase cameras, `CameraFollow3DComponent` lerps owner transform toward `target` + offset and optionally `LookAt`s the target each frame. Lower complexity than spring arm — good for cutscenes and top-down follow without collision response.
+
+### When to pick which pattern
+
+| Need | Spark type |
+|------|------------|
+| Inspect static mesh in editor | Orbit on `FlyCamera` |
+| Action third-person with wall collision | `SpringArm3DComponent` |
+| Smooth chase without arm logic | `CameraFollow3DComponent` |
+
+All three produce a `Matrix4` view matrix consumed identically by `SceneRenderParams::viewProjection` — follow style is a CPU update choice, not a separate render path.
+
 ## 2. Core Concepts
 
 ### Editor orbit on FlyCamera
