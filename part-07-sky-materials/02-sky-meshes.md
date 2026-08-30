@@ -49,10 +49,10 @@ Mesh Mesh::CreateSkySphere(float radius, int latitudeSegments, int longitudeSegm
 // src/spark/scene/mesh/Mesh.cpp (lines 374–387)
 Mesh Mesh::CreateSkyBillboardPlane(float halfWidth, float halfHeight) {
     Mesh m(Utf8String("SkyPlane"));
-    m.vertices.PushBack({{-hw, -hh, 0}, {0,0,1}, {0,0}});
-    m.vertices.PushBack({{ hw, -hh, 0}, {0,0,1}, {1,0}});
-    m.vertices.PushBack({{ hw,  hh, 0}, {0,0,1}, {1,1}});
-    m.vertices.PushBack({{-hw,  hh, 0}, {0,0,1}, {0,1}});
+    m.vertices.PushBack({ {-hw, -hh, 0}, {0,0,1}, {0,0} });
+    m.vertices.PushBack({ { hw, -hh, 0}, {0,0,1}, {1,0} });
+    m.vertices.PushBack({ { hw,  hh, 0}, {0,0,1}, {1,1} });
+    m.vertices.PushBack({ {-hw,  hh, 0}, {0,0,1}, {0,1} });
     // CCW indices from +Z
     return m;
 }
