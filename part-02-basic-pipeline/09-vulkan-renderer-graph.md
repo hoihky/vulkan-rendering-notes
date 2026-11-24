@@ -41,7 +41,7 @@ Order matters. You cannot tonemap before the scene is drawn. You cannot sample s
 | Phase | Runs on | Spark entry point | What it does |
 |-------|---------|-------------------|--------------|
 | Gameplay | CPU | `game->OnUpdate` | Move entities, physics, input |
-| Scene gather | CPU | `FillStandardLitSceneFromWorld` | Build draw list from components |
+| Scene gather | CPU | `world.Rendering().SubmitLit` / `FillLit` | Build draw list from components (Ch. 11) |
 | Set snapshot | CPU | `SetSceneRenderParams` | Hand draw list to renderer |
 | Record commands | CPU | `RecordSceneCommandBuffer` | Write vkCmd* into command buffer |
 | Execute | GPU | Queue submit | Actually run draws |
@@ -64,11 +64,15 @@ Engine::Run loop (every frame):
 │         ├─ RecordSceneCommandBuffer:
 │         │    ├─ Upload textures/meshes
 │         │    ├─ Shadow passes
-│         │    ├─ HDR scene (opaque → maybe transparent resume)
-│         │    ├─ 2D composite + particles
+│         │    ├─ HDR scene opaque (+ rigid mesh instancing batches)
+│         │    ├─ Optional opaque color/depth snapshot (water / transmission)
+│         │    ├─ Water pass
+│         │    ├─ HDR transparent (`transparentDraws`, `pipelineLitTransparent`)
+│         │    ├─ 2D composite + particles (in HDR RP)
 │         │    ├─ End HDR
+│         │    ├─ Scene2D composite capture → tonemap blit to UI atlas (optional)
 │         │    ├─ SSAO (optional)
-│         │    ├─ Tonemap → swapchain
+│         │    ├─ Tonemap → swapchain present pass
 │         │    └─ UI + ImGui
 │         ├─ QueueSubmit
 │         └─ QueuePresent

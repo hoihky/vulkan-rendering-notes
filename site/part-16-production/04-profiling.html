@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> ImGui overlay shows FPS and section timings; RenderDoc groups passes by debug label.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> When timing scene gather, wrap <strong><code>world.Rendering().SubmitLit</code></strong> or <strong><code>FillLit</code></strong> — not only the legacy <strong><code>FillStandardLitSceneFromWorld</code></strong> symbol, which forwards to <strong><code>LitSceneSubmitter</code></strong> anyway.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Instrument CPU subsystems with scoped timers around submit and record.</li>
@@ -1198,7 +1211,8 @@ audio.PumpFrame(timing.deltaTimeSeconds);
 </code></pre>
 <h3 id="step-3-add-scopedtimer-to-scenesubmit">Step 3 — Add ScopedTimer to SceneSubmit</h3>
 <pre><code class="language-cpp">ScopedTimer t(&amp;frameStats.submitMs);
-FillStandardLitSceneFromWorld(...);
+world.Rendering().SubmitLit(context, viewProj, cameraPos, opts);
+// Or wrap LitSceneSubmitter::Fill via legacy FillStandardLitSceneFromWorld(...)
 </code></pre>
 <p>Log top 3 sections once per second during TerrainDemo.</p>
 <h3 id="step-4-insert-debug-labels">Step 4 — Insert debug labels</h3>

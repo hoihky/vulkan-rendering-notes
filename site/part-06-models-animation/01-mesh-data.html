@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1215,7 +1227,7 @@ outMesh.GetSubmeshes().PushBack(submesh);
 <p><strong>Concept:</strong> CPU mesh as shared asset</p>
 <p><strong>Decision:</strong> Mesh class with Vertex + indices</p>
 <p><strong>Why:</strong> One type feeds procedural primitives, OBJ, and baked glTF. GPU upload stays in VulkanCustomMeshPool.</p>
-<p><strong>In Spark:</strong> <code>include/spark/scene/Mesh.hpp</code></p>
+<p><strong>In Spark:</strong> <code>include/spark/scene/mesh/Mesh.hpp</code></p>
 <h3 id="uint32_t-index-arrays">uint32_t index arrays</h3>
 <p><strong>Concept:</strong> Indexed triangles</p>
 <p><strong>Decision:</strong> uint32_t index arrays</p>
@@ -1230,7 +1242,7 @@ outMesh.GetSubmeshes().PushBack(submesh);
 <p><strong>Concept:</strong> Procedural authoring conventions</p>
 <p><strong>Decision:</strong> Static factory methods on Mesh</p>
 <p><strong>Why:</strong> Demos run without asset files; same Vertex layout as imported content for one shader path.</p>
-<p><strong>In Spark:</strong> <code>src/spark/scene/Mesh.cpp</code> — <code>CreateUnitCube</code>, <code>CreateGroundPlane</code></p>
+<p><strong>In Spark:</strong> <code>src/spark/scene/mesh/Mesh.cpp</code> — <code>CreateUnitCube</code>, <code>CreateGroundPlane</code></p>
 <h3 id="trycomputeaxisalignedbounds-on-mesh">TryComputeAxisAlignedBounds on Mesh</h3>
 <p><strong>Concept:</strong> Axis-aligned bounds</p>
 <p><strong>Decision:</strong> TryComputeAxisAlignedBounds on Mesh</p>
@@ -1241,14 +1253,14 @@ outMesh.GetSubmeshes().PushBack(submesh);
 Spark is the reference implementation you can build, run, and diff against.</p>
 <h3 id="spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</h3>
 <ul>
-<li><code>include/spark/scene/Mesh.hpp</code></li>
-<li><code>src/spark/scene/Mesh.cpp</code></li>
+<li><code>include/spark/scene/mesh/Mesh.hpp</code></li>
+<li><code>src/spark/scene/mesh/Mesh.cpp</code></li>
 <li><code>include/spark/engine/SceneRenderParams.hpp</code></li>
 <li><code>shaders/scene.vert</code></li>
 </ul>
 <h3 id="step-1-read-the-mesh-vertex-record">Step 1 — Read the Mesh vertex record</h3>
 <p><em>CPU-side mesh — SharedPtr-friendly, no Vulkan types.</em></p>
-<pre><code class="language-cpp">// include/spark/scene/Mesh.hpp (lines 15–44)
+<pre><code class="language-cpp">// include/spark/scene/mesh/Mesh.hpp (lines 15–44)
 /**
  * CPU-side mesh (vertices + indices). Shared across GameObjects / MeshComponents via SharedPtr.
  * GPU upload is renderer-specific and stays outside this type.
@@ -1283,7 +1295,7 @@ public:
 <p>Note the header comment: GPU upload is renderer-specific and stays outside <code>Mesh</code>.</p>
 <h3 id="step-2-study-procedural-cube-topology">Step 2 — Study procedural cube topology</h3>
 <p><em>Per-face vertex duplication — 4 verts per face, 2 triangles each.</em></p>
-<pre><code class="language-cpp">// src/spark/scene/Mesh.cpp (lines 130–147)
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 130–147)
     for (int f = 0; f &lt; 6; ++f) {
         const std::uint32_t base = static_cast&lt;std::uint32_t&gt;(m.vertices.GetSize());
         for (int k = 0; k &lt; 4; ++k) {

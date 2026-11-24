@@ -214,7 +214,7 @@ Follow these steps in order. You are extending the same mini-engine throughout t
 
 - `src/spark/render/core/VulkanRenderer.cpp` — `CreateSceneGeometry`
 - `include/spark/render/scene/VulkanSceneVertexLayout.hpp`
-- `include/spark/scene/Mesh.hpp`
+- `include/spark/scene/mesh/Mesh.hpp`
 - `src/spark/render/gpu/VulkanGpuBufferImage.cpp` — buffer creation helpers
 
 ### Step 1 — Build interleaved CPU array

@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Import a `.glb` through the editor, save a `.sparkscene` prefab, and instantiate it in a level scene with correct materials and transforms.
 
+**Spark API note:** Placed props draw after **`world.Rendering().SubmitLit`** rebuilds `SceneRenderParams` from ECS. Pipeline diagrams may label **`FillStandardLitSceneFromWorld`** — that legacy step is **`LitSceneSubmitter`** inside `WorldRendering`.
+
 **You will learn:**
 
 - Trace the full authoring loop: DCC export → asset library → prefab → level scene → runtime expansion.
@@ -280,7 +282,7 @@ Pick one placed prop. Follow the pipeline from Part VI Chapter 3:
 
 ```text
 gltf_scene Apply → GltfAssetBinder → MultiMaterialComponent
-  → FillStandardLitSceneFromWorld → PushRigidMeshDraws
+  → world.Rendering().SubmitLit (LitSceneSubmitter / legacy FillStandardLitSceneFromWorld) → PushRigidMeshDraws
   → VulkanCustomMeshPool → VulkanSceneOpaquePass → HDR → tonemap
 ```
 

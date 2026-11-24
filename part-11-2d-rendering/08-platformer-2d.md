@@ -2,10 +2,12 @@
 
 > **Build-Along Milestone:** TilemapShowcase2DDemo or Platformer2DDemo runs end-to-end with HUD, animation, and correct pass order.
 
+**Spark API note:** 2D integration demos call **`world.Rendering().SubmitLitWithCamera`** or **`SubmitLit`** with sprite sort options in **`LitSceneSubmitOptions`**. Free functions such as **`SubmitStandardLitSceneFromWorld`** and **`FillStandardLitSceneFromWorld`** forward to the same **`LitSceneSubmitter`** fill.
+
 **You will learn:**
 
 - Assemble tilemap, sprites, animation, layers, particles, and screen UI in one demo loop.
-- Submit a complete 2D snapshot via SubmitStandardLitSceneFromWorld without Vulkan in gameplay.
+- Submit a complete 2D snapshot via `world.Rendering().SubmitLitWithCamera` without Vulkan in gameplay.
 - Use Spark showcase and platformer demos as integration regression targets.
 
 ## 1. The Problem We Are Solving
@@ -16,15 +18,18 @@ Build along: run `TilemapShowcase2DDemo`, trace its `Render` submit call, then r
 
 ## 1b. Concept Deep Dive — One Snapshot, Full HDR Frame Graph
 
-### SubmitStandardLitSceneFromWorld is the integration hub
+### world.Rendering().SubmitLit is the integration hub
 
-The 2D game pipeline is not a separate renderer — it assembles prior chapters into one `SceneRenderParams` fill and the existing HDR frame graph. Spark demos call one submit helper that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:
+The 2D game pipeline is not a separate renderer — it assembles prior chapters into one `SceneRenderParams` fill and the existing HDR frame graph. Spark demos call **`WorldRendering`** submit that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:
 
 ```cpp
 // src/spark/demo/TilemapShowcase2DDemo.cpp (concept)
-Spark::SubmitStandardLitSceneFromWorld(
-        world, params, viewProj, lightDir, lightColor,
-        /* fog, particles, sprite sort mode, ... */);
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(lightDir, lightColor, lightIntensity)
+    .WithSpriteSortMode(SceneSpriteSortMode::SortOrderThenWorldY)
+    .WithParticlesEnabled(true, camRight, camUp);
+world.Rendering().SubmitLitWithCamera(context, opts);
+// Legacy: SubmitStandardLitSceneFromWorld(world, params, ...) — same LitSceneSubmitter
 ```
 
 Gameplay **Update** runs physics, animators, and FSM; **Render/Submit** only reads components. Vulkan appears exclusively inside `PresentFrame`.
@@ -191,7 +196,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **Why:** Platformer2D uses particles; pure tile showcase skips collection overhead.
 
-**In Spark:** `SceneSubmit.hpp` FillStandardLitSceneFromWorld signature.
+**In Spark:** `LitSceneSubmitOptions` + `WorldRendering::SubmitLitWithCamera` (legacy `FillStandardLitSceneFromWorld` for particle flag).
 
 ### Tile definitions own collision shape
 

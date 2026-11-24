@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Part VII complete — showcase sphere validates maps, scalars, submit, and shading under fixed lights.
 
+**Spark API note:** MaterialShowcase and other lit demos submit through **`world.Rendering().SubmitLit`**. The design decision below still names **`FillStandardLitSceneFromWorld`** because that legacy entry forwards to the same **`LitSceneSubmitter`** path you exercise in the showcase.
+
 **You will learn:**
 
 - Run MaterialShowcase3DDemo and toggle maps/scalars with keyboard.
@@ -121,11 +123,11 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **In Spark:** helpText TextOverlayComponent
 
-### FillStandardLitSceneFromWorld
+### world.Rendering().SubmitLit
 
 **Concept:** Standard submit in Render()
 
-**Decision:** FillStandardLitSceneFromWorld
+**Decision:** `world.Rendering().SubmitLit` (legacy `FillStandardLitSceneFromWorld` delegates to same gather)
 
 **Why:** Same path production scenes use — showcase validates real gather, not a fork.
 
@@ -295,7 +297,7 @@ processes emissive HDR from this demo. Part **IX** can add shadow-casting column
 - **Moving camera/lights during compare** — invalidates A/B screenshots; use fixed camera snap.
 - **Missing tonemap** — emissive clips white; distinguish from shader bug.
 - **Editing ApplyMaterialState without updating HUD** — keys undocumented; keep help text in sync.
-- **Forking custom submit in demo** — invalidates regression value; always use FillStandardLitSceneFromWorld.
+- **Forking custom submit in demo** — invalidates regression value; always use `world.Rendering().SubmitLit` (not a one-off gather loop).
 
 ## 7. Exercises
 

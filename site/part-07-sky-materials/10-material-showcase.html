@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Part VII complete — showcase sphere validates maps, scalars, submit, and shading under fixed lights.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> MaterialShowcase and other lit demos submit through <strong><code>world.Rendering().SubmitLit</code></strong>. The design decision below still names <strong><code>FillStandardLitSceneFromWorld</code></strong> because that legacy entry forwards to the same <strong><code>LitSceneSubmitter</code></strong> path you exercise in the showcase.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Run MaterialShowcase3DDemo and toggle maps/scalars with keyboard.</li>
@@ -1162,9 +1175,9 @@ void MaterialShowcase3DDemo::ApplyMaterialState() {
 <p><strong>Decision:</strong> On-screen key legend</p>
 <p><strong>Why:</strong> Documents toggles without external docs — pattern from other Spark shell demos.</p>
 <p><strong>In Spark:</strong> helpText TextOverlayComponent</p>
-<h3 id="fillstandardlitscenefromworld">FillStandardLitSceneFromWorld</h3>
+<h3 id="world.rendering.submitlit">world.Rendering().SubmitLit</h3>
 <p><strong>Concept:</strong> Standard submit in Render()</p>
-<p><strong>Decision:</strong> FillStandardLitSceneFromWorld</p>
+<p><strong>Decision:</strong> <code>world.Rendering().SubmitLit</code> (legacy <code>FillStandardLitSceneFromWorld</code> delegates to same gather)</p>
 <p><strong>Why:</strong> Same path production scenes use — showcase validates real gather, not a fork.</p>
 <p><strong>In Spark:</strong> <code>MaterialShowcase3DDemo</code> Render path</p>
 <h2 id="implementation-walkthrough">4. Implementation Walkthrough</h2>
@@ -1307,7 +1320,7 @@ processes emissive HDR from this demo. Part <strong>IX</strong> can add shadow-c
 <li><strong>Moving camera/lights during compare</strong> — invalidates A/B screenshots; use fixed camera snap.</li>
 <li><strong>Missing tonemap</strong> — emissive clips white; distinguish from shader bug.</li>
 <li><strong>Editing ApplyMaterialState without updating HUD</strong> — keys undocumented; keep help text in sync.</li>
-<li><strong>Forking custom submit in demo</strong> — invalidates regression value; always use FillStandardLitSceneFromWorld.</li>
+<li><strong>Forking custom submit in demo</strong> — invalidates regression value; always use <code>world.Rendering().SubmitLit</code> (not a one-off gather loop).</li>
 </ul>
 <h2 id="exercises">7. Exercises</h2>
 <ol>
@@ -1397,7 +1410,7 @@ processes emissive HDR from this demo. Part <strong>IX</strong> can add shadow-c
                         </li>
                         
                         <li class="toc-h3">
-                          <a href="#fillstandardlitscenefromworld">FillStandardLitSceneFromWorld</a>
+                          <a href="#worldrenderingsubmitlit">world.Rendering().SubmitLit</a>
                         </li>
                         
                         <li class="toc-h2">

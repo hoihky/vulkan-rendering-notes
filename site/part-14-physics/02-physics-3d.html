@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Dynamic sphere collides with ground and renders at physics-updated position same frame.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> After <strong><code>Simulate3D</code></strong>, lit scenes snapshot transforms via <strong><code>world.Rendering().SubmitLit</code></strong>. <strong><code>FillStandardLitSceneFromWorld</code></strong> names the same gather step inside <strong><code>LitSceneSubmitter</code></strong>.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Integrate PhysicsWorld3D through PhysicsSubsystem with substep configuration.</li>
@@ -1114,7 +1127,7 @@ void PhysicsSubsystem::SimulateAll3D(GameWorld&amp; world, const FrameTiming&amp
 <h3 id="physicsballthrow3ddemo-vertical-slice">PhysicsBallThrow3DDemo vertical slice</h3>
 <p>Demo spawns static ground with box collider + physics material, dynamic ball with sphere mesh/collider, optional cube obstacles with varying restitution. Throw applies velocity impulse on click; R resets pose. Validates 3D bake pipeline, contact audio cues on bounce, and GUI tuning of solver parameters.</p>
 <h3 id="no-render-coupling">No render coupling</h3>
-<p>3D physics headers stay out of VulkanRenderer. Gameplay systems call Simulate; <code>FillStandardLitSceneFromWorld</code> reads transforms unchanged. Shadow casters (Part IX) use post-physics transforms automatically when Update order is correct (Chapter 4).</p>
+<p>3D physics headers stay out of VulkanRenderer. Gameplay systems call Simulate; <code>world.Rendering().SubmitLit</code> (legacy <code>FillStandardLitSceneFromWorld</code>) reads transforms unchanged. Shadow casters (Part IX) use post-physics transforms automatically when Update order is correct (Chapter 4).</p>
 <h2 id="design-decisions">3. Design Decisions</h2>
 <p>Each decision below references a concept from Section 2 and shows where Spark applies it.</p>
 <h3 id="physicssubsystem-facade-with-separate-simulators">PhysicsSubsystem facade with separate simulators</h3>

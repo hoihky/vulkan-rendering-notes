@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** A mesh can cast a shadow on the floor without receiving shadows on itself.
 
+**Spark API note:** Shadow flags are stamped during **`LitSceneSubmitter`** mesh gather — production demos reach that path via **`world.Rendering().SubmitLit`**. **`FillStandardLitSceneFromWorld`** is the legacy name for the same submit step.
+
 **You will learn:**
 
 - Add per-draw cast and receive shadow flags to the render snapshot.
@@ -379,7 +381,7 @@ Grep Spark for `castsShadow` and `receivesShadow` on draw item structs. Note def
 
 ### Step 2 — Trace submit path
 
-Flags are set during `FillStandardLitSceneFromWorld` (or equivalent) when mesh components are gathered — not in the renderer.
+Flags are set during `world.Rendering().SubmitLit` / `FillLit` (legacy `FillStandardLitSceneFromWorld`) when mesh components are gathered — not in the renderer.
 
 ### Step 3 — Filter shadow pass draws
 

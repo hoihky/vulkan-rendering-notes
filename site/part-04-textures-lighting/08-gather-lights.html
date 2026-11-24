@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Each frame, <code>SceneSubmit</code> fills <code>SceneRenderParams</code> with sun, punctual lights, and resolved profile settings before GPU upload.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Lit scenes submit with <strong><code>world.Rendering().SubmitLit</code></strong> and <strong><code>LitSceneSubmitOptions</code></strong> (Part II Chapter 11). This chapter walks the light-gather steps inside <strong><code>LitSceneSubmitter</code></strong>; <strong><code>FillStandardLitSceneFromWorld</code></strong> is the legacy name for the same fill.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Trace ECS components to <code>SceneRenderParams</code> light fields.</li>
@@ -1121,7 +1134,7 @@ world.ForEachActiveGameObject([&amp;params](GameObject* o) {
 <h3 id="ubo-write-happens-in-vulkanrenderer">UBO write happens in VulkanRenderer</h3>
 <p>Gather only fills <code>SceneRenderParams</code>. <code>VulkanSceneUniformWriter::Write</code> packs sun, ambient, camera, and cluster metadata into <code>SceneUniformGpu</code>; separate SSBO writers copy <code>pointLights</code> and <code>spotLights</code> arrays. If lights look one frame late, the bug is usually record order — not the gather loop itself.</p>
 <h3 id="production-entry-point">Production entry point</h3>
-<p><code>SubmitStandardLitSceneFromWorldWithCamera</code> calls <code>TryFillSceneCameraFromWorld</code>, then <code>FillStandardLitSceneFromWorld</code> with resolved camera matrices — the path <code>Platformer2DDemo</code> and ECS 3D scenes share. Manual demos (<code>ThreeDDemo</code>) fill <code>params</code> directly but use the same light structs.</p>
+<p><code>world.Rendering().SubmitLitWithCamera</code> resolves the main camera, then runs <strong><code>LitSceneSubmitter::Fill</code></strong> — the path <code>Platformer2DDemo</code> and ECS 3D scenes share. Legacy <code>SubmitStandardLitSceneFromWorldWithCamera</code> / <code>FillStandardLitSceneFromWorld</code> wrap the same gather. Manual demos (<code>ThreeDDemo</code>) fill <code>params</code> directly but use the same light structs.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="scenerenderparams-as-lighting-snapshot">SceneRenderParams as lighting snapshot</h3>
 <p>Key fields beyond draws:</p>

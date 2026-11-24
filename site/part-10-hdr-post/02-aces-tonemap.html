@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1067,12 +1079,18 @@
 <h3 id="where-tonemap-sits-in-the-full-rendering-pipeline">Where tonemap sits in the full rendering pipeline</h3>
 <p>Tonemap is the bridge between <strong>scene-referred HDR</strong> and <strong>display-referred swapchain</strong>. In Spark's frame graph it runs after all world content and optional SSAO:</p>
 <pre><code class="language-text">Shadow passes
-→ HDR render pass (scene + transparent resume + 2D + particles)
+→ HDR render pass (opaque + instancing + optional opaque snapshot)
+→ Water pass
+→ Transparent (`pipelineLitTransparent`, sorted `transparentDraws`)
+→ 2D composite + particles (still inside HDR RP)
+→ End HDR
+→ [optional] Scene2D composite capture + VulkanCompositeTonemapBlit into UI atlas
 → TransitionColorToShaderRead
 → [optional] SSAO pass (reads HDR + depth)
 → RecordTonemap (HDR → swapchain, present render pass)
 → Screen UI + ImGui (display space, not exposure-scaled)
 </code></pre>
+<p><strong>Composite HUD path:</strong> when a <code>Scene2DCompositeView</code> renders an ortho world into an HDR <code>RenderTexture</code>, <code>VulkanScreenUiPass::RecordCompositeRenderTextureBlits</code> may tonemap through <code>VulkanCompositeTonemapBlit</code> into the UI sprite atlas — same ACES shader, different render pass target (Part XI).</p>
 <p>Emissive materials authored in Part VII can exceed 1.0 in the HDR buffer <strong>before</strong> tonemap. PBR specular highlights on metals similarly accumulate in linear space. If you skip HDR offscreen targets (Part X Chapter 1) and draw directly to swapchain, tonemap has nothing meaningful to compress — highlights clip at 1.0.</p>
 <p><code>VulkanHdrTonemapPass::RecordTonemap</code> binds the HDR color image as a combined image sampler, multiplies by <code>resolvedLighting.exposure</code>, runs ACES in <code>tonemap.frag</code>, and writes UNORM swapchain color. UI draws afterward so widgets are not exposure-scaled.</p>
 <h2 id="b.concept-deep-dive-scene-referred-to-display-referred-in-one-draw">1b. Concept Deep Dive — Scene-Referred to Display-Referred in One Draw</h2>

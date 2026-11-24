@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1101,7 +1113,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Arc:</strong> <code>SceneSkyMode</code> + view-ray equirect → <code>pipelineSky</code> sort/bind → <code>iblEnvironmentLayer</code> from sky → <code>MaterialComponent</code> maps → <code>scene.frag</code> PBR vs toon branch → <code>FillStandardLitSceneFromWorld</code> gather → MaterialShowcase regression.</p>
+<p><strong>Arc:</strong> <code>SceneSkyMode</code> + view-ray equirect → <code>pipelineSky</code> sort/bind → <code>iblEnvironmentLayer</code> from sky → <code>MaterialComponent</code> maps → <code>scene.frag</code> PBR vs toon branch → <code>world.Rendering().SubmitLit</code> (<code>LitSceneSubmitter</code> gather; legacy <code>FillStandardLitSceneFromWorld</code>) → MaterialShowcase regression.</p>
 <p>Continue to <a href="../part-08-particles/index.html">Part VIII — Particles</a>.</p>
 </div>
           <footer class="doc-footer">

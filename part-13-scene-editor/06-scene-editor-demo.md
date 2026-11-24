@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** SceneEditor3DDemo save/load restores five edited entities with matching viewport appearance.
 
+**Spark API note:** SceneEditor3DDemo viewport rendering goes through **`world.Rendering().SubmitLit`** like other lit demos. Mentions of **`FillStandardLitSceneFromWorld`** below mean the same **`LitSceneSubmitter`** gather.
+
 **You will learn:**
 
 - Run SceneEditor3DDemo as full editor vertical slice.
@@ -11,7 +13,7 @@
 
 ## 1. The Problem We Are Solving
 
-Parts XIII chapters 1–5 built serialization, async load, editor shell, and panels separately. **SceneEditor3DDemo** proves they work together — viewport, placement tools, hierarchy/inspector, `SceneSerializer` v4 output, `SceneManager` async finalize, and `FillStandardLitSceneFromWorld` HDR rendering in one executable.
+Parts XIII chapters 1–5 built serialization, async load, editor shell, and panels separately. **SceneEditor3DDemo** proves they work together — viewport, placement tools, hierarchy/inspector, `SceneSerializer` v4 output, `SceneManager` async finalize, and **`world.Rendering().SubmitLit`** HDR rendering in one executable.
 
 The demo encodes **editor-specific policy**: which entities save (placed props and user lights), how project-relative paths resolve through capture callbacks, and how load clears stale placed arrays before async apply. Treat the five-case regression matrix as a merge gate — silent serializer regressions lose artist work without compile errors.
 
@@ -168,7 +170,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **Why:** No editor-specific shaders — validates architecture separation.
 
-**In Spark:** FillStandardLitSceneFromWorld unchanged
+**In Spark:** `world.Rendering().SubmitLit` (legacy `FillStandardLitSceneFromWorld` delegates to same gather)
 
 ## 4. Implementation Walkthrough
 

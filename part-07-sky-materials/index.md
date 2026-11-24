@@ -15,6 +15,6 @@ Render infinite HDR skies, image-based lighting, and per-entity PBR or toon mate
 | 9 | [Material Submit](09-material-submit.md) |
 | 10 | [Material Showcase Demo](10-material-showcase.md) |
 
-**Arc:** `SceneSkyMode` + view-ray equirect → `pipelineSky` sort/bind → `iblEnvironmentLayer` from sky → `MaterialComponent` maps → `scene.frag` PBR vs toon branch → `FillStandardLitSceneFromWorld` gather → MaterialShowcase regression.
+**Arc:** `SceneSkyMode` + view-ray equirect → `pipelineSky` sort/bind → `iblEnvironmentLayer` from sky → `MaterialComponent` maps → `scene.frag` PBR vs toon branch → `world.Rendering().SubmitLit` (`LitSceneSubmitter` gather; legacy `FillStandardLitSceneFromWorld`) → MaterialShowcase regression.
 
 Continue to [Part VIII — Particles](../part-08-particles/index.md).

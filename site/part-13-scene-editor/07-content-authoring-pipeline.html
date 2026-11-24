@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Import a <code>.glb</code> through the editor, save a <code>.sparkscene</code> prefab, and instantiate it in a level scene with correct materials and transforms.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Placed props draw after <strong><code>world.Rendering().SubmitLit</code></strong> rebuilds <code>SceneRenderParams</code> from ECS. Pipeline diagrams may label <strong><code>FillStandardLitSceneFromWorld</code></strong> — that legacy step is <strong><code>LitSceneSubmitter</code></strong> inside <code>WorldRendering</code>.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Trace the full authoring loop: DCC export → asset library → prefab → level scene → runtime expansion.</li>
@@ -1280,7 +1293,7 @@ models/chair.glb#material/1
 <h3 id="step-5-trace-one-draw-to-gpu">Step 5 — Trace one draw to GPU</h3>
 <p>Pick one placed prop. Follow the pipeline from Part VI Chapter 3:</p>
 <pre><code class="language-text">gltf_scene Apply → GltfAssetBinder → MultiMaterialComponent
-→ FillStandardLitSceneFromWorld → PushRigidMeshDraws
+→ world.Rendering().SubmitLit (LitSceneSubmitter / legacy FillStandardLitSceneFromWorld) → PushRigidMeshDraws
 → VulkanCustomMeshPool → VulkanSceneOpaquePass → HDR → tonemap
 </code></pre>
 <p>Confirm in RenderDoc: N draw calls for N submeshes, each with distinct <code>textureLayer</code> push values.</p>

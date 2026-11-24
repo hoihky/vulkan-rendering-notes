@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,22 +1065,26 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> TilemapShowcase2DDemo or Platformer2DDemo runs end-to-end with HUD, animation, and correct pass order.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> 2D integration demos call <strong><code>world.Rendering().SubmitLitWithCamera</code></strong> or <strong><code>SubmitLit</code></strong> with sprite sort options in <strong><code>LitSceneSubmitOptions</code></strong>. Free functions such as <strong><code>SubmitStandardLitSceneFromWorld</code></strong> and <strong><code>FillStandardLitSceneFromWorld</code></strong> forward to the same <strong><code>LitSceneSubmitter</code></strong> fill.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Assemble tilemap, sprites, animation, layers, particles, and screen UI in one demo loop.</li>
-<li>Submit a complete 2D snapshot via SubmitStandardLitSceneFromWorld without Vulkan in gameplay.</li>
+<li>Submit a complete 2D snapshot via <code>world.Rendering().SubmitLitWithCamera</code> without Vulkan in gameplay.</li>
 <li>Use Spark showcase and platformer demos as integration regression targets.</li>
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Individual Part XI features work in isolation until you <strong>integrate</strong> them: one update order, one submit function, one HDR→tonemap→UI present chain. This chapter is the <strong>integration milestone</strong> — not new GPU code, but the production-shaped loop that ships in Spark's 2D demos.</p>
 <p>Build along: run <code>TilemapShowcase2DDemo</code>, trace its <code>Render</code> submit call, then replicate the loop in your engine with your own map and player entity.</p>
 <h2 id="b.concept-deep-dive-one-snapshot-full-hdr-frame-graph">1b. Concept Deep Dive — One Snapshot, Full HDR Frame Graph</h2>
-<h3 id="submitstandardlitscenefromworld-is-the-integration-hub">SubmitStandardLitSceneFromWorld is the integration hub</h3>
-<p>The 2D game pipeline is not a separate renderer — it assembles prior chapters into one <code>SceneRenderParams</code> fill and the existing HDR frame graph. Spark demos call one submit helper that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:</p>
+<h3 id="world.rendering.submitlit-is-the-integration-hub">world.Rendering().SubmitLit is the integration hub</h3>
+<p>The 2D game pipeline is not a separate renderer — it assembles prior chapters into one <code>SceneRenderParams</code> fill and the existing HDR frame graph. Spark demos call <strong><code>WorldRendering</code></strong> submit that gathers camera, lights, meshes, culled sprites, tilemaps, particles, and screen UI:</p>
 <pre><code class="language-cpp">// src/spark/demo/TilemapShowcase2DDemo.cpp (concept)
-Spark::SubmitStandardLitSceneFromWorld(
-        world, params, viewProj, lightDir, lightColor,
-        /* fog, particles, sprite sort mode, ... */);
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(lightDir, lightColor, lightIntensity)
+    .WithSpriteSortMode(SceneSpriteSortMode::SortOrderThenWorldY)
+    .WithParticlesEnabled(true, camRight, camUp);
+world.Rendering().SubmitLitWithCamera(context, opts);
+// Legacy: SubmitStandardLitSceneFromWorld(world, params, ...) — same LitSceneSubmitter
 </code></pre>
 <p>Gameplay <strong>Update</strong> runs physics, animators, and FSM; <strong>Render/Submit</strong> only reads components. Vulkan appears exclusively inside <code>PresentFrame</code>.</p>
 <h3 id="reference-demos-as-regression-targets">Reference demos as regression targets</h3>
@@ -1193,7 +1209,7 @@ screen UI rects/text
 <p><strong>Concept:</strong> Cross-part feature flags</p>
 <p><strong>Decision:</strong> enableParticles param</p>
 <p><strong>Why:</strong> Platformer2D uses particles; pure tile showcase skips collection overhead.</p>
-<p><strong>In Spark:</strong> <code>SceneSubmit.hpp</code> FillStandardLitSceneFromWorld signature.</p>
+<p><strong>In Spark:</strong> <code>LitSceneSubmitOptions</code> + <code>WorldRendering::SubmitLitWithCamera</code> (legacy <code>FillStandardLitSceneFromWorld</code> for particle flag).</p>
 <h3 id="tile-definitions-own-collision-shape">Tile definitions own collision shape</h3>
 <p><strong>Concept:</strong> Collision vs render separation</p>
 <p><strong>Decision:</strong> Tile definitions own collision shape</p>
@@ -1375,7 +1391,7 @@ SceneSubmitDetail::StableSortSprites(params.sprites, params.spriteSortMode);
                         </li>
                         
                         <li class="toc-h3">
-                          <a href="#submitstandardlitscenefromworld-is-the-integration-hub">SubmitStandardLitSceneFromWorld is the integration hub</a>
+                          <a href="#worldrenderingsubmitlit-is-the-integration-hub">world.Rendering().SubmitLit is the integration hub</a>
                         </li>
                         
                         <li class="toc-h3">

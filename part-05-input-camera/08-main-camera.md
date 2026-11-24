@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** `TryBuildSceneCameraMatrices` selects the highest-priority enabled `CameraComponent` or `Camera2DComponent` and builds `viewProj` for scene submit.
 
+**Spark API note:** ECS camera resolution pairs with **`world.Rendering().SubmitLitWithCamera`** or **`SubmitLit`** after manual matrix build. Legacy helpers such as **`SubmitStandardLitSceneFromWorldWithCamera`** and **`FillStandardLitSceneFromWorld`** delegate to the same **`LitSceneSubmitter`** pipeline.
+
 **You will learn:**
 
 - Attach perspective cameras to ECS `GameObject` transforms.
@@ -190,16 +192,16 @@ Called before draw gather — camera must exist or submit aborts.
 ### SubmitStandardLitSceneFromWorldWithCamera
 
 ```cpp
-bool SubmitStandardLitSceneFromWorldWithCamera(GameWorld& world, IEngineContext& context, ...) {
-    context.GetFramebufferSize(fbW, fbH);
-    if (!TryFillSceneCameraFromWorld(world, fbW, fbH, params)) return false;
-    FillStandardLitSceneFromWorld(world, context, params.viewProjection, params.cameraPositionWorld, ...);
-    context.SetSceneRenderParams(params);
-    return true;
-}
+// Preferred: camera entity + options bundle
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(sunDir, sunColor, sunIntensity).WithAmbient(ambientColor);
+if (!world.Rendering().SubmitLitWithCamera(context, opts)) return false;
+
+// Legacy one-shot (still LitSceneSubmitter inside):
+// SubmitStandardLitSceneFromWorldWithCamera(world, context, ...);
 ```
 
-One call: resolve camera → build draws → publish snapshot. `Platformer2DDemo::OnRender` pattern.
+Resolve camera → build draws → publish snapshot. `Platformer2DDemo::OnRender` uses the `WorldRendering` path in current Spark.
 
 ### Manual vs auto paths
 

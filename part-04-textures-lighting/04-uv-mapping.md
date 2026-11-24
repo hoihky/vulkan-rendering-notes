@@ -267,7 +267,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 ### Spark Files We Touch This Chapter
 
-- `include/spark/scene/Mesh.hpp`
+- `include/spark/scene/mesh/Mesh.hpp`
 - `include/spark/render/scene/VulkanSceneVertexLayout.hpp`
 - `src/spark/render/gpu/VulkanGpuMeshInterleaved.cpp`
 - `shaders/scene.vert`, `shaders/scene.frag`

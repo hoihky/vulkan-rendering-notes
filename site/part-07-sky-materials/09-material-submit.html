@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,16 +1065,17 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Demo uses standard submit; draw and texture layer counts stable frame-to-frame.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Production demos call <strong><code>world.Rendering().SubmitLit</code></strong> with <strong><code>LitSceneSubmitOptions</code></strong> (Part II Chapter 11). The legacy free function <strong><code>FillStandardLitSceneFromWorld</code></strong> still exists and delegates to the same <strong><code>LitSceneSubmitter</code></strong> gather — snippets below use that name when tracing internal steps.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
-<li>Call FillStandardLitSceneFromWorld to flatten ECS meshes and materials.</li>
+<li>Call lit scene submit to flatten ECS meshes and materials (<code>world.Rendering().SubmitLit</code> in demos).</li>
 <li>Explain FindOrAddSceneTexture dedup and layer index assignment.</li>
 <li>Trace sky vs standard material paths in RigidDrawableSubmitSink.</li>
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Components live in <code>GameWorld</code>; Vulkan records from <strong>SceneRenderParams</strong>. Submit is the once-per-frame bridge —
 walk active entities, apply materials, register textures, sort draws, resolve IBL layer — immutable before GPU work.</p>
-<p>Build along: switch a demo from manual drawList assembly to <code>FillStandardLitSceneFromWorld</code> and verify counts match.</p>
+<p>Build along: switch a demo from manual drawList assembly to <code>world.Rendering().SubmitLit</code> and verify counts match.</p>
 <h3 id="what-is-submit-the-bridge-every-beginner-must-understand">What is "submit"? (the bridge every beginner must understand)</h3>
 <p>Your game stores objects in an <strong>Entity Component System</strong> (<code>GameWorld</code>, <code>GameObject</code>, components). Vulkan has never heard of <code>GameObject</code>. Vulkan only understands:</p>
 <ul>
@@ -1080,12 +1093,12 @@ OOP, components              plain structs, arrays           vkCmd*
 <li><strong>SceneRenderParams is a snapshot</strong> — copy or build fresh each frame; do not mutate while GPU reads last frame's data.</li>
 <li><strong>No Vulkan types in SceneRenderParams</strong> — only <code>SceneDrawItem</code>, texture layer ints, matrices.</li>
 </ol>
-<p><code>FillStandardLitSceneFromWorld</code> is the main entry point demos call after filling the camera:</p>
+<p><code>world.Rendering().SubmitLit</code> is the main entry point demos call after filling the camera (legacy <code>FillStandardLitSceneFromWorld</code> forwards to the same code):</p>
 <pre><code class="language-cpp">// Typical demo OnRender pattern (concept)
-SceneRenderParams params{};
-params.camera = mainCamera.BuildSceneCamera(fbW, fbH);
-FillStandardLitSceneFromWorld(world, params, engineContext);
-context.SetSceneRenderParams(params);
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(sunDir, sunColor, sunIntensity).WithAmbient(ambientColor);
+world.Rendering().SubmitLit(context, viewProjection, cameraPositionWorld, opts);
+// SubmitLit calls SetSceneRenderParams internally — no manual params publish needed
 </code></pre>
 <p>After this call, <code>params.draws</code> contains every opaque mesh, <code>params.transparentDraws</code> contains sorted transparent meshes, and <code>params.sceneTextures</code> lists unique textures with assigned layers.</p>
 <h3 id="inside-fillstandardlitscenefromworld-conceptual-steps">Inside FillStandardLitSceneFromWorld (conceptual steps)</h3>
@@ -1402,9 +1415,10 @@ void OnDrawable(
     item.albedo = alb;
 </code></pre>
 <h3 id="step-3-wire-demo-onrender">Step 3 — Wire demo OnRender</h3>
-<pre><code class="language-cpp">FillStandardLitSceneFromWorld(world, context, viewProj, camPos,
-    lightDir, lightColor, lightIntensity, ambient, …, params);
-context.SetSceneRenderParams(params);
+<pre><code class="language-cpp">LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(lightDir, lightColor, lightIntensity).WithAmbient(ambient);
+world.Rendering().SubmitLit(context, viewProj, camPos, opts);
+// Or world.Rendering().FillLit(...) if you patch SceneRenderParams before record
 </code></pre>
 <p>Renderer reads snapshot only — no GameWorld access during record.</p>
 <h3 id="step-4-log-texture-dedup">Step 4 — Log texture dedup</h3>
@@ -1414,7 +1428,7 @@ context.SetSceneRenderParams(params);
 <h3 id="step-5-hide-entity-test">Step 5 — Hide entity test</h3>
 <p><code>SetActive(false)</code> on meshed entity — draw count drops next frame; texture count may stay if sky still references same atlas.</p>
 <h3 id="step-6-milestone-full-gather-without-custom-demo-loop">Step 6 — Milestone — full gather without custom demo loop</h3>
-<p>Replace hand-built drawList in a demo with <code>FillStandardLitSceneFromWorld</code> — scene should match prior visuals including materials and sky sort order.</p>
+<p>Replace hand-built drawList in a demo with <code>world.Rendering().SubmitLit</code> — scene should match prior visuals including materials and sky sort order.</p>
 <h2 id="how-this-connects-to-the-rest-of-your-engine">5. How This Connects to the Rest of Your Engine</h2>
 <p>Part <strong>IV</strong> renderer consumes <code>params.draws</code> and <code>sceneTextures</code>. <strong>IBL Basics</strong> uses ResolveIblEnvironmentLayer
 at end of fill. <strong>Material Showcase Demo</strong> is the visual regression target for this gather path.</p>
@@ -1434,7 +1448,7 @@ at end of fill. <strong>Material Showcase Demo</strong> is the visual regression
 <li>Trace <code>ResolveIblEnvironmentLayer</code> when sky has no texture bound.</li>
 </ol>
 <h2 id="summary">Summary</h2>
-<p>FillStandardLitSceneFromWorld and ApplyMaterialComponentToSceneDrawItem flatten ECS materials into sorted draw items and deduplicated texture layers.</p>
+<p><code>LitSceneSubmitter</code> (via <code>world.Rendering().SubmitLit</code> or legacy <code>FillStandardLitSceneFromWorld</code>) and <code>ApplyMaterialComponentToSceneDrawItem</code> flatten ECS materials into sorted draw items and deduplicated texture layers.</p>
 <hr>
 <p>Next: <a href="10-material-showcase.html">Material Showcase Demo</a>.</p>
 </div>

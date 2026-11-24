@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> <code>TryBuildSceneCameraMatrices</code> selects the highest-priority enabled <code>CameraComponent</code> or <code>Camera2DComponent</code> and builds <code>viewProj</code> for scene submit.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> ECS camera resolution pairs with <strong><code>world.Rendering().SubmitLitWithCamera</code></strong> or <strong><code>SubmitLit</code></strong> after manual matrix build. Legacy helpers such as <strong><code>SubmitStandardLitSceneFromWorldWithCamera</code></strong> and <strong><code>FillStandardLitSceneFromWorld</code></strong> delegate to the same <strong><code>LitSceneSubmitter</code></strong> pipeline.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Attach perspective cameras to ECS <code>GameObject</code> transforms.</li>
@@ -1186,15 +1199,15 @@ Matrix4 ViewProjection(const GameObject&amp; owner, float aspect) const {
 </code></pre>
 <p>Called before draw gather — camera must exist or submit aborts.</p>
 <h3 id="submitstandardlitscenefromworldwithcamera">SubmitStandardLitSceneFromWorldWithCamera</h3>
-<pre><code class="language-cpp">bool SubmitStandardLitSceneFromWorldWithCamera(GameWorld&amp; world, IEngineContext&amp; context, ...) {
-    context.GetFramebufferSize(fbW, fbH);
-    if (!TryFillSceneCameraFromWorld(world, fbW, fbH, params)) return false;
-    FillStandardLitSceneFromWorld(world, context, params.viewProjection, params.cameraPositionWorld, ...);
-    context.SetSceneRenderParams(params);
-    return true;
-}
+<pre><code class="language-cpp">// Preferred: camera entity + options bundle
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(sunDir, sunColor, sunIntensity).WithAmbient(ambientColor);
+if (!world.Rendering().SubmitLitWithCamera(context, opts)) return false;
+
+// Legacy one-shot (still LitSceneSubmitter inside):
+// SubmitStandardLitSceneFromWorldWithCamera(world, context, ...);
 </code></pre>
-<p>One call: resolve camera → build draws → publish snapshot. <code>Platformer2DDemo::OnRender</code> pattern.</p>
+<p>Resolve camera → build draws → publish snapshot. <code>Platformer2DDemo::OnRender</code> uses the <code>WorldRendering</code> path in current Spark.</p>
 <h3 id="manual-vs-auto-paths">Manual vs auto paths</h3>
 <table class="table">
 <thead>

@@ -55,7 +55,7 @@ struct SceneDrawItem {
 | Transform | `model` | Push constants at record time |
 | Geometry id | `mesh`, `customMesh` | Renderer resolves to buffer ranges |
 | Material | `albedo`, `textureLayer`, `metallic` | UBO + push constants + texture array |
-| Routing | `opacity`, `skyMode` | Opaque vs transparent vs sky pass |
+| Routing | `opacity`, `skyMode`, `renderQueue`, `drawableSort` | Opaque vs transparent vs sky; layer sort (Part XI) |
 
 ### SetSceneRenderParams — copy, merge textures, resolve lighting
 

@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Skinned character loops walk animation with smooth clip crossfade on manual switch.
 
+**Spark API note:** Joint palettes must be finalized in **`OnUpdate` before** **`world.Rendering().SubmitLit`** runs in **`OnRender`**. Legacy docs say “before `FillStandardLitSceneFromWorld`” — that name delegates to the same **`LitSceneSubmitter`** gather.
+
 **You will learn:**
 
 - Advance clip time with loop modes on AnimatorComponent.
@@ -330,7 +332,7 @@ auto& anim = *go->AddComponent<AnimatorComponent>(asset.skeleton, asset.walkClip
 anim.SetLoopMode(AnimLoopMode::Loop);
 ```
 
-Ensure OnUpdate runs before FillStandardLitSceneFromWorld.
+Ensure OnUpdate runs before `world.Rendering().SubmitLit` (or legacy `FillStandardLitSceneFromWorld`).
 
 ### Step 6 — Scrub time in debug UI
 

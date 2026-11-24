@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> ParticleDemo running with four distinct effects and live slider tuning.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Production lit demos merge particles through <strong><code>world.Rendering().SubmitLit</code></strong>; ParticleDemo may hand-build <code>params</code> for teaching. <strong><code>FillStandardLitSceneFromWorld</code></strong> names the same merge logic inside <strong><code>LitSceneSubmitter</code></strong>.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Run Spark ParticleDemo with four preset emitter archetypes.</li>

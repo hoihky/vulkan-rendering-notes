@@ -51,14 +51,26 @@ Filled by `TryFillSceneCameraFromWorld` and lighting resolve helpers at start of
 
 | Array | Pass |
 |-------|------|
-| `draws` / `transparentDraws` | Forward scene opaque/trans |
+| `draws` / `transparentDraws` | Forward scene opaque/trans (`SceneDrawListSorter` partitions transparent) |
+| `meshInstancedBatches` / `meshInstances` | Rigid instanced path (`scene_instanced.vert`, SSBO binding 16) |
 | `sprites` | HDR sprite pass |
 | `tilemapTiles` + tilemap draws | Tilemap pass |
 | `particles` | Particle pass |
 | `pointLights` / `spotLights` | Cluster SSBO upload |
 | `screenUi` | Post-tonemap UI |
 
-Sort policies (`SceneSpriteSortMode`, blend modes) live on params — submit sorts before record.
+Sort policies (`SceneSpriteSortMode`, `SceneTransparentSortMode`, per-draw `drawableSort` / `SceneRenderQueue`) live on params — submit sorts before record.
+
+### Lit submit API (Spark main)
+
+| Call | When |
+|------|------|
+| `world.Rendering().SubmitLit` | Default 3D demo render — fill + `SetSceneRenderParams` |
+| `world.Rendering().SubmitLitWithCamera` | ECS main camera resolution |
+| `world.Rendering().FillLit` | Editor: patch `SceneRenderParams` after gather |
+| `FillStandardLitSceneFromWorld` | Legacy; same as `FillLit` internally |
+
+See Part II Chapter 11 and Spark `docs/LIT_RENDER_API.md`.
 
 ### Texture array packing
 

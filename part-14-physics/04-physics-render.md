@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Player sprite and debug collider align same frame with no visible physics lag.
 
+**Spark API note:** Scene gather must run **after** physics **`Simulate`** — production code calls **`world.Rendering().SubmitLit`** in **`OnRender`**. **`FillStandardLitSceneFromWorld`** is the legacy name for that same **`LitSceneSubmitter`** step.
+
 **You will learn:**
 
 - Enforce physics-before-submit update order in engine tick.
@@ -126,11 +128,11 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **In Spark:** `Rigidbody2DComponent` body type
 
-### Simulate before FillStandardLitSceneFromWorld
+### Simulate before world.Rendering().SubmitLit
 
 **Concept:** One-frame lag diagnosis
 
-**Decision:** Simulate before FillStandardLitSceneFromWorld
+**Decision:** Simulate before `world.Rendering().SubmitLit` (legacy `FillStandardLitSceneFromWorld`)
 
 **Why:** EditorApplication and demos gather scene after physics when simulate enabled.
 
@@ -252,7 +254,7 @@ SceneSubmit caching between frames without invalidating after Simulate reproduce
 - **Double simulate per frame** — 2× gravity if called from Update and fixed tick both.
 - **Editing transform during simulate** — race; edit when paused or entity is kinematic.
 - **3D and 2D both on one entity** — conflicting transform writes.
-- **Simulate after FillStandardLitSceneFromWorld** — most common lag bug in student engines.
+- **Simulate after `world.Rendering().SubmitLit`** — most common lag bug in student engines (legacy name `FillStandardLitSceneFromWorld`).
 - **Camera follow before simulate** — one frame camera lag separate from sprite lag.
 
 **Debugging workflow:** log transform Y after Simulate and at SceneSubmit — must match. Binary search call order: comment out subsystems until lag disappears.

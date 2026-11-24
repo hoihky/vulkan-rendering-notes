@@ -2,9 +2,11 @@
 
 > **Build-Along Milestone:** Demo uses standard submit; draw and texture layer counts stable frame-to-frame.
 
+**Spark API note:** Production demos call **`world.Rendering().SubmitLit`** with **`LitSceneSubmitOptions`** (Part II Chapter 11). The legacy free function **`FillStandardLitSceneFromWorld`** still exists and delegates to the same **`LitSceneSubmitter`** gather — snippets below use that name when tracing internal steps.
+
 **You will learn:**
 
-- Call FillStandardLitSceneFromWorld to flatten ECS meshes and materials.
+- Call lit scene submit to flatten ECS meshes and materials (`world.Rendering().SubmitLit` in demos).
 - Explain FindOrAddSceneTexture dedup and layer index assignment.
 - Trace sky vs standard material paths in RigidDrawableSubmitSink.
 
@@ -13,7 +15,7 @@
 Components live in `GameWorld`; Vulkan records from **SceneRenderParams**. Submit is the once-per-frame bridge —
 walk active entities, apply materials, register textures, sort draws, resolve IBL layer — immutable before GPU work.
 
-Build along: switch a demo from manual drawList assembly to `FillStandardLitSceneFromWorld` and verify counts match.
+Build along: switch a demo from manual drawList assembly to `world.Rendering().SubmitLit` and verify counts match.
 
 ### What is "submit"? (the bridge every beginner must understand)
 
@@ -36,14 +38,14 @@ Rules every engine should follow:
 2. **SceneRenderParams is a snapshot** — copy or build fresh each frame; do not mutate while GPU reads last frame's data.
 3. **No Vulkan types in SceneRenderParams** — only `SceneDrawItem`, texture layer ints, matrices.
 
-`FillStandardLitSceneFromWorld` is the main entry point demos call after filling the camera:
+`world.Rendering().SubmitLit` is the main entry point demos call after filling the camera (legacy `FillStandardLitSceneFromWorld` forwards to the same code):
 
 ```cpp
 // Typical demo OnRender pattern (concept)
-SceneRenderParams params{};
-params.camera = mainCamera.BuildSceneCamera(fbW, fbH);
-FillStandardLitSceneFromWorld(world, params, engineContext);
-context.SetSceneRenderParams(params);
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(sunDir, sunColor, sunIntensity).WithAmbient(ambientColor);
+world.Rendering().SubmitLit(context, viewProjection, cameraPositionWorld, opts);
+// SubmitLit calls SetSceneRenderParams internally — no manual params publish needed
 ```
 
 After this call, `params.draws` contains every opaque mesh, `params.transparentDraws` contains sorted transparent meshes, and `params.sceneTextures` lists unique textures with assigned layers.
@@ -434,9 +436,10 @@ void ApplyMaterialComponentToSceneDrawItem(
 ### Step 3 — Wire demo OnRender
 
 ```cpp
-FillStandardLitSceneFromWorld(world, context, viewProj, camPos,
-    lightDir, lightColor, lightIntensity, ambient, …, params);
-context.SetSceneRenderParams(params);
+LitSceneSubmitOptions opts{};
+opts.WithDirectionalLight(lightDir, lightColor, lightIntensity).WithAmbient(ambient);
+world.Rendering().SubmitLit(context, viewProj, camPos, opts);
+// Or world.Rendering().FillLit(...) if you patch SceneRenderParams before record
 ```
 
 Renderer reads snapshot only — no GameWorld access during record.
@@ -455,7 +458,7 @@ Two cubes sharing brick texture should produce **one** layer index.
 
 ### Step 6 — Milestone — full gather without custom demo loop
 
-Replace hand-built drawList in a demo with `FillStandardLitSceneFromWorld` — scene should match prior visuals including materials and sky sort order.
+Replace hand-built drawList in a demo with `world.Rendering().SubmitLit` — scene should match prior visuals including materials and sky sort order.
 
 ## 5. How This Connects to the Rest of Your Engine
 
@@ -479,7 +482,7 @@ at end of fill. **Material Showcase Demo** is the visual regression target for t
 
 ## Summary
 
-FillStandardLitSceneFromWorld and ApplyMaterialComponentToSceneDrawItem flatten ECS materials into sorted draw items and deduplicated texture layers.
+`LitSceneSubmitter` (via `world.Rendering().SubmitLit` or legacy `FillStandardLitSceneFromWorld`) and `ApplyMaterialComponentToSceneDrawItem` flatten ECS materials into sorted draw items and deduplicated texture layers.
 
 ---
 

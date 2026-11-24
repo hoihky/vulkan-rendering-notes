@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** `SceneLightingProfile::Outdoor` with `useTimeOfDay` drives sun direction, color, intensity, and hemisphere ambient through `ApplyTimeOfDayLighting`.
 
+**Spark API note:** Time-of-day drivers run during **`world.Rendering().SubmitLit`** / **`FillLit`** before `SceneLightingResolver::Resolve`. **`FillStandardLitSceneFromWorld`** is the legacy wrapper around that same **`LitSceneSubmitter`** path.
+
 **You will learn:**
 
 - Select among Default, Outdoor, Interior, and NightInterior presets.

@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Textured rigid glTF prop renders with correct winding and scale on the ground.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> After import, meshes reach the GPU through <strong><code>world.Rendering().SubmitLit</code></strong>, which walks ECS via <strong><code>LitSceneSubmitter</code></strong>. <strong><code>FillStandardLitSceneFromWorld</code></strong> is the legacy name for that same per-frame gather.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Trace cgltf parse → AppendPrimitive → Mesh for rigid glTF.</li>
@@ -1144,7 +1157,7 @@ read TEXCOORD_0 → Vector2 uv (needed for textures)
 <p><strong>Step 7 — Attach to ECS</strong></p>
 <p><code>MeshComponent</code> holds <code>SharedPtr&lt;Mesh&gt;</code>. <code>MaterialComponent</code> or <code>MultiMaterialComponent</code> holds texture pointers and scalar PBR values.</p>
 <p><strong>Step 8 — Scene submit (every frame)</strong></p>
-<p><code>FillStandardLitSceneFromWorld</code> walks entities, builds <code>SceneDrawItem</code> list, assigns texture <strong>array layer indices</strong>.</p>
+<p><code>world.Rendering().SubmitLit</code> (legacy <code>FillStandardLitSceneFromWorld</code>) walks entities, builds <code>SceneDrawItem</code> list, assigns texture <strong>array layer indices</strong>.</p>
 <p><strong>Step 9 — GPU upload</strong></p>
 <p><code>VulkanCustomMeshPool</code> copies vertices/indices to <code>VkBuffer</code>. <code>VulkanSceneTextureUploader</code> copies texels to a <code>sampler2DArray</code>.</p>
 <p><strong>Step 10 — Draw</strong></p>

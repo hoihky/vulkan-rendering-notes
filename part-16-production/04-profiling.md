@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** ImGui overlay shows FPS and section timings; RenderDoc groups passes by debug label.
 
+**Spark API note:** When timing scene gather, wrap **`world.Rendering().SubmitLit`** or **`FillLit`** — not only the legacy **`FillStandardLitSceneFromWorld`** symbol, which forwards to **`LitSceneSubmitter`** anyway.
+
 **You will learn:**
 
 - Instrument CPU subsystems with scoped timers around submit and record.
@@ -240,7 +242,8 @@ struct FrameTiming {
 
 ```cpp
 ScopedTimer t(&frameStats.submitMs);
-FillStandardLitSceneFromWorld(...);
+world.Rendering().SubmitLit(context, viewProj, cameraPos, opts);
+// Or wrap LitSceneSubmitter::Fill via legacy FillStandardLitSceneFromWorld(...)
 ```
 
 Log top 3 sections once per second during TerrainDemo.

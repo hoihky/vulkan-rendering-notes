@@ -38,7 +38,7 @@ finalColor = sourceColor × α + destinationColor × (1 − α)
 2. **Depth write** — if transparent pixels write depth, they block objects behind incorrectly.
 3. **Separate pipeline** — Spark uses `pipelineLitTransparent` with blend ON, depth write OFF.
 
-Spark sorts `transparentDraws` **back-to-front** from the camera before recording. Opaque draws skip sorting (depth test handles occlusion).
+Spark sorts `transparentDraws` **back-to-front** before recording when `SceneRenderParams::transparentSortMode` is `BackToFrontByDepth` (default). **`SceneDrawListSorter`** partitions draws from the merged rigid+skinned list using opacity, `alphaBlend`, and glTF transmission — not only `opacity < 1`. Opaque draws use separate stable sort including `renderQueue` and `drawableSort` (Part II Ch. 11 / Part XI).
 
 **HDR resume pass (Part X):** when any transparent mesh exists, Spark copies opaque HDR color first so transmission shaders can refract — advanced case, but the blend rules above still apply.
 

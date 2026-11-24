@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Textured rigid glTF prop renders with correct winding and scale on the ground.
 
+**Spark API note:** After import, meshes reach the GPU through **`world.Rendering().SubmitLit`**, which walks ECS via **`LitSceneSubmitter`**. **`FillStandardLitSceneFromWorld`** is the legacy name for that same per-frame gather.
+
 **You will learn:**
 
 - Trace cgltf parse → AppendPrimitive → Mesh for rigid glTF.
@@ -95,7 +97,7 @@ Each primitive appends a `MeshSubmesh` with `indexOffset`, `indexCount`, `materi
 
 **Step 8 — Scene submit (every frame)**
 
-`FillStandardLitSceneFromWorld` walks entities, builds `SceneDrawItem` list, assigns texture **array layer indices**.
+`world.Rendering().SubmitLit` (legacy `FillStandardLitSceneFromWorld`) walks entities, builds `SceneDrawItem` list, assigns texture **array layer indices**.
 
 **Step 9 — GPU upload**
 

@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Each frame, `SceneSubmit` fills `SceneRenderParams` with sun, punctual lights, and resolved profile settings before GPU upload.
 
+**Spark API note:** Lit scenes submit with **`world.Rendering().SubmitLit`** and **`LitSceneSubmitOptions`** (Part II Chapter 11). This chapter walks the light-gather steps inside **`LitSceneSubmitter`**; **`FillStandardLitSceneFromWorld`** is the legacy name for the same fill.
+
 **You will learn:**
 
 - Trace ECS components to `SceneRenderParams` light fields.
@@ -92,7 +94,7 @@ Gather only fills `SceneRenderParams`. `VulkanSceneUniformWriter::Write` packs s
 
 ### Production entry point
 
-`SubmitStandardLitSceneFromWorldWithCamera` calls `TryFillSceneCameraFromWorld`, then `FillStandardLitSceneFromWorld` with resolved camera matrices — the path `Platformer2DDemo` and ECS 3D scenes share. Manual demos (`ThreeDDemo`) fill `params` directly but use the same light structs.
+`world.Rendering().SubmitLitWithCamera` resolves the main camera, then runs **`LitSceneSubmitter::Fill`** — the path `Platformer2DDemo` and ECS 3D scenes share. Legacy `SubmitStandardLitSceneFromWorldWithCamera` / `FillStandardLitSceneFromWorld` wrap the same gather. Manual demos (`ThreeDDemo`) fill `params` directly but use the same light structs.
 
 ## 2. Core Concepts
 

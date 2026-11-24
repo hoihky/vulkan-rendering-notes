@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1051,8 +1063,9 @@
           </header>
           <div class="doc-body"><h1 id="submitting-a-scene-from-code">Submitting a Scene from Code</h1>
 <blockquote class="blockquote">
-<p><strong>Build-Along Milestone:</strong> You can fill <code>SceneRenderParams</code> manually or via <code>FillStandardLitSceneFromWorld</code> and see a lit 3D scene in SparkDemo.</p>
+<p><strong>Build-Along Milestone:</strong> You can fill <code>SceneRenderParams</code> manually or via <code>world.Rendering().SubmitLit</code> and see a lit 3D scene in a Spark demo.</p>
 </blockquote>
+<p><strong>Spark API note (main branch):</strong> Production demos use <strong><code>world.Rendering().SubmitLit</code></strong> and <strong><code>LitSceneSubmitOptions</code></strong>, not the older <code>FillStandardLitSceneFromWorld</code> free function. This chapter teaches the snapshot contract; <a href="11-world-rendering-lit-submit.html">Chapter 11</a> documents the current blessed API. Legacy helpers still delegate to the same <code>LitSceneSubmitter</code> pipeline.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Submit draws without ECS using manual <code>SceneRenderParams</code>.</li>
@@ -1061,7 +1074,7 @@
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
 <p>Chapter 8 hand-authored floor and cube items. Real demos use <strong>dozens of entities</strong> with meshes, materials, and cameras. Duplicating that logic per demo is unmaintainable.</p>
-<p>Spark centralizes ECS → snapshot translation in <strong><code>SceneSubmit</code></strong> (<code>FillStandardLitSceneFromWorld</code>, <code>SubmitStandardLitSceneFromWorld</code>). This chapter closes Part II by showing both paths:</p>
+<p>Spark centralizes ECS → snapshot translation in <strong><code>LitSceneSubmitter</code></strong>, reached through <strong><code>world.Rendering().SubmitLit</code></strong> / <strong><code>FillLit</code></strong> (see Chapter 11). Older names <code>FillStandardLitSceneFromWorld</code> and <code>SceneSubmit::*</code> are compatibility wrappers around the same code. This chapter closes Part II by showing both paths:</p>
 <ol>
 <li><strong>Manual</strong> — learn the data contract</li>
 <li><strong>Submit helper</strong> — how Spark demos scale</li>
@@ -1074,7 +1087,8 @@
 3. game-&gt;OnRender(frame, ctx):
      a. Build SceneRenderParams params
      b. params.camera = ...      — view + projection matrices
-     c. FillStandardLitSceneFromWorld(world, params, ctx)
+     c. world.Rendering().SubmitLit(ctx, viewProj, cameraPos, opts)
+        OR FillLit / legacy FillStandardLitSceneFromWorld
         OR manually push SceneDrawItem entries
      d. ctx.SetSceneRenderParams(params)
 4. renderer-&gt;PresentFrame()
@@ -1391,9 +1405,9 @@ drawList.PushBack(item);
 <li>What happens if you call <code>SetSceneRenderParams</code> in <code>OnUpdate</code> instead of <code>OnRender</code>?</li>
 </ol>
 <h2 id="summary">Summary</h2>
-<p>Part II completes the path from game code to pixels: build <code>SceneRenderParams</code> manually or via <code>SceneSubmit</code>, push through <code>IEngineContext</code>, and let <code>VulkanRenderer</code> record indexed draws in the HDR pass. You now have the basic forward pipeline — Parts III onward improve shaders, materials, and frame graph nodes without changing this contract.</p>
+<p>Part II completes the path from game code to pixels: build <code>SceneRenderParams</code> manually or via <strong><code>world.Rendering().SubmitLit</code></strong> (Chapter 11), push through <code>IEngineContext</code> when using <code>FillLit</code>, and let <code>VulkanRenderer</code> record indexed draws in the HDR pass.</p>
 <hr>
-<p>Next: <a href="../part-03-shaders/index.html">Part III — Shader Essentials</a>.</p>
+<p>Next: <a href="11-world-rendering-lit-submit.html">WorldRendering and Lit Scene Submit</a>.</p>
 </div>
           <footer class="doc-footer">
             <p>Generated by <strong>hoihky</strong> with <strong>MDWeb</strong> and with assistance from <strong>AI</strong></p>

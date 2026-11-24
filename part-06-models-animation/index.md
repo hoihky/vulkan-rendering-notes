@@ -14,7 +14,8 @@ Load static and skinned glTF assets, cache them on the CPU, upload dynamic geome
 | 8 | [Animation Clips](08-animator.md) |
 | 9 | [GPU Skinning](09-gpu-skinning.md) |
 | 10 | [Locomotion FSM](10-locomotion-fsm.md) |
+| 11 | [Mesh LOD and GPU Instancing](11-mesh-lod-and-instancing.md) |
 
-**Arc:** CPU `Mesh` / `SkinnedMesh` → path-keyed `GameWorldAssetCache` → per-frame `VulkanCustomMeshPool` pack → `AnimatorComponent` joint palette → `SkinSSBO` in `scene.vert` → `Character3DAnimFsm` selects walk/run clips.
+**Arc:** CPU `Mesh` / `SkinnedMesh` → path-keyed `GameWorldAssetCache` → per-frame `VulkanCustomMeshPool` pack → `AnimatorComponent` joint palette → `SkinSSBO` in `scene.vert` → `Character3DAnimFsm` selects walk/run clips → optional `MeshLodComponent` / `RigidMeshInstancedBatchComponent` at submit.
 
 Continue to [Part VII — Sky and Materials](../part-07-sky-materials/index.md).

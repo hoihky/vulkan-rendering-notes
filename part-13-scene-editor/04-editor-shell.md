@@ -2,12 +2,14 @@
 
 > **Build-Along Milestone:** Editor viewport renders bootstrap scene with working fly camera and panel shell.
 
+**Spark API note:** Editor viewport rendering uses **`world.Rendering().SubmitLit`** / **`FillLit`** like runtime demos. This chapter still references **`FillStandardLitSceneFromWorld`** when diffing against older snippets — that name delegates to **`LitSceneSubmitter`**.
+
 **You will learn:**
 
 - Structure an editor shell around the existing engine Update/Render loop.
 - Bootstrap a default scene for immediate viewport feedback.
 - Share EditorContext across panels without global state.
-- Use the same FillStandardLitSceneFromWorld submit path as runtime demos.
+- Use the same `world.Rendering().SubmitLit` submit path as runtime demos.
 - Apply dock viewport scissor so 3D scene draws only in the central panel region.
 
 ## 1. The Problem We Are Solving
@@ -53,7 +55,7 @@ Panels receive a shared `EditorContext` each frame — world pointer, selection,
 
 ### Submit path matches runtime demos
 
-`OnRender` builds `SceneRenderParams` via the same `FillStandardLitSceneFromWorld` path as ThreeDDemo. The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.
+`OnRender` builds `SceneRenderParams` via the same `world.Rendering().SubmitLit` path as ThreeDDemo (legacy `FillStandardLitSceneFromWorld`). The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.
 
 ## 2. Core Concepts
 
@@ -81,7 +83,7 @@ F1 toggles cursor capture; scroll zoom respects `UiConsumesGamePointer` so panel
 
 ### Submit path unchanged
 
-`OnRender` calls `FillStandardLitSceneFromWorld` → populates `SceneRenderParams` → engine presents. Same function family as ThreeDDemo and SceneEditor3DDemo runtime viewport. World viewport scissor from dock layout clips 3D rendering to the central panel region — UI draws afterward via `PaintUiCanvases`.
+`OnRender` calls `world.Rendering().SubmitLit` (or legacy `FillStandardLitSceneFromWorld`) → populates `SceneRenderParams` → engine presents. Same function family as ThreeDDemo and SceneEditor3DDemo runtime viewport. World viewport scissor from dock layout clips 3D rendering to the central panel region — UI draws afterward via `PaintUiCanvases`.
 
 Validates architecture: editor is a **client** of scene submit, not a fork of VulkanRenderer.
 
@@ -93,7 +95,7 @@ Validates architecture: editor is a **client** of scene submit, not a fork of Vu
 
 ```text
 OnUpdate: UI input → TickPanels → fly camera
-OnRender: FillStandardLitSceneFromWorld → scissor → PaintUiCanvases
+OnRender: world.Rendering().SubmitLit → scissor → PaintUiCanvases
 ```
 
 | Mode | Simulate | Transform authority |
@@ -145,11 +147,11 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **In Spark:** `UpdateViewportCamera` in EditorApplication.cpp
 
-### FillStandardLitSceneFromWorld in OnRender
+### world.Rendering().SubmitLit in OnRender
 
 **Concept:** Submit path unchanged
 
-**Decision:** FillStandardLitSceneFromWorld in OnRender
+**Decision:** `world.Rendering().SubmitLit` in OnRender (legacy `FillStandardLitSceneFromWorld`)
 
 **Why:** Identical lit gather as runtime; dock scissor for panel layout only.
 
@@ -283,7 +285,7 @@ void EditorApplication::OnUpdate(const FrameTiming& timing, Scene& scene, IEngin
 
 ### Step 6 — Confirm OnRender submit
 
-FillStandardLitSceneFromWorld, viewport scissor from dock, PaintUiCanvases for editor chrome.
+world.Rendering().SubmitLit, viewport scissor from dock, PaintUiCanvases for editor chrome.
 
 *OnRender scene submit + UI paint*
 
@@ -291,7 +293,9 @@ FillStandardLitSceneFromWorld, viewport scissor from dock, PaintUiCanvases for e
 // src/spark/editor/EditorApplication.cpp (lines 243–290)
 void EditorApplication::OnRender(Scene& scene, IEngineContext& context) {
     HighlightSelection(scene);
-    FillStandardLitSceneFromWorld(scene.GetWorld(), context, viewProj, viewportCamera.position, ...);
+    LitSceneSubmitOptions opts{}; /* lights, culling, … */
+    world.Rendering().SubmitLit(context, viewProj, viewportCamera.position, opts);
+    // Legacy excerpt: FillStandardLitSceneFromWorld(scene.GetWorld(), context, viewProj, ...);
     const Ui::Rect worldViewport = dock.GetWorldViewportRect();
     if (worldViewport.width > 1.0F && worldViewport.height > 1.0F) {
         params.worldViewportScissorEnabled = true;
@@ -336,7 +340,7 @@ Font mounting precedes BuildEditorUi; missing fonts show tofu in panel chrome. O
 
 ## Summary
 
-EditorApplication wraps the engine loop with bootstrap scene, EditorContext, and shared lit submit. Rendering uses FillStandardLitSceneFromWorld with dock viewport scissor — same pipeline as games.
+EditorApplication wraps the engine loop with bootstrap scene, EditorContext, and shared lit submit. Rendering uses `world.Rendering().SubmitLit` with dock viewport scissor — same pipeline as games (legacy `FillStandardLitSceneFromWorld` delegates to `LitSceneSubmitter`).
 
 ---
 

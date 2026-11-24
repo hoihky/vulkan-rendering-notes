@@ -2,10 +2,12 @@
 
 > **Build-Along Milestone:** params.particles populated after submit with correct count and camera right/up.
 
+**Spark API note:** Particle arrays are filled inside **`LitSceneSubmitter`** when you **`world.Rendering().SubmitLit`** with particles enabled in **`LitSceneSubmitOptions`**. **`FillStandardLitSceneFromWorld`** is the legacy entry that runs the same collection loop shown below.
+
 **You will learn:**
 
 - Implement CollectInstances to export living particles with interpolated size and color.
-- Wire particle collection into FillStandardLitSceneFromWorld with enableParticles and camera basis.
+- Wire particle collection into lit submit (`LitSceneSubmitOptions` / legacy `FillStandardLitSceneFromWorld`) with enableParticles and camera basis.
 - Respect MaxParticles cap when merging multiple emitters.
 
 ## 1. The Problem We Are Solving

@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,12 +1065,13 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Editor viewport renders bootstrap scene with working fly camera and panel shell.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Editor viewport rendering uses <strong><code>world.Rendering().SubmitLit</code></strong> / <strong><code>FillLit</code></strong> like runtime demos. This chapter still references <strong><code>FillStandardLitSceneFromWorld</code></strong> when diffing against older snippets — that name delegates to <strong><code>LitSceneSubmitter</code></strong>.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Structure an editor shell around the existing engine Update/Render loop.</li>
 <li>Bootstrap a default scene for immediate viewport feedback.</li>
 <li>Share EditorContext across panels without global state.</li>
-<li>Use the same FillStandardLitSceneFromWorld submit path as runtime demos.</li>
+<li>Use the same <code>world.Rendering().SubmitLit</code> submit path as runtime demos.</li>
 <li>Apply dock viewport scissor so 3D scene draws only in the central panel region.</li>
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
@@ -1091,7 +1104,7 @@ void EditorApplication::OnUpdate(const FrameTiming&amp; timing, Scene&amp; scene
 <h3 id="editorcontext-replaces-globals">EditorContext replaces globals</h3>
 <p>Panels receive a shared <code>EditorContext</code> each frame — world pointer, selection, command stack, viewport, content model. No static singletons holding stale entity copies; inspector reads live <code>TransformComponent</code> through this context.</p>
 <h3 id="submit-path-matches-runtime-demos">Submit path matches runtime demos</h3>
-<p><code>OnRender</code> builds <code>SceneRenderParams</code> via the same <code>FillStandardLitSceneFromWorld</code> path as ThreeDDemo. The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.</p>
+<p><code>OnRender</code> builds <code>SceneRenderParams</code> via the same <code>world.Rendering().SubmitLit</code> path as ThreeDDemo (legacy <code>FillStandardLitSceneFromWorld</code>). The dock viewport supplies scissor rect so 3D draws only in the central panel region — HDR, shadows, and tonemap unchanged from Part X.</p>
 <h2 id="core-concepts">2. Core Concepts</h2>
 <h3 id="editor-vs-runtime-game-loop">Editor vs runtime game loop</h3>
 <p>The editor runs the <strong>same</strong> engine Update/Render pipeline as ThreeDDemo — not a separate WPF or Electron shell. <code>EditorApplication</code> implements scene lifecycle hooks: <code>OnAttach</code> bootstraps content, <code>OnUpdate</code> drives camera and panels, <code>OnRender</code> builds <code>SceneRenderParams</code> and submits. No second Vulkan device, no duplicate renderer — only additional UI canvases and selection logic layered on top.</p>
@@ -1105,13 +1118,13 @@ void EditorApplication::OnUpdate(const FrameTiming&amp; timing, Scene&amp; scene
 <p>Editor fly camera (<code>UpdateViewportCamera</code>) is independent of serialized <code>CameraComponent</code> entities. WASD + RMB look navigates the <strong>view</strong>; game cameras in the scene render only when play mode runs full game logic. Editor camera fills viewProj in <code>OnRender</code> — not saved in scene files.</p>
 <p>F1 toggles cursor capture; scroll zoom respects <code>UiConsumesGamePointer</code> so panels eat wheel events first.</p>
 <h3 id="submit-path-unchanged">Submit path unchanged</h3>
-<p><code>OnRender</code> calls <code>FillStandardLitSceneFromWorld</code> → populates <code>SceneRenderParams</code> → engine presents. Same function family as ThreeDDemo and SceneEditor3DDemo runtime viewport. World viewport scissor from dock layout clips 3D rendering to the central panel region — UI draws afterward via <code>PaintUiCanvases</code>.</p>
+<p><code>OnRender</code> calls <code>world.Rendering().SubmitLit</code> (or legacy <code>FillStandardLitSceneFromWorld</code>) → populates <code>SceneRenderParams</code> → engine presents. Same function family as ThreeDDemo and SceneEditor3DDemo runtime viewport. World viewport scissor from dock layout clips 3D rendering to the central panel region — UI draws afterward via <code>PaintUiCanvases</code>.</p>
 <p>Validates architecture: editor is a <strong>client</strong> of scene submit, not a fork of VulkanRenderer.</p>
 <h3 id="selection-highlight-feedback">Selection highlight feedback</h3>
 <p><code>HighlightSelection</code> temporarily boosts emissive on selected entity's <code>MaterialComponent</code> — visible border glow without a separate outline pass. Clears previous highlight when selection changes. Editing transforms in inspector mutates ECS; next OnRender submit shows movement same frame.</p>
 <h3 id="editor-tick-vs-game-tick">Editor tick vs game tick</h3>
 <pre><code class="language-text">OnUpdate: UI input → TickPanels → fly camera
-OnRender: FillStandardLitSceneFromWorld → scissor → PaintUiCanvases
+OnRender: world.Rendering().SubmitLit → scissor → PaintUiCanvases
 </code></pre>
 <table class="table">
 <thead>
@@ -1156,9 +1169,9 @@ OnRender: FillStandardLitSceneFromWorld → scissor → PaintUiCanvases
 <p><strong>Decision:</strong> Editor-owned ViewportCamera</p>
 <p><strong>Why:</strong> Navigation independent of saved CameraComponent; expected for DCC-style editors.</p>
 <p><strong>In Spark:</strong> <code>UpdateViewportCamera</code> in EditorApplication.cpp</p>
-<h3 id="fillstandardlitscenefromworld-in-onrender">FillStandardLitSceneFromWorld in OnRender</h3>
+<h3 id="world.rendering.submitlit-in-onrender">world.Rendering().SubmitLit in OnRender</h3>
 <p><strong>Concept:</strong> Submit path unchanged</p>
-<p><strong>Decision:</strong> FillStandardLitSceneFromWorld in OnRender</p>
+<p><strong>Decision:</strong> <code>world.Rendering().SubmitLit</code> in OnRender (legacy <code>FillStandardLitSceneFromWorld</code>)</p>
 <p><strong>Why:</strong> Identical lit gather as runtime; dock scissor for panel layout only.</p>
 <p><strong>In Spark:</strong> <code>EditorApplication::OnRender</code></p>
 <h3 id="emissive-bump-on-materialcomponent">Emissive bump on MaterialComponent</h3>
@@ -1259,12 +1272,14 @@ void EditorApplication::OnUpdate(const FrameTiming&amp; timing, Scene&amp; scene
 }
 </code></pre>
 <h3 id="step-6-confirm-onrender-submit">Step 6 — Confirm OnRender submit</h3>
-<p>FillStandardLitSceneFromWorld, viewport scissor from dock, PaintUiCanvases for editor chrome.</p>
+<p>world.Rendering().SubmitLit, viewport scissor from dock, PaintUiCanvases for editor chrome.</p>
 <p><em>OnRender scene submit + UI paint</em></p>
 <pre><code class="language-cpp">// src/spark/editor/EditorApplication.cpp (lines 243–290)
 void EditorApplication::OnRender(Scene&amp; scene, IEngineContext&amp; context) {
     HighlightSelection(scene);
-    FillStandardLitSceneFromWorld(scene.GetWorld(), context, viewProj, viewportCamera.position, ...);
+    LitSceneSubmitOptions opts{}; /* lights, culling, … */
+    world.Rendering().SubmitLit(context, viewProj, viewportCamera.position, opts);
+    // Legacy excerpt: FillStandardLitSceneFromWorld(scene.GetWorld(), context, viewProj, ...);
     const Ui::Rect worldViewport = dock.GetWorldViewportRect();
     if (worldViewport.width &gt; 1.0F &amp;&amp; worldViewport.height &gt; 1.0F) {
         params.worldViewportScissorEnabled = true;
@@ -1299,7 +1314,7 @@ void EditorApplication::OnRender(Scene&amp; scene, IEngineContext&amp; context) 
 <li>Diff OnRender against ThreeDDemo — list only scissor and UI paint differences.</li>
 </ol>
 <h2 id="summary">Summary</h2>
-<p>EditorApplication wraps the engine loop with bootstrap scene, EditorContext, and shared lit submit. Rendering uses FillStandardLitSceneFromWorld with dock viewport scissor — same pipeline as games.</p>
+<p>EditorApplication wraps the engine loop with bootstrap scene, EditorContext, and shared lit submit. Rendering uses <code>world.Rendering().SubmitLit</code> with dock viewport scissor — same pipeline as games (legacy <code>FillStandardLitSceneFromWorld</code> delegates to <code>LitSceneSubmitter</code>).</p>
 <hr>
 <p>Next: <a href="05-editor-panels.html">Editor Panels</a>.</p>
 </div>
@@ -1390,7 +1405,7 @@ void EditorApplication::OnRender(Scene&amp; scene, IEngineContext&amp; context) 
                         </li>
                         
                         <li class="toc-h3">
-                          <a href="#fillstandardlitscenefromworld-in-onrender">FillStandardLitSceneFromWorld in OnRender</a>
+                          <a href="#worldrenderingsubmitlit-in-onrender">world.Rendering().SubmitLit in OnRender</a>
                         </li>
                         
                         <li class="toc-h3">

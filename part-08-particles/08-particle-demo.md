@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** ParticleDemo running with four distinct effects and live slider tuning.
 
+**Spark API note:** Production lit demos merge particles through **`world.Rendering().SubmitLit`**; ParticleDemo may hand-build `params` for teaching. **`FillStandardLitSceneFromWorld`** names the same merge logic inside **`LitSceneSubmitter`**.
+
 **You will learn:**
 
 - Run Spark ParticleDemo with four preset emitter archetypes.

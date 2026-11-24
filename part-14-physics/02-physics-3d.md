@@ -2,6 +2,8 @@
 
 > **Build-Along Milestone:** Dynamic sphere collides with ground and renders at physics-updated position same frame.
 
+**Spark API note:** After **`Simulate3D`**, lit scenes snapshot transforms via **`world.Rendering().SubmitLit`**. **`FillStandardLitSceneFromWorld`** names the same gather step inside **`LitSceneSubmitter`**.
+
 **You will learn:**
 
 - Integrate PhysicsWorld3D through PhysicsSubsystem with substep configuration.
@@ -97,7 +99,7 @@ Demo spawns static ground with box collider + physics material, dynamic ball wit
 
 ### No render coupling
 
-3D physics headers stay out of VulkanRenderer. Gameplay systems call Simulate; `FillStandardLitSceneFromWorld` reads transforms unchanged. Shadow casters (Part IX) use post-physics transforms automatically when Update order is correct (Chapter 4).
+3D physics headers stay out of VulkanRenderer. Gameplay systems call Simulate; `world.Rendering().SubmitLit` (legacy `FillStandardLitSceneFromWorld`) reads transforms unchanged. Shadow casters (Part IX) use post-physics transforms automatically when Update order is correct (Chapter 4).
 
 ## 3. Design Decisions
 

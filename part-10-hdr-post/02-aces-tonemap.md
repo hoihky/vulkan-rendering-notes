@@ -23,12 +23,19 @@ Tonemap is the bridge between **scene-referred HDR** and **display-referred swap
 
 ```text
 Shadow passes
-  → HDR render pass (scene + transparent resume + 2D + particles)
+  → HDR render pass (opaque + instancing + optional opaque snapshot)
+  → Water pass
+  → Transparent (`pipelineLitTransparent`, sorted `transparentDraws`)
+  → 2D composite + particles (still inside HDR RP)
+  → End HDR
+  → [optional] Scene2D composite capture + VulkanCompositeTonemapBlit into UI atlas
   → TransitionColorToShaderRead
   → [optional] SSAO pass (reads HDR + depth)
   → RecordTonemap (HDR → swapchain, present render pass)
   → Screen UI + ImGui (display space, not exposure-scaled)
 ```
+
+**Composite HUD path:** when a `Scene2DCompositeView` renders an ortho world into an HDR `RenderTexture`, `VulkanScreenUiPass::RecordCompositeRenderTextureBlits` may tonemap through `VulkanCompositeTonemapBlit` into the UI sprite atlas — same ACES shader, different render pass target (Part XI).
 
 Emissive materials authored in Part VII can exceed 1.0 in the HDR buffer **before** tonemap. PBR specular highlights on metals similarly accumulate in linear space. If you skip HDR offscreen targets (Part X Chapter 1) and draw directly to swapchain, tonemap has nothing meaningful to compress — highlights clip at 1.0.
 

@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1094,7 +1106,50 @@ if (frustum.IntersectsAxisAlignedBox(r.aabbMin, r.aabbMax)) {
 </code></pre>
 <p>Understand brute force before enabling BVH — when object count is below a few hundred, acceleration may not pay for build cost. TerrainDemo with modest prop count often stays on the brute path. Use brute results as golden reference when implementing BVH — visible set must match or be a superset, never miss a visible object.</p>
 <h3 id="spatial-acceleration-options">Spatial acceleration options</h3>
-<p><strong>SceneSpatialCull</strong> implements BVH/grid partitions for static meshes — hide complexity behind <code>DispatchDrawableFrustumCull</code> uniform API. Static outdoor props benefit; dynamic skinned crowds may use a separate policy.</p>
+<p><strong>SceneSpatialCull</strong> (<code>src/spark/scene/submit/SceneSpatialCull.cpp</code>) implements multiple <strong><code>ScenePartitionKind</code></strong> strategies selected via <strong><code>SceneSpatialPolicyComponent</code></strong>:</p>
+<table class="table">
+<thead>
+<tr>
+<th><code>ScenePartitionKind</code></th>
+<th>Structure</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>None</code></td>
+<td>No reject</td>
+<td>Teaching / debug</td>
+</tr>
+<tr>
+<td><code>BruteForce</code></td>
+<td>Linear AABB test</td>
+<td>Baseline O(n)</td>
+</tr>
+<tr>
+<td><code>BoundingVolumeHierarchy</code></td>
+<td>Cached <code>BvhTree</code></td>
+<td>Default for many 3D demos</td>
+</tr>
+<tr>
+<td><code>AxisAlignedBinarySpacePartition</code></td>
+<td>Rebuilt <code>BvhTree</code></td>
+<td><code>CyclicByDepth</code> split</td>
+</tr>
+<tr>
+<td><code>Octree</code></td>
+<td><code>OctTree</code></td>
+<td>3D cells</td>
+</tr>
+<tr>
+<td><code>QuadTree</code></td>
+<td><code>QuadTree</code> on XZ</td>
+<td>Outdoor props; Y slab</td>
+</tr>
+</tbody>
+</table>
+<p>Reusable tree types live under <code>include/spark/scene/spatial/{BvhTree,OctTree,QuadTree}.hpp</code>. <strong><code>DispatchDrawableFrustumCull</code></strong> keeps a uniform API — collectors stay unaware of tree type.</p>
+<p><strong>Skinned meshes:</strong> lit submit may run <strong><code>BruteForce</code></strong> skinned cull even when rigid policy uses BVH — check <code>LitSceneSubmitter::CollectMeshDraws</code> when tuning hero crowds vs static props.</p>
 <p>False negatives (object pops out while partially visible) mean <strong>AABB too tight</strong> — expand bounds or disable aggressive cull temporarily. Skinned meshes need <strong>conservative</strong> bounds encompassing pose extremes, not rest pose only.</p>
 <h3 id="sprite-and-tilemap-cull-reuse">Sprite and tilemap cull reuse</h3>
 <p><strong>SceneSpriteTileCull</strong> shares frustum math with mesh cull — sprites test transformed unit-quad AABB; tilemaps iterate <strong>16×16 chunks</strong> (Part XI). Submit constructs one cull helper from the same <code>viewProjection</code> matrix passed to mesh dispatch — matrix mismatch causes pop-in at screen edges.</p>

@@ -1,6 +1,8 @@
 # Submitting a Scene from Code
 
-> **Build-Along Milestone:** You can fill `SceneRenderParams` manually or via `FillStandardLitSceneFromWorld` and see a lit 3D scene in SparkDemo.
+> **Build-Along Milestone:** You can fill `SceneRenderParams` manually or via `world.Rendering().SubmitLit` and see a lit 3D scene in a Spark demo.
+
+**Spark API note (main branch):** Production demos use **`world.Rendering().SubmitLit`** and **`LitSceneSubmitOptions`**, not the older `FillStandardLitSceneFromWorld` free function. This chapter teaches the snapshot contract; [Chapter 11](11-world-rendering-lit-submit.md) documents the current blessed API. Legacy helpers still delegate to the same `LitSceneSubmitter` pipeline.
 
 **You will learn:**
 
@@ -12,7 +14,7 @@
 
 Chapter 8 hand-authored floor and cube items. Real demos use **dozens of entities** with meshes, materials, and cameras. Duplicating that logic per demo is unmaintainable.
 
-Spark centralizes ECS → snapshot translation in **`SceneSubmit`** (`FillStandardLitSceneFromWorld`, `SubmitStandardLitSceneFromWorld`). This chapter closes Part II by showing both paths:
+Spark centralizes ECS → snapshot translation in **`LitSceneSubmitter`**, reached through **`world.Rendering().SubmitLit`** / **`FillLit`** (see Chapter 11). Older names `FillStandardLitSceneFromWorld` and `SceneSubmit::*` are compatibility wrappers around the same code. This chapter closes Part II by showing both paths:
 
 1. **Manual** — learn the data contract
 2. **Submit helper** — how Spark demos scale
@@ -29,7 +31,8 @@ By the end of Part II, one complete frame looks like this on the CPU:
 3. game->OnRender(frame, ctx):
      a. Build SceneRenderParams params
      b. params.camera = ...      — view + projection matrices
-     c. FillStandardLitSceneFromWorld(world, params, ctx)
+     c. world.Rendering().SubmitLit(ctx, viewProj, cameraPos, opts)
+        OR FillLit / legacy FillStandardLitSceneFromWorld
         OR manually push SceneDrawItem entries
      d. ctx.SetSceneRenderParams(params)
 4. renderer->PresentFrame()
@@ -378,8 +381,8 @@ Part II ends at: **snapshot in, lit meshes out.**
 
 ## Summary
 
-Part II completes the path from game code to pixels: build `SceneRenderParams` manually or via `SceneSubmit`, push through `IEngineContext`, and let `VulkanRenderer` record indexed draws in the HDR pass. You now have the basic forward pipeline — Parts III onward improve shaders, materials, and frame graph nodes without changing this contract.
+Part II completes the path from game code to pixels: build `SceneRenderParams` manually or via **`world.Rendering().SubmitLit`** (Chapter 11), push through `IEngineContext` when using `FillLit`, and let `VulkanRenderer` record indexed draws in the HDR pass.
 
 ---
 
-Next: [Part III — Shader Essentials](../part-03-shaders/index.md).
+Next: [WorldRendering and Lit Scene Submit](11-world-rendering-lit-submit.md).

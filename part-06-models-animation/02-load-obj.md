@@ -157,7 +157,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **Why:** Handles slash-separated indices and negative indices (relative to end of pool).
 
-**In Spark:** `src/spark/scene/Mesh.cpp` — face loop inside TryLoadFromObj
+**In Spark:** `src/spark/scene/mesh/Mesh.cpp` — face loop inside TryLoadFromObj
 
 ### PushBack per corner, not hash map
 
@@ -186,8 +186,8 @@ Spark is the reference implementation you can build, run, and diff against.
 
 ### Spark Files We Touch This Chapter
 
-- `include/spark/scene/Mesh.hpp`
-- `src/spark/scene/Mesh.cpp`
+- `include/spark/scene/mesh/Mesh.hpp`
+- `src/spark/scene/mesh/Mesh.cpp`
 - `src/spark/scene/GameWorldAssetCache.cpp`
 
 ### Step 1 — Read the public OBJ API
@@ -195,7 +195,7 @@ Spark is the reference implementation you can build, run, and diff against.
 *Minimal OBJ subset — v, vn, vt, f.*
 
 ```cpp
-// include/spark/scene/Mesh.hpp (lines 68–72)
+// include/spark/scene/mesh/Mesh.hpp (lines 68–72)
     /**
      * Loads positions, normals, UVs and triangulated faces from a minimal OBJ subset.
      * Supports `v`, `vn`, `vt`, `f` (v, v/vt, v//vn, v/vt/vn). Returns false on I/O or parse failure.
@@ -208,7 +208,7 @@ Spark is the reference implementation you can build, run, and diff against.
 *Stream lines — fill position/normal/UV pools, begin face expansion.*
 
 ```cpp
-// src/spark/scene/Mesh.cpp (lines 359–413)
+// src/spark/scene/mesh/Mesh.cpp (lines 359–413)
 bool Mesh::TryLoadFromObj(const char* path, Mesh& outMesh) {
     if (path == nullptr) {
         return false;
@@ -271,7 +271,7 @@ bool Mesh::TryLoadFromObj(const char* path, Mesh& outMesh) {
 *Each face corner becomes one Mesh::Vertex + index.*
 
 ```cpp
-// src/spark/scene/Mesh.cpp (lines 420–438)
+// src/spark/scene/mesh/Mesh.cpp (lines 420–438)
             for (std::size_t idx = 0; idx < n; ++idx) {
                 const int pi = faceV[idx] - 1;
                 const int ti = faceT[idx] - 1;

@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1089,7 +1101,7 @@ ResolvedDrawableSort DrawableSortResolver::Resolve(const GameObject&amp; drawabl
 <h3 id="why-sort-keys-exist">Why sort keys exist</h3>
 <p>Without explicit <strong>draw order</strong>, alpha-blended sprites and tile layers intersect unpredictably — foreground props flicker behind the player, decals vanish when overlap angles change. Vulkan draw order within a pass is <strong>submission order</strong> unless you depth-sort (insufficient alone for alpha).</p>
 <p>Spark assigns each 2D drawable a <strong>sort key</strong> at submit time: <code>sortingLayerOrder</code> (global layer from registry), <code>sortOrder</code> (order within layer), and optional <code>sortWorldY</code> for pseudo-depth in side-scrollers. Keys are resolved once per entity, stable-sorted, then recorded — gameplay never sorts during GPU work.</p>
-<p>Undefined order shows as Z-fighting between alpha sprites coplanar in XY — separate with sortOrder or tiny Z bias. 3D meshes ignore sprite sort keys — pass order decides mesh vs sprite.</p>
+<p>Undefined order shows as Z-fighting between alpha sprites coplanar in XY — separate with sortOrder or tiny Z bias. 3D opaque meshes now carry sort keys on <strong><code>SceneDrawItem::drawableSort</code></strong> and are ordered through <strong><code>SceneRenderQueue</code></strong> using the same <strong><code>DrawableSortResolver</code></strong> rules as 2D drawables; pass order still separates mesh draws from sprite passes.</p>
 <p>Transparent draws lack a single depth order that looks correct from all angles. <strong>Sort keys</strong> encode artist intent: background hills at layer 0, characters at 10, foreground vines at 20. Without keys, alpha-blended overlap flickers frame-to-frame when insertion order varies. Sort keys are integers computed at submit, not at entity creation — runtime gameplay can bump pickup sprites to layer 99 for one frame when collected. Depth buffer still resolves sprites against opaque terrain; sort keys only order among coplanar or similarly-depth sprites. Document layer ranges in a table shared between art and engineering.</p>
 <p>Multiplayer replays and video capture require <strong>deterministic overlap</strong> — stable sort plus explicit layer integers make the same scene reproducible across machines. When two artists assign the same layer to unrelated objects, establish a secondary <code>sortOrder</code> tie-break rather than renumbering global layers mid-milestone. Document layer budget: background 0–9, gameplay 10–29, VFX 30–49, foreground 50+ as a starting convention for side-scrollers.</p>
 <h3 id="drawablesortresolver-hierarchy">DrawableSortResolver hierarchy</h3>

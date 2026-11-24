@@ -201,7 +201,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **Why:** One type feeds procedural primitives, OBJ, and baked glTF. GPU upload stays in VulkanCustomMeshPool.
 
-**In Spark:** `include/spark/scene/Mesh.hpp`
+**In Spark:** `include/spark/scene/mesh/Mesh.hpp`
 
 ### uint32_t index arrays
 
@@ -231,7 +231,7 @@ Each decision below references a concept from Section 2 and shows where Spark ap
 
 **Why:** Demos run without asset files; same Vertex layout as imported content for one shader path.
 
-**In Spark:** `src/spark/scene/Mesh.cpp` — `CreateUnitCube`, `CreateGroundPlane`
+**In Spark:** `src/spark/scene/mesh/Mesh.cpp` — `CreateUnitCube`, `CreateGroundPlane`
 
 ### TryComputeAxisAlignedBounds on Mesh
 
@@ -250,8 +250,8 @@ Spark is the reference implementation you can build, run, and diff against.
 
 ### Spark Files We Touch This Chapter
 
-- `include/spark/scene/Mesh.hpp`
-- `src/spark/scene/Mesh.cpp`
+- `include/spark/scene/mesh/Mesh.hpp`
+- `src/spark/scene/mesh/Mesh.cpp`
 - `include/spark/engine/SceneRenderParams.hpp`
 - `shaders/scene.vert`
 
@@ -260,7 +260,7 @@ Spark is the reference implementation you can build, run, and diff against.
 *CPU-side mesh — SharedPtr-friendly, no Vulkan types.*
 
 ```cpp
-// include/spark/scene/Mesh.hpp (lines 15–44)
+// include/spark/scene/mesh/Mesh.hpp (lines 15–44)
 /**
  * CPU-side mesh (vertices + indices). Shared across GameObjects / MeshComponents via SharedPtr.
  * GPU upload is renderer-specific and stays outside this type.
@@ -301,7 +301,7 @@ Note the header comment: GPU upload is renderer-specific and stays outside `Mesh
 *Per-face vertex duplication — 4 verts per face, 2 triangles each.*
 
 ```cpp
-// src/spark/scene/Mesh.cpp (lines 130–147)
+// src/spark/scene/mesh/Mesh.cpp (lines 130–147)
     for (int f = 0; f < 6; ++f) {
         const std::uint32_t base = static_cast<std::uint32_t>(m.vertices.GetSize());
         for (int k = 0; k < 4; ++k) {

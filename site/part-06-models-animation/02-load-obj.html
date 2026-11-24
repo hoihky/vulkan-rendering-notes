@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1173,7 +1185,7 @@ SharedPtr&lt;Mesh&gt; GameWorldAssetCache::LoadMesh(const char* path) {
 <p><strong>Concept:</strong> Face formats and triangulation</p>
 <p><strong>Decision:</strong> ParseFaceCorner helper</p>
 <p><strong>Why:</strong> Handles slash-separated indices and negative indices (relative to end of pool).</p>
-<p><strong>In Spark:</strong> <code>src/spark/scene/Mesh.cpp</code> — face loop inside TryLoadFromObj</p>
+<p><strong>In Spark:</strong> <code>src/spark/scene/mesh/Mesh.cpp</code> — face loop inside TryLoadFromObj</p>
 <h3 id="pushback-per-corner-not-hash-map">PushBack per corner, not hash map</h3>
 <p><strong>Concept:</strong> No welding in Spark OBJ path</p>
 <p><strong>Decision:</strong> PushBack per corner, not hash map</p>
@@ -1189,13 +1201,13 @@ SharedPtr&lt;Mesh&gt; GameWorldAssetCache::LoadMesh(const char* path) {
 Spark is the reference implementation you can build, run, and diff against.</p>
 <h3 id="spark-files-we-touch-this-chapter">Spark Files We Touch This Chapter</h3>
 <ul>
-<li><code>include/spark/scene/Mesh.hpp</code></li>
-<li><code>src/spark/scene/Mesh.cpp</code></li>
+<li><code>include/spark/scene/mesh/Mesh.hpp</code></li>
+<li><code>src/spark/scene/mesh/Mesh.cpp</code></li>
 <li><code>src/spark/scene/GameWorldAssetCache.cpp</code></li>
 </ul>
 <h3 id="step-1-read-the-public-obj-api">Step 1 — Read the public OBJ API</h3>
 <p><em>Minimal OBJ subset — v, vn, vt, f.</em></p>
-<pre><code class="language-cpp">// include/spark/scene/Mesh.hpp (lines 68–72)
+<pre><code class="language-cpp">// include/spark/scene/mesh/Mesh.hpp (lines 68–72)
 /**
  * Loads positions, normals, UVs and triangulated faces from a minimal OBJ subset.
  * Supports `v`, `vn`, `vt`, `f` (v, v/vt, v//vn, v/vt/vn). Returns false on I/O or parse failure.
@@ -1204,7 +1216,7 @@ Spark is the reference implementation you can build, run, and diff against.</p>
 </code></pre>
 <h3 id="step-2-trace-the-parse-loop">Step 2 — Trace the parse loop</h3>
 <p><em>Stream lines — fill position/normal/UV pools, begin face expansion.</em></p>
-<pre><code class="language-cpp">// src/spark/scene/Mesh.cpp (lines 359–413)
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 359–413)
 bool Mesh::TryLoadFromObj(const char* path, Mesh&amp; outMesh) {
     if (path == nullptr) {
         return false;
@@ -1263,7 +1275,7 @@ bool Mesh::TryLoadFromObj(const char* path, Mesh&amp; outMesh) {
 </code></pre>
 <h3 id="step-3-follow-corner-vertex-expansion">Step 3 — Follow corner → vertex expansion</h3>
 <p><em>Each face corner becomes one Mesh::Vertex + index.</em></p>
-<pre><code class="language-cpp">// src/spark/scene/Mesh.cpp (lines 420–438)
+<pre><code class="language-cpp">// src/spark/scene/mesh/Mesh.cpp (lines 420–438)
 for (std::size_t idx = 0; idx &lt; n; ++idx) {
     const int pi = faceV[idx] - 1;
     const int ti = faceT[idx] - 1;

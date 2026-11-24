@@ -72,7 +72,20 @@ Understand brute force before enabling BVH — when object count is below a few 
 
 ### Spatial acceleration options
 
-**SceneSpatialCull** implements BVH/grid partitions for static meshes — hide complexity behind `DispatchDrawableFrustumCull` uniform API. Static outdoor props benefit; dynamic skinned crowds may use a separate policy.
+**SceneSpatialCull** (`src/spark/scene/submit/SceneSpatialCull.cpp`) implements multiple **`ScenePartitionKind`** strategies selected via **`SceneSpatialPolicyComponent`**:
+
+| `ScenePartitionKind` | Structure | Notes |
+|------------------------|-----------|--------|
+| `None` | No reject | Teaching / debug |
+| `BruteForce` | Linear AABB test | Baseline O(n) |
+| `BoundingVolumeHierarchy` | Cached `BvhTree` | Default for many 3D demos |
+| `AxisAlignedBinarySpacePartition` | Rebuilt `BvhTree` | `CyclicByDepth` split |
+| `Octree` | `OctTree` | 3D cells |
+| `QuadTree` | `QuadTree` on XZ | Outdoor props; Y slab |
+
+Reusable tree types live under `include/spark/scene/spatial/{BvhTree,OctTree,QuadTree}.hpp`. **`DispatchDrawableFrustumCull`** keeps a uniform API — collectors stay unaware of tree type.
+
+**Skinned meshes:** lit submit may run **`BruteForce`** skinned cull even when rigid policy uses BVH — check `LitSceneSubmitter::CollectMeshDraws` when tuning hero crowds vs static props.
 
 False negatives (object pops out while partially visible) mean **AABB too tight** — expand bounds or disable aggressive cull temporarily. Skinned meshes need **conservative** bounds encompassing pose extremes, not rest pose only.
 

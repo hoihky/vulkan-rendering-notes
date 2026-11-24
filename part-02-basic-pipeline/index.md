@@ -14,5 +14,6 @@ From render snapshot to indexed draws: `SceneRenderParams`, render passes, pipel
 | 8 | [Indexed Drawing — Cube and Ground](08-indexed-cube.md) |
 | 9 | [VulkanRenderer Frame Graph](09-vulkan-renderer-graph.md) |
 | 10 | [Submitting a Scene from Code](10-submitting-scene.md) |
+| 11 | [WorldRendering and Lit Scene Submit](11-world-rendering-lit-submit.md) |
 
 Continue to [Part III — Shader Essentials](../part-03-shaders/index.md).

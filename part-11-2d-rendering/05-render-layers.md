@@ -54,7 +54,7 @@ Without explicit **draw order**, alpha-blended sprites and tile layers intersect
 
 Spark assigns each 2D drawable a **sort key** at submit time: `sortingLayerOrder` (global layer from registry), `sortOrder` (order within layer), and optional `sortWorldY` for pseudo-depth in side-scrollers. Keys are resolved once per entity, stable-sorted, then recorded — gameplay never sorts during GPU work.
 
-Undefined order shows as Z-fighting between alpha sprites coplanar in XY — separate with sortOrder or tiny Z bias. 3D meshes ignore sprite sort keys — pass order decides mesh vs sprite.
+Undefined order shows as Z-fighting between alpha sprites coplanar in XY — separate with sortOrder or tiny Z bias. 3D opaque meshes now carry sort keys on **`SceneDrawItem::drawableSort`** and are ordered through **`SceneRenderQueue`** using the same **`DrawableSortResolver`** rules as 2D drawables; pass order still separates mesh draws from sprite passes.
 
 Transparent draws lack a single depth order that looks correct from all angles. **Sort keys** encode artist intent: background hills at layer 0, characters at 10, foreground vines at 20. Without keys, alpha-blended overlap flickers frame-to-frame when insertion order varies. Sort keys are integers computed at submit, not at entity creation — runtime gameplay can bump pickup sprites to layer 99 for one frame when collected. Depth buffer still resolves sprites against opaque terrain; sort keys only order among coplanar or similarly-depth sprites. Document layer ranges in a table shared between art and engineering.
 

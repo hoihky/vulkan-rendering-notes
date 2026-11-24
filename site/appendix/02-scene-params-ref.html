@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1111,7 +1123,11 @@
 <tbody>
 <tr>
 <td><code>draws</code> / <code>transparentDraws</code></td>
-<td>Forward scene opaque/trans</td>
+<td>Forward scene opaque/trans (<code>SceneDrawListSorter</code> partitions transparent)</td>
+</tr>
+<tr>
+<td><code>meshInstancedBatches</code> / <code>meshInstances</code></td>
+<td>Rigid instanced path (<code>scene_instanced.vert</code>, SSBO binding 16)</td>
 </tr>
 <tr>
 <td><code>sprites</code></td>
@@ -1135,7 +1151,35 @@
 </tr>
 </tbody>
 </table>
-<p>Sort policies (<code>SceneSpriteSortMode</code>, blend modes) live on params — submit sorts before record.</p>
+<p>Sort policies (<code>SceneSpriteSortMode</code>, <code>SceneTransparentSortMode</code>, per-draw <code>drawableSort</code> / <code>SceneRenderQueue</code>) live on params — submit sorts before record.</p>
+<h3 id="lit-submit-api-spark-main">Lit submit API (Spark main)</h3>
+<table class="table">
+<thead>
+<tr>
+<th>Call</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>world.Rendering().SubmitLit</code></td>
+<td>Default 3D demo render — fill + <code>SetSceneRenderParams</code></td>
+</tr>
+<tr>
+<td><code>world.Rendering().SubmitLitWithCamera</code></td>
+<td>ECS main camera resolution</td>
+</tr>
+<tr>
+<td><code>world.Rendering().FillLit</code></td>
+<td>Editor: patch <code>SceneRenderParams</code> after gather</td>
+</tr>
+<tr>
+<td><code>FillStandardLitSceneFromWorld</code></td>
+<td>Legacy; same as <code>FillLit</code> internally</td>
+</tr>
+</tbody>
+</table>
+<p>See Part II Chapter 11 and Spark <code>docs/LIT_RENDER_API.md</code>.</p>
 <h3 id="texture-array-packing">Texture array packing</h3>
 <p><code>sceneTextures</code> — max 16 <code>SharedPtr&lt;Texture2D&gt;</code>. Each draw item carries <code>textureLayer</code> index into array. <code>FindOrAddSceneTexture</code> deduplicates during submit — same texture pointer → same layer.</p>
 <p>Normal/ORM/emissive layers optional per <code>SceneDrawItem</code> — glTF PBR path from Part IV/VII.</p>
@@ -1650,6 +1694,10 @@ p.draws.size(), p.sprites.size(), p.pointLights.size());
                         
                         <li class="toc-h3">
                           <a href="#draw-list-arrays">Draw list arrays</a>
+                        </li>
+                        
+                        <li class="toc-h3">
+                          <a href="#lit-submit-api-spark-main">Lit submit API (Spark main)</a>
                         </li>
                         
                         <li class="toc-h3">

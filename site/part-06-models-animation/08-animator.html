@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> Skinned character loops walk animation with smooth clip crossfade on manual switch.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> Joint palettes must be finalized in <strong><code>OnUpdate</code> before</strong> <strong><code>world.Rendering().SubmitLit</code></strong> runs in <strong><code>OnRender</code></strong>. Legacy docs say “before <code>FillStandardLitSceneFromWorld</code>” — that name delegates to the same <strong><code>LitSceneSubmitter</code></strong> gather.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Advance clip time with loop modes on AnimatorComponent.</li>
@@ -1292,7 +1305,7 @@ void AnimatorComponent::ComputeJointPalette(Matrix4* outPalette, const std::uint
 <pre><code class="language-cpp">auto&amp; anim = *go-&gt;AddComponent&lt;AnimatorComponent&gt;(asset.skeleton, asset.walkClipIndex, 1.f);
 anim.SetLoopMode(AnimLoopMode::Loop);
 </code></pre>
-<p>Ensure OnUpdate runs before FillStandardLitSceneFromWorld.</p>
+<p>Ensure OnUpdate runs before <code>world.Rendering().SubmitLit</code> (or legacy <code>FillStandardLitSceneFromWorld</code>).</p>
 <h3 id="step-6-scrub-time-in-debug-ui">Step 6 — Scrub time in debug UI</h3>
 <p>Call <code>SetTimeSeconds</code> while paused — mesh should hold mid-stride pose when submit runs.</p>
 <h3 id="step-7-crossfade-walk-run-manually">Step 7 — Crossfade walk → run manually</h3>

@@ -150,7 +150,7 @@ Spark is the reference implementation you can build, run, and diff against.
 
 ### Spark Files We Touch This Chapter
 
-- `include/spark/scene/Mesh.hpp`
+- `include/spark/scene/mesh/Mesh.hpp`
 - `src/spark/scene/Mesh.cpp`
 - `src/spark/demo/SkyDemo.cpp`
 

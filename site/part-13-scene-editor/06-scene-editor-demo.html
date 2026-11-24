@@ -224,6 +224,12 @@
                             
                         </li>
                         
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-02-basic-pipeline/11-world-rendering-lit-submit.html" class="nav-link">11 world rendering lit submit</a>
+                            
+                        </li>
+                        
                         <li class="nav-item depth-0 is-group">
                           
                             <span class="nav-group">part 03 shaders</span>
@@ -509,6 +515,12 @@
                         <li class="nav-item depth-1">
                           
                             <a href="../part-06-models-animation/10-locomotion-fsm.html" class="nav-link">10 locomotion fsm</a>
+                            
+                        </li>
+                        
+                        <li class="nav-item depth-1">
+                          
+                            <a href="../part-06-models-animation/11-mesh-lod-and-instancing.html" class="nav-link">11 mesh lod and instancing</a>
                             
                         </li>
                         
@@ -1053,6 +1065,7 @@
 <blockquote class="blockquote">
 <p><strong>Build-Along Milestone:</strong> SceneEditor3DDemo save/load restores five edited entities with matching viewport appearance.</p>
 </blockquote>
+<p><strong>Spark API note:</strong> SceneEditor3DDemo viewport rendering goes through <strong><code>world.Rendering().SubmitLit</code></strong> like other lit demos. Mentions of <strong><code>FillStandardLitSceneFromWorld</code></strong> below mean the same <strong><code>LitSceneSubmitter</code></strong> gather.</p>
 <p><strong>You will learn:</strong></p>
 <ul>
 <li>Run SceneEditor3DDemo as full editor vertical slice.</li>
@@ -1061,7 +1074,7 @@
 <li>Use demo as regression target after serializer changes.</li>
 </ul>
 <h2 id="the-problem-we-are-solving">1. The Problem We Are Solving</h2>
-<p>Parts XIII chapters 1–5 built serialization, async load, editor shell, and panels separately. <strong>SceneEditor3DDemo</strong> proves they work together — viewport, placement tools, hierarchy/inspector, <code>SceneSerializer</code> v4 output, <code>SceneManager</code> async finalize, and <code>FillStandardLitSceneFromWorld</code> HDR rendering in one executable.</p>
+<p>Parts XIII chapters 1–5 built serialization, async load, editor shell, and panels separately. <strong>SceneEditor3DDemo</strong> proves they work together — viewport, placement tools, hierarchy/inspector, <code>SceneSerializer</code> v4 output, <code>SceneManager</code> async finalize, and <strong><code>world.Rendering().SubmitLit</code></strong> HDR rendering in one executable.</p>
 <p>The demo encodes <strong>editor-specific policy</strong>: which entities save (placed props and user lights), how project-relative paths resolve through capture callbacks, and how load clears stale placed arrays before async apply. Treat the five-case regression matrix as a merge gate — silent serializer regressions lose artist work without compile errors.</p>
 <p>Milestone: place five props, save, reload async, verify transforms and mesh paths match within float tolerance.</p>
 <h2 id="b.concept-deep-dive-sceneeditor3ddemo-save-policy">1b. Concept Deep Dive — SceneEditor3DDemo Save Policy</h2>
@@ -1175,7 +1188,7 @@ Ch6   This demo              → placed[] tracking + menu dispatch + checklist
 <p><strong>Concept:</strong> End-to-end checklist</p>
 <p><strong>Decision:</strong> Same renderer as ThreeDDemo</p>
 <p><strong>Why:</strong> No editor-specific shaders — validates architecture separation.</p>
-<p><strong>In Spark:</strong> FillStandardLitSceneFromWorld unchanged</p>
+<p><strong>In Spark:</strong> <code>world.Rendering().SubmitLit</code> (legacy <code>FillStandardLitSceneFromWorld</code> delegates to same gather)</p>
 <h2 id="implementation-walkthrough">4. Implementation Walkthrough</h2>
 <p>Follow these steps in order. You are extending the same mini-engine throughout the book;
 Spark is the reference implementation you can build, run, and diff against.</p>
